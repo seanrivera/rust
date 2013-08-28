@@ -1002,6 +1002,18 @@ pub fn remove_file(p: &Path) -> bool {
     }
 }
 
+/// Renames an existing file or directory
+pub fn rename_file(old: &Path, new: &Path) -> bool {
+    #[fixed_stack_segment]; #[inline(never)];
+    unsafe {
+       do old.with_c_str |old_buf| {
+            do new.with_c_str |new_buf| {
+                libc::rename(old_buf, new_buf) == (0 as c_int)
+            }
+       }
+    }
+}
+
 #[cfg(unix)]
 /// Returns the platform-specific value of errno
 pub fn errno() -> int {
@@ -2061,6 +2073,42 @@ mod tests {
     fn recursive_mkdir_empty() {
         let path = Path("");
         assert!(!os::mkdir_recursive(&path, (S_IRUSR | S_IWUSR | S_IXUSR) as i32));
+    }
+
+    #[test]
+    fn rename_directory() {
+        #[fixed_stack_segment]; unsafe {
+
+        static U_RWX: i32 = (S_IRUSR | S_IWUSR | S_IXUSR) as i32;
+
+        let tmpdir = os::tmpdir();
+        let old_path = tmpdir.push_many(["foo", "bar", "baz"]);
+        assert!(os::mkdir_recursive(&old_path, U_RWX));
+        let test_file = &tmpdir.push_many(["foo", "bar", "baz"]).push("temp.txt");
+
+            /* Write the temp input file */
+            let ostream = do test_file.to_str().with_c_str |fromp| {
+                do "w+b".with_c_str |modebuf| {
+                    libc::fopen(fromp, modebuf)
+                }
+            };
+            assert!((ostream as uint != 0u));
+            let s = ~"hello";
+            do "hello".with_c_str |buf| {
+                let write_len = libc::fwrite(buf as *c_void,
+                                             1u as size_t,
+                                             (s.len() + 1u) as size_t,
+                                             ostream);
+                assert_eq!(write_len, (s.len() + 1) as size_t)
+            }
+            assert_eq!(libc::fclose(ostream), (0u as c_int));
+
+        let new_path = tmpdir.push_many(["quux", "blat"]);
+        assert!(os::mkdir_recursive(&new_path, U_RWX));
+        assert!(os::rename_file(&old_path, &new_path.push("newdir")));
+        assert!(os::path_is_dir(&new_path.push("newdir")));
+        assert!(os::path_exists(&new_path.push_many(["newdir", "temp.txt"])));
+      }
     }
 
     #[test]
