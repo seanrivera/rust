@@ -9,11 +9,10 @@
 // except according to those terms.
 
 pub trait E {
-    pub fn foo();               //~ ERROR: obsolete syntax
+    pub fn foo(&self);               //~ ERROR: unnecessary visibility
 }
-trait F { pub fn foo(); }       //~ ERROR: obsolete syntax
+trait F {
+    pub fn foo(&self);               //~ ERROR: unnecessary visibility
+}
 
-struct B;
-impl E for B {
-    priv fn foo() {}             //~ ERROR: obsolete syntax
-}
+fn main() {}

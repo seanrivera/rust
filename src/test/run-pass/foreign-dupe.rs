@@ -1,4 +1,4 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,30 +8,25 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// xfail-fast - Somehow causes check-fast to livelock?? Probably because we're
-// calling pin_task and that's having wierd side-effects.
+// calling pin_task and that's having weird side-effects.
 
 mod rustrt1 {
-    use std::libc;
+    extern crate libc;
 
-    #[abi = "cdecl"]
-    #[link_name = "rustrt"]
+    #[link(name = "rust_test_helpers")]
     extern {
-        fn rust_get_test_int() -> libc::intptr_t;
+        pub fn rust_get_test_int() -> libc::intptr_t;
     }
 }
 
 mod rustrt2 {
-    use std::libc;
+    extern crate libc;
 
-    #[abi = "cdecl"]
-    #[link_name = "rustrt"]
     extern {
-        fn rust_get_test_int() -> libc::intptr_t;
+        pub fn rust_get_test_int() -> libc::intptr_t;
     }
 }
 
-#[fixed_stack_segment] #[inline(never)]
 pub fn main() {
     unsafe {
         rustrt1::rust_get_test_int();

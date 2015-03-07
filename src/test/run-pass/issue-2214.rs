@@ -1,6 +1,5 @@
-// xfail-fast
 
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -10,16 +9,17 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::cast;
-use std::libc::{c_double, c_int};
+extern crate libc;
+
+use std::mem;
+use libc::{c_double, c_int};
 
 fn to_c_int(v: &mut int) -> &mut c_int {
     unsafe {
-        cast::transmute_copy(&v)
+        mem::transmute_copy(&v)
     }
 }
 
-#[fixed_stack_segment] #[inline(never)]
 fn lgamma(n: c_double, value: &mut int) -> c_double {
     unsafe {
         return m::lgamma(n, to_c_int(value));
@@ -27,10 +27,9 @@ fn lgamma(n: c_double, value: &mut int) -> c_double {
 }
 
 mod m {
-    use std::libc::{c_double, c_int};
+    use libc::{c_double, c_int};
 
     #[link_name = "m"]
-    #[abi = "cdecl"]
     extern {
         #[cfg(unix)]
         #[link_name="lgamma_r"]

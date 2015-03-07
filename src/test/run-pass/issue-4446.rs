@@ -8,12 +8,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-fn main() {
-    let (port, chan) = stream();
+use std::old_io::println;
+use std::sync::mpsc::channel;
+use std::thread;
 
-    do spawn {
-        println(port.recv());
-    }
+pub fn main() {
+    let (tx, rx) = channel();
 
-    chan.send("hello, world");
+    tx.send("hello, world").unwrap();
+
+    thread::spawn(move|| {
+        println(rx.recv().unwrap());
+    }).join().ok().unwrap();
 }

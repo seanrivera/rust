@@ -8,10 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-
-
-
-// -*- rust -*-
+#[derive(Copy)]
 struct Rect {x: int, y: int, w: int, h: int}
 
 fn f(r: Rect, x: int, y: int, w: int, h: int) {

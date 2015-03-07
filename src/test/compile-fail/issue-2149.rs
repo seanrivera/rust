@@ -9,18 +9,17 @@
 // except according to those terms.
 
 trait vec_monad<A> {
-    fn bind<B>(&self, f: &fn(A) -> ~[B]);
+    fn bind<B, F>(&self, f: F) where F: FnMut(A) -> Vec<B>;
 }
 
-impl<A> vec_monad<A> for ~[A] {
-    fn bind<B>(&self, f: &fn(A) -> ~[B]) {
-        let mut r = fail!();
-        for elt in self.iter() { r = r + f(*elt); }
-        //~^ WARNING unreachable expression
-        //~^^ ERROR the type of this value must be known
+impl<A> vec_monad<A> for Vec<A> {
+    fn bind<B, F>(&self, mut f: F) where F: FnMut(A) -> Vec<B> {
+        let mut r = panic!();
+        for elt in self { r = r + f(*elt); }
+        //~^ ERROR binary operation `+` cannot be applied to type `collections::vec::Vec<B>`
    }
 }
 fn main() {
     ["hi"].bind(|x| [x] );
-    //~^ ERROR type `[&'static str, .. 1]` does not implement any method in scope named `bind`
+    //~^ ERROR type `[&str; 1]` does not implement any method in scope named `bind`
 }

@@ -8,12 +8,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::cell::Cell;
-use std::task;
+#![feature(unsafe_destructor)]
 
-struct Port<T>(@T);
+use std::thread;
+use std::rc::Rc;
+
+#[derive(Debug)]
+struct Port<T>(Rc<T>);
 
 fn main() {
+    #[derive(Debug)]
     struct foo {
       _x: Port<()>,
     }
@@ -29,10 +33,11 @@ fn main() {
         }
     }
 
-    let x = Cell::new(foo(Port(@())));
+    let x = foo(Port(Rc::new(())));
 
-    do task::spawn {
-        let y = x.take();   //~ ERROR does not fulfill `Send`
-        error!(y);
-    }
+    thread::spawn(move|| {
+        //~^ ERROR `core::marker::Send` is not implemented
+        let y = x;
+        println!("{:?}", y);
+    });
 }

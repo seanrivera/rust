@@ -9,13 +9,13 @@
 // except according to those terms.
 
 struct cat {
-  priv meows : uint,
+  meows : uint,
 
   how_hungry : int,
 }
 
 impl cat {
-    pub fn speak(&mut self) { self.meows += 1u; }
+    pub fn speak(&mut self) { self.meows += 1; }
     pub fn meow_count(&mut self) -> uint { self.meows }
 }
 
@@ -27,10 +27,10 @@ fn cat(in_x: uint, in_y: int) -> cat {
 }
 
 pub fn main() {
-  let mut nyan: cat = cat(52u, 99);
-  let kitty = cat(1000u, 2);
+  let mut nyan: cat = cat(52, 99);
+  let kitty = cat(1000, 2);
   assert_eq!(nyan.how_hungry, 99);
   assert_eq!(kitty.how_hungry, 2);
   nyan.speak();
-  assert_eq!(nyan.meow_count(), 53u);
+  assert_eq!(nyan.meow_count(), 53);
 }

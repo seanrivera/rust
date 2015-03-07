@@ -8,22 +8,24 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![feature(box_syntax)]
+
 struct Foo {
-    foo: int,
+    foo: isize,
 }
 
 struct Bar {
-    bar: int,
+    bar: isize,
 }
 
 impl Bar {
-    fn make_foo (&self, i: int) -> ~Foo {
-        return ~Foo { nonexistent: self, foo: i }; //~ ERROR: no field named
+    fn make_foo (&self, i: isize) -> Box<Foo> {
+        return box Foo { nonexistent: self, foo: i }; //~ ERROR: no field named
     }
 }
 
 fn main () {
     let bar = Bar { bar: 1 };
     let foo = bar.make_foo(2);
-    println(fmt!("%d", foo.foo));
+    println!("{}", foo.foo);
 }

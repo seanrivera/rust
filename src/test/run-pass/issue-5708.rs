@@ -9,14 +9,15 @@
 // except according to those terms.
 
 /*
-# ICE when returning struct with borrowed pointer to trait
+# ICE when returning struct with reference to trait
 
-A function which takes a borrowed pointer to a trait and returns a
-struct with that borrowed pointer results in an ICE.
+A function which takes a reference to a trait and returns a
+struct with that reference results in an ICE.
 
-This does not occur with concrete types, only with borrowed pointers
+This does not occur with concrete types, only with references
 to traits.
 */
+
 
 // original
 trait Inner {
@@ -24,22 +25,22 @@ trait Inner {
 }
 
 impl Inner for int {
-    fn print(&self) { print(fmt!("Inner: %d\n", *self)); }
+    fn print(&self) { print!("Inner: {}\n", *self); }
 }
 
-struct Outer<'self> {
-    inner: &'self Inner
+struct Outer<'a> {
+    inner: &'a (Inner+'a)
 }
 
-impl<'self> Outer<'self> {
-    fn new<'r>(inner: &'r Inner) -> Outer<'r> {
+impl<'a> Outer<'a> {
+    fn new(inner: &Inner) -> Outer {
         Outer {
             inner: inner
         }
     }
 }
 
-fn main() {
+pub fn main() {
     let inner = 5;
     let outer = Outer::new(&inner as &Inner);
     outer.inner.print();
@@ -47,14 +48,16 @@ fn main() {
 
 
 // minimal
-trait MyTrait<T> { }
-
-pub struct MyContainer<'self, T> {
-    foos: ~[&'self MyTrait<T>],
+pub trait MyTrait<T> {
+    fn dummy(&self, t: T) -> T { panic!() }
 }
 
-impl<'self, T> MyContainer<'self, T> {
-    pub fn add (&mut self, foo: &'self MyTrait<T>) {
+pub struct MyContainer<'a, T> {
+    foos: Vec<&'a (MyTrait<T>+'a)> ,
+}
+
+impl<'a, T> MyContainer<'a, T> {
+    pub fn add (&mut self, foo: &'a MyTrait<T>) {
         self.foos.push(foo);
     }
 }

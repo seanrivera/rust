@@ -8,15 +8,17 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-extern mod extra;
+#![allow(unknown_features)]
+#![feature(box_syntax)]
 
-use std::task;
+use std::thread;
 
 fn f() {
-    let _a = ~0;
-    fail!();
+    let _a: Box<_> = box 0;
+    panic!();
 }
 
 pub fn main() {
-    task::spawn_unlinked(f);
+    let t = thread::spawn(f);
+    drop(t.join());
 }

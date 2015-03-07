@@ -11,14 +11,14 @@
 // ABI is cdecl by default
 
 mod rustrt {
-    use std::libc;
+    extern crate libc;
 
+    #[link(name = "rust_test_helpers")]
     extern {
-        fn rust_get_test_int() -> libc::intptr_t;
+        pub fn rust_get_test_int() -> libc::intptr_t;
     }
 }
 
-#[fixed_stack_segment] #[inline(never)]
 pub fn main() {
     unsafe {
         rustrt::rust_get_test_int();

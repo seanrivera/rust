@@ -8,17 +8,20 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![allow(unknown_features)]
+#![feature(box_syntax)]
+
 pub struct Foo {
     a: int,
 }
 
-struct Bar<'self> {
-    a: ~Option<int>,
-    b: &'self Foo,
+struct Bar<'a> {
+    a: Box<Option<int>>,
+    b: &'a Foo,
 }
 
-fn check(a: @Foo) {
-    let _ic = Bar{ b: a, a: ~None };
+fn check(a: Box<Foo>) {
+    let _ic = Bar{ b: &*a, a: box None };
 }
 
 pub fn main(){}

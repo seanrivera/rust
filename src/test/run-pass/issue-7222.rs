@@ -9,10 +9,10 @@
 // except according to those terms.
 
 pub fn main() {
-    static FOO: float = 10.0;
+    const FOO: f64 = 10.0;
 
     match 0.0 {
-        0.0 .. FOO => (),
+        0.0 ... FOO => (),
         _ => ()
     }
 }

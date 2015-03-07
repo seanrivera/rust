@@ -8,72 +8,81 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use ast::{MetaItem, item, Expr};
+use ast::{MetaItem, Item, Expr};
 use codemap::Span;
 use ext::base::ExtCtxt;
 use ext::build::AstBuilder;
 use ext::deriving::generic::*;
+use ext::deriving::generic::ty::*;
+use parse::token::InternedString;
+use ptr::P;
 
-use std::vec;
-
-pub fn expand_deriving_default(cx: @ExtCtxt,
-                            span: Span,
-                            mitem: @MetaItem,
-                            in_items: ~[@item])
-    -> ~[@item] {
+pub fn expand_deriving_default<F>(cx: &mut ExtCtxt,
+                                  span: Span,
+                                  mitem: &MetaItem,
+                                  item: &Item,
+                                  push: F) where
+    F: FnOnce(P<Item>),
+{
+    let inline = cx.meta_word(span, InternedString::new("inline"));
+    let attrs = vec!(cx.attribute(span, inline));
     let trait_def = TraitDef {
-        path: Path::new(~["std", "default", "Default"]),
-        additional_bounds: ~[],
+        span: span,
+        attributes: Vec::new(),
+        path: path_std!(cx, core::default::Default),
+        additional_bounds: Vec::new(),
         generics: LifetimeBounds::empty(),
-        methods: ~[
+        methods: vec!(
             MethodDef {
                 name: "default",
                 generics: LifetimeBounds::empty(),
                 explicit_self: None,
-                args: ~[],
-                ret_ty: Self,
-                const_nonmatching: false,
-                combine_substructure: default_substructure
-            },
-        ]
+                args: Vec::new(),
+                ret_ty: Self_,
+                attributes: attrs,
+                combine_substructure: combine_substructure(Box::new(|a, b, c| {
+                    default_substructure(a, b, c)
+                }))
+            }
+        ),
+        associated_types: Vec::new(),
     };
-    trait_def.expand(cx, span, mitem, in_items)
+    trait_def.expand(cx, mitem, item, push)
 }
 
-fn default_substructure(cx: @ExtCtxt, span: Span, substr: &Substructure) -> @Expr {
-    let default_ident = ~[
-        cx.ident_of("std"),
+fn default_substructure(cx: &mut ExtCtxt, trait_span: Span, substr: &Substructure) -> P<Expr> {
+    let default_ident = vec!(
+        cx.ident_of_std("core"),
         cx.ident_of("default"),
         cx.ident_of("Default"),
         cx.ident_of("default")
-    ];
-    let default_call = || {
-        cx.expr_call_global(span, default_ident.clone(), ~[])
-    };
+    );
+    let default_call = |span| cx.expr_call_global(span, default_ident.clone(), Vec::new());
 
     return match *substr.fields {
         StaticStruct(_, ref summary) => {
             match *summary {
-                Left(count) => {
-                    if count == 0 {
-                        cx.expr_ident(span, substr.type_ident)
+                Unnamed(ref fields) => {
+                    if fields.is_empty() {
+                        cx.expr_ident(trait_span, substr.type_ident)
                     } else {
-                        let exprs = vec::from_fn(count, |_| default_call());
-                        cx.expr_call_ident(span, substr.type_ident, exprs)
+                        let exprs = fields.iter().map(|sp| default_call(*sp)).collect();
+                        cx.expr_call_ident(trait_span, substr.type_ident, exprs)
                     }
                 }
-                Right(ref fields) => {
-                    let default_fields = do fields.map |ident| {
-                        cx.field_imm(span, *ident, default_call())
-                    };
-                    cx.expr_struct_ident(span, substr.type_ident, default_fields)
+                Named(ref fields) => {
+                    let default_fields = fields.iter().map(|&(ident, span)| {
+                        cx.field_imm(span, ident, default_call(span))
+                    }).collect();
+                    cx.expr_struct_ident(trait_span, substr.type_ident, default_fields)
                 }
             }
         }
-        StaticEnum(*) => {
-            cx.span_fatal(span, "`Default` cannot be derived for enums, \
-                                 only structs")
+        StaticEnum(..) => {
+            cx.span_err(trait_span, "`Default` cannot be derived for enums, only structs");
+            // let compilation continue
+            cx.expr_usize(trait_span, 0)
         }
-        _ => cx.bug("Non-static method in `deriving(Default)`")
+        _ => cx.span_bug(trait_span, "Non-static method in `derive(Default)`")
     };
 }

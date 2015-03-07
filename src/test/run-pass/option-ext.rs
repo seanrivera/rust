@@ -9,10 +9,10 @@
 // except according to those terms.
 
 pub fn main() {
-    let thing = ~"{{ f }}";
+    let thing = "{{ f }}";
     let f = thing.find_str("{{");
 
     if f.is_none() {
-        println("None!");
+        println!("None!");
     }
 }

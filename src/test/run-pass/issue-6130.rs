@@ -8,13 +8,13 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[deny(type_limits)];
+#![deny(type_limits)]
 
-fn main() {
+pub fn main() {
     let i: uint = 0;
-    assert!(i <= 0xFFFF_FFFF_u);
+    assert!(i <= 0xFFFF_FFFF);
 
     let i: int = 0;
-    assert!(i >= -0x8000_0000_i);
-    assert!(i <= 0x7FFF_FFFF_i);
+    assert!(i >= -0x8000_0000);
+    assert!(i <= 0x7FFF_FFFF);
 }

@@ -1,4 +1,4 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2013-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,30 +8,38 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// xfail-test
+#![feature(unsafe_destructor)]
 
 trait X {
-    fn call(&self);
+    fn call<T: std::fmt::Debug>(&self, x: &T);
+    fn default_method<T: std::fmt::Debug>(&self, x: &T) {
+        println!("X::default_method {:?}", x);
+    }
 }
 
-struct Y;
+#[derive(Debug)]
+struct Y(int);
 
+#[derive(Debug)]
 struct Z<T> {
     x: T
 }
 
 impl X for Y {
-    fn call(&self) {
+    fn call<T: std::fmt::Debug>(&self, x: &T) {
+        println!("X::call {:?} {:?}", self, x);
     }
 }
 
-impl<T: X> Drop for Z<T> {
+#[unsafe_destructor]
+impl<T: X + std::fmt::Debug> Drop for Z<T> {
     fn drop(&mut self) {
-        self.x.call(); // Adding this statement causes an ICE.
+        // These statements used to cause an ICE.
+        self.x.call(self);
+        self.x.default_method(self);
     }
 }
 
-fn main() {
-    let y = Y;
-    let _z = Z{x: y};
+pub fn main() {
+    let _z = Z {x: Y(42)};
 }

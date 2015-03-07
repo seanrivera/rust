@@ -7,15 +7,16 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
+
 struct A { x: uint }
 
 impl Drop for A {
     fn drop(&mut self) {}
 }
 
-fn main() {
+pub fn main() {
     let a = A { x: 0 };
 
     let A { x: ref x } = a;
-    info!("%?", x)
+    println!("{}", x)
 }

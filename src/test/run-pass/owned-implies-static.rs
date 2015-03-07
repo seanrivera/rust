@@ -10,6 +10,6 @@
 
 fn f<T: 'static>(_x: T) {}
 
-fn main() {
-    f(~5);
+pub fn main() {
+    f(Box::new(5));
 }

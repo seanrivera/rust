@@ -8,19 +8,24 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-struct closure_box<'self> {
-    cl: &'self fn(),
+#![allow(unknown_features)]
+#![feature(box_syntax)]
+#![feature(unboxed_closures)]
+
+struct closure_box<'a> {
+    cl: Box<FnMut() + 'a>,
 }
 
-fn box_it<'r>(x: &'r fn()) -> closure_box<'r> {
+fn box_it<'a>(x: Box<FnMut() + 'a>) -> closure_box<'a> {
     closure_box {cl: x}
 }
 
-fn call_static_closure(cl: closure_box<'static>) {
-    (cl.cl)();
+fn call_static_closure(mut cl: closure_box<'static>) {
+    cl.cl.call_mut(())
 }
 
 pub fn main() {
-    let cl_box = box_it(|| info!("Hello, world!"));
+    // FIXME (#22405): Replace `Box::new` with `box` here when/if possible.
+    let cl_box = box_it(Box::new(|| println!("Hello, world!")));
     call_static_closure(cl_box);
 }

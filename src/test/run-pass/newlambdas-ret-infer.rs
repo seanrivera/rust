@@ -11,9 +11,8 @@
 // Test that the lambda kind is inferred correctly as a return
 // expression
 
-fn shared() -> @fn() { return || (); }
-
-fn unique() -> ~fn() { return || (); }
+// FIXME (#22405): Replace `Box::new` with `box` here when/if possible.
+fn unique() -> Box<FnMut()+'static> { return Box::new(|| ()); }
 
 pub fn main() {
 }

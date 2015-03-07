@@ -8,13 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[deriving(Eq)]
+#[derive(PartialEq, Debug)]
 struct Point { x : int }
 
 pub fn main() {
     assert_eq!(14,14);
-    assert_eq!(~"abc",~"abc");
-    assert_eq!(~Point{x:34},~Point{x:34});
+    assert_eq!("abc".to_string(),"abc".to_string());
+    assert_eq!(Box::new(Point{x:34}),Box::new(Point{x:34}));
     assert_eq!(&Point{x:34},&Point{x:34});
-    assert_eq!(@Point{x:34},@Point{x:34});
 }

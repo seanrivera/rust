@@ -8,10 +8,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![feature(intrinsics)]
+
 mod rusti {
-    #[abi = "rust-intrinsic"]
     extern "rust-intrinsic" {
-        fn uninit<T>() -> T;
+        pub fn uninit<T>() -> T;
     }
 }
 pub fn main() {

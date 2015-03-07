@@ -15,39 +15,33 @@
 
 // This also serves as a pipes test, because Arcs are implemented with pipes.
 
-extern mod extra;
+// no-pretty-expanded FIXME #15189
+// ignore-lexer-test FIXME #15679
 
-use extra::arc;
-use extra::future;
-use extra::time;
-use std::cell::Cell;
-use std::os;
-use std::uint;
+use std::env;
+use std::sync::{Arc, Future, Mutex, Condvar};
+use std::time::Duration;
 
 // A poor man's pipe.
-type pipe = arc::MutexArc<~[uint]>;
+type pipe = Arc<(Mutex<Vec<uint>>, Condvar)>;
 
 fn send(p: &pipe, msg: uint) {
-    unsafe {
-        do p.access_cond |state, cond| {
-            state.push(msg);
-            cond.signal();
-        }
-    }
+    let &(ref lock, ref cond) = &**p;
+    let mut arr = lock.lock().unwrap();
+    arr.push(msg);
+    cond.notify_one();
 }
 fn recv(p: &pipe) -> uint {
-    unsafe {
-        do p.access_cond |state, cond| {
-            while state.is_empty() {
-                cond.wait();
-            }
-            state.pop()
-        }
+    let &(ref lock, ref cond) = &**p;
+    let mut arr = lock.lock().unwrap();
+    while arr.is_empty() {
+        arr = cond.wait(arr).unwrap();
     }
+    arr.pop().unwrap()
 }
 
 fn init() -> (pipe,pipe) {
-    let m = arc::MutexArc::new(~[]);
+    let m = Arc::new((Mutex::new(Vec::new()), Condvar::new()));
     ((&m).clone(), m)
 }
 
@@ -56,10 +50,10 @@ fn thread_ring(i: uint, count: uint, num_chan: pipe, num_port: pipe) {
     let mut num_chan = Some(num_chan);
     let mut num_port = Some(num_port);
     // Send/Receive lots of messages.
-    for j in range(0u, count) {
-        //error!("task %?, iter %?", i, j);
-        let num_chan2 = num_chan.take_unwrap();
-        let num_port2 = num_port.take_unwrap();
+    for j in 0..count {
+        //println!("task %?, iter %?", i, j);
+        let num_chan2 = num_chan.take().unwrap();
+        let num_port2 = num_port.take().unwrap();
         send(&num_chan2, i * j);
         num_chan = Some(num_chan2);
         let _n = recv(&num_port2);
@@ -69,56 +63,52 @@ fn thread_ring(i: uint, count: uint, num_chan: pipe, num_port: pipe) {
 }
 
 fn main() {
-    let args = os::args();
-    let args = if os::getenv("RUST_BENCH").is_some() {
-        ~[~"", ~"100", ~"10000"]
-    } else if args.len() <= 1u {
-        ~[~"", ~"10", ~"100"]
+    let args = env::args();
+    let args = if env::var_os("RUST_BENCH").is_some() {
+        vec!("".to_string(), "100".to_string(), "10000".to_string())
+    } else if args.len() <= 1 {
+        vec!("".to_string(), "10".to_string(), "100".to_string())
     } else {
-        args.clone()
+        args.collect()
     };
 
-    let num_tasks = from_str::<uint>(args[1]).unwrap();
-    let msg_per_task = from_str::<uint>(args[2]).unwrap();
+    let num_tasks = args[1].parse::<uint>().unwrap();
+    let msg_per_task = args[2].parse::<uint>().unwrap();
 
     let (num_chan, num_port) = init();
-    let num_chan = Cell::new(num_chan);
 
-    let start = time::precise_time_s();
+    let mut p = Some((num_chan, num_port));
+    let dur = Duration::span(|| {
+        let (mut num_chan, num_port) = p.take().unwrap();
 
-    // create the ring
-    let mut futures = ~[];
+        // create the ring
+        let mut futures = Vec::new();
 
-    for i in range(1u, num_tasks) {
-        //error!("spawning %?", i);
-        let (new_chan, num_port) = init();
-        let num_chan2 = Cell::new(num_chan.take());
-        let num_port = Cell::new(num_port);
-        let new_future = do future::spawn() {
-            let num_chan = num_chan2.take();
-            let num_port1 = num_port.take();
-            thread_ring(i, msg_per_task, num_chan, num_port1)
+        for i in 1..num_tasks {
+            //println!("spawning %?", i);
+            let (new_chan, num_port) = init();
+            let num_chan_2 = num_chan.clone();
+            let new_future = Future::spawn(move|| {
+                thread_ring(i, msg_per_task, num_chan_2, num_port)
+            });
+            futures.push(new_future);
+            num_chan = new_chan;
         };
-        futures.push(new_future);
-        num_chan.put_back(new_chan);
-    };
 
-    // do our iteration
-    thread_ring(0, msg_per_task, num_chan.take(), num_port);
+        // do our iteration
+        thread_ring(0, msg_per_task, num_chan, num_port);
 
-    // synchronize
-    for f in futures.mut_iter() {
-        f.get()
-    }
-
-    let stop = time::precise_time_s();
+        // synchronize
+        for f in &mut futures {
+            f.get()
+        }
+    });
 
     // all done, report stats.
     let num_msgs = num_tasks * msg_per_task;
-    let elapsed = (stop - start);
-    let rate = (num_msgs as float) / elapsed;
+    let rate = (num_msgs as f64) / (dur.num_milliseconds() as f64);
 
-    printfln!("Sent %? messages in %? seconds", num_msgs, elapsed);
-    printfln!("  %? messages / second", rate);
-    printfln!("  %? μs / message", 1000000. / rate);
+    println!("Sent {} messages in {} ms", num_msgs, dur.num_milliseconds());
+    println!("  {} messages / second", rate / 1000.0);
+    println!("  {} μs / message", 1000000. / rate / 1000.0);
 }

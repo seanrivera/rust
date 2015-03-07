@@ -8,53 +8,30 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 trait Foo {
     fn borrowed(&self);
     fn borrowed_mut(&mut self);
 
-    fn managed(@self);
-    fn managed_mut(@mut self);
-
-    fn owned(~self);
+    fn owned(self: Box<Self>);
 }
 
 fn borrowed_receiver(x: &Foo) {
     x.borrowed();
     x.borrowed_mut(); // See [1]
-    x.managed(); //~ ERROR does not implement any method
-    x.managed_mut(); //~ ERROR does not implement any method
     x.owned(); //~ ERROR does not implement any method
 }
 
 fn borrowed_mut_receiver(x: &mut Foo) {
     x.borrowed();
     x.borrowed_mut();
-    x.managed(); //~ ERROR does not implement any method
-    x.managed_mut(); //~ ERROR does not implement any method
     x.owned(); //~ ERROR does not implement any method
 }
 
-fn managed_receiver(x: @Foo) {
-    x.borrowed();
-    x.borrowed_mut(); // See [1]
-    x.managed();
-    x.managed_mut();  //~ ERROR does not implement any method
-    x.owned(); //~ ERROR does not implement any method
-}
-
-fn managed_mut_receiver(x: @mut Foo) {
-    x.borrowed();
-    x.borrowed_mut();
-    x.managed();  //~ ERROR does not implement any method
-    x.managed_mut();
-    x.owned(); //~ ERROR does not implement any method
-}
-
-fn owned_receiver(x: ~Foo) {
+fn owned_receiver(x: Box<Foo>) {
     x.borrowed();
     x.borrowed_mut(); // See [1]
     x.managed();  //~ ERROR does not implement any method
-    x.managed_mut();  //~ ERROR does not implement any method
     x.owned();
 }
 

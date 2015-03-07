@@ -8,24 +8,32 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[crate_type = "lib"];
+#![crate_type = "lib"]
 
 // used by the rpass test
 
+#[derive(Copy)]
 pub struct Struct;
 
+#[derive(Copy)]
 pub enum Unit {
-    Unit,
+    UnitVariant,
     Argument(Struct)
 }
 
+#[derive(Copy)]
+pub struct TupleStruct(pub uint, pub &'static str);
+
 // used by the cfail test
 
+#[derive(Copy)]
 pub struct StructWithFields {
     foo: int,
 }
 
+#[derive(Copy)]
 pub enum EnumWithVariants {
     EnumVariant,
     EnumVariantArg(int)
 }
+

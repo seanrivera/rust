@@ -8,35 +8,31 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-extern mod extra;
+#![allow(unknown_features)]
+#![feature(box_syntax)]
 
-/**
- * A function that returns a hash of a value
- *
- * The hash should concentrate entropy in the lower bits.
- */
-type HashFn<K> = ~fn(K) -> uint;
-type EqFn<K> = ~fn(K, K) -> bool;
-
+#[derive(Copy)]
 struct LM { resize_at: uint, size: uint }
 
 enum HashMap<K,V> {
-    HashMap_(LM)
+    HashMap_(LM, Vec<(K,V)>)
 }
 
 fn linear_map<K,V>() -> HashMap<K,V> {
-    HashMap_(LM{
+    HashMap::HashMap_(LM{
         resize_at: 32,
-        size: 0})
+        size: 0}, Vec::new())
 }
 
 impl<K,V> HashMap<K,V> {
     pub fn len(&mut self) -> uint {
-        self.size
+        match *self {
+            HashMap::HashMap_(ref l, _) => l.size
+        }
     }
 }
 
 pub fn main() {
-    let mut m = ~linear_map::<(),()>();
+    let mut m: Box<_> = box linear_map::<(),()>();
     assert_eq!(m.len(), 0);
 }

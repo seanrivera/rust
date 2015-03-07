@@ -1,4 +1,4 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -14,175 +14,153 @@
 //! the processes `argc` and `argv` arguments to be stored
 //! in a globally-accessible location for use by the `os` module.
 //!
-//! Only valid to call on linux. Mac and Windows use syscalls to
+//! Only valid to call on Linux. Mac and Windows use syscalls to
 //! discover the command line arguments.
 //!
 //! FIXME #7756: Would be nice for this to not exist.
-//! FIXME #7756: This has a lot of C glue for lack of globals.
 
-use option::Option;
+use core::prelude::*;
+use vec::Vec;
 
 /// One-time global initialization.
-pub unsafe fn init(argc: int, argv: **u8) {
-    imp::init(argc, argv)
-}
+pub unsafe fn init(argc: int, argv: *const *const u8) { imp::init(argc, argv) }
 
 /// One-time global cleanup.
-pub fn cleanup() {
-    imp::cleanup()
-}
+pub unsafe fn cleanup() { imp::cleanup() }
 
 /// Take the global arguments from global storage.
-pub fn take() -> Option<~[~str]> {
-    imp::take()
-}
+pub fn take() -> Option<Vec<Vec<u8>>> { imp::take() }
 
 /// Give the global arguments to global storage.
 ///
 /// It is an error if the arguments already exist.
-pub fn put(args: ~[~str]) {
-    imp::put(args)
-}
+pub fn put(args: Vec<Vec<u8>>) { imp::put(args) }
 
 /// Make a clone of the global arguments.
-pub fn clone() -> Option<~[~str]> {
-    imp::clone()
-}
+pub fn clone() -> Option<Vec<Vec<u8>>> { imp::clone() }
 
-#[cfg(target_os = "linux")]
-#[cfg(target_os = "android")]
-#[cfg(target_os = "freebsd")]
+#[cfg(any(target_os = "linux",
+          target_os = "android",
+          target_os = "freebsd",
+          target_os = "dragonfly",
+          target_os = "bitrig",
+          target_os = "openbsd"))]
 mod imp {
-    use libc;
-    use option::{Option, Some, None};
-    use iter::Iterator;
-    use str;
-    use unstable::finally::Finally;
-    use util;
-    use vec;
+    use prelude::v1::*;
 
-    pub unsafe fn init(argc: int, argv: **u8) {
+    use libc;
+    use mem;
+    use ffi::CStr;
+
+    use sync::{StaticMutex, MUTEX_INIT};
+
+    static mut GLOBAL_ARGS_PTR: uint = 0;
+    static LOCK: StaticMutex = MUTEX_INIT;
+
+    pub unsafe fn init(argc: int, argv: *const *const u8) {
         let args = load_argc_and_argv(argc, argv);
         put(args);
     }
 
-    pub fn cleanup() {
-        rtassert!(take().is_some());
+    pub unsafe fn cleanup() {
+        take();
+        LOCK.destroy();
     }
 
-    pub fn take() -> Option<~[~str]> {
-        with_lock(|| unsafe {
+    pub fn take() -> Option<Vec<Vec<u8>>> {
+        let _guard = LOCK.lock();
+        unsafe {
             let ptr = get_global_ptr();
-            let val = util::replace(&mut *ptr, None);
-            val.map(|s: &~~[~str]| (**s).clone())
-        })
+            let val = mem::replace(&mut *ptr, None);
+            val.as_ref().map(|s: &Box<Vec<Vec<u8>>>| (**s).clone())
+        }
     }
 
-    pub fn put(args: ~[~str]) {
-        with_lock(|| unsafe {
+    pub fn put(args: Vec<Vec<u8>>) {
+        let _guard = LOCK.lock();
+        unsafe {
             let ptr = get_global_ptr();
             rtassert!((*ptr).is_none());
-            (*ptr) = Some(~args.clone());
-        })
+            (*ptr) = Some(box args.clone());
+        }
     }
 
-    pub fn clone() -> Option<~[~str]> {
-        with_lock(|| unsafe {
+    pub fn clone() -> Option<Vec<Vec<u8>>> {
+        let _guard = LOCK.lock();
+        unsafe {
             let ptr = get_global_ptr();
-            (*ptr).map(|s: &~~[~str]| (**s).clone())
-        })
-    }
-
-    fn with_lock<T>(f: &fn() -> T) -> T {
-        do (|| {
-            unsafe {
-                rust_take_global_args_lock();
-                f()
-            }
-        }).finally {
-            unsafe {
-                rust_drop_global_args_lock();
-            }
+            (*ptr).as_ref().map(|s: &Box<Vec<Vec<u8>>>| (**s).clone())
         }
     }
 
-    fn get_global_ptr() -> *mut Option<~~[~str]> {
-        unsafe { rust_get_global_args_ptr() }
+    fn get_global_ptr() -> *mut Option<Box<Vec<Vec<u8>>>> {
+        unsafe { mem::transmute(&GLOBAL_ARGS_PTR) }
     }
 
-    // Copied from `os`.
-    unsafe fn load_argc_and_argv(argc: int, argv: **u8) -> ~[~str] {
-        do vec::from_fn(argc as uint) |i| {
-            str::raw::from_c_str(*(argv as **libc::c_char).offset(i as int))
-        }
+    unsafe fn load_argc_and_argv(argc: isize,
+                                 argv: *const *const u8) -> Vec<Vec<u8>> {
+        let argv = argv as *const *const libc::c_char;
+        (0..argc).map(|i| {
+            CStr::from_ptr(*argv.offset(i)).to_bytes().to_vec()
+        }).collect()
     }
-
-    #[cfg(stage0)]
-    mod macro_hack {
-    #[macro_escape];
-    macro_rules! externfn(
-        (fn $name:ident () $(-> $ret_ty:ty),*) => (
-            extern {
-                fn $name() $(-> $ret_ty),*;
-            }
-        )
-    )
-    }
-
-    externfn!(fn rust_take_global_args_lock())
-    externfn!(fn rust_drop_global_args_lock())
-    externfn!(fn rust_get_global_args_ptr() -> *mut Option<~~[~str]>)
 
     #[cfg(test)]
     mod tests {
-        use option::{Some, None};
+        use prelude::v1::*;
+        use finally::Finally;
+
         use super::*;
-        use unstable::finally::Finally;
 
         #[test]
         fn smoke_test() {
             // Preserve the actual global state.
             let saved_value = take();
 
-            let expected = ~[~"happy", ~"today?"];
+            let expected = vec![
+                b"happy".to_vec(),
+                b"today?".to_vec(),
+            ];
 
             put(expected.clone());
             assert!(clone() == Some(expected.clone()));
             assert!(take() == Some(expected.clone()));
             assert!(take() == None);
 
-            do (|| {
-            }).finally {
+            (|| {
+            }).finally(|| {
                 // Restore the actual global state.
                 match saved_value {
                     Some(ref args) => put(args.clone()),
                     None => ()
                 }
-            }
+            })
         }
     }
 }
 
-#[cfg(target_os = "macos")]
-#[cfg(target_os = "win32")]
+#[cfg(any(target_os = "macos",
+          target_os = "ios",
+          target_os = "windows"))]
 mod imp {
-    use option::Option;
+    use core::prelude::*;
+    use vec::Vec;
 
-    pub unsafe fn init(_argc: int, _argv: **u8) {
+    pub unsafe fn init(_argc: int, _argv: *const *const u8) {
     }
 
     pub fn cleanup() {
     }
 
-    pub fn take() -> Option<~[~str]> {
-        fail!()
+    pub fn take() -> Option<Vec<Vec<u8>>> {
+        panic!()
     }
 
-    pub fn put(_args: ~[~str]) {
-        fail!()
+    pub fn put(_args: Vec<Vec<u8>>) {
+        panic!()
     }
 
-    pub fn clone() -> Option<~[~str]> {
-        fail!()
+    pub fn clone() -> Option<Vec<Vec<u8>>> {
+        panic!()
     }
 }

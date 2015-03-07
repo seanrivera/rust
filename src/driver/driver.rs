@@ -8,22 +8,13 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[cfg(rustpkg)]
-extern mod this(name = "rustpkg");
+#![cfg_attr(rustc, feature(rustc_private))]
+#![cfg_attr(rustdoc, feature(rustdoc))]
 
 #[cfg(rustdoc)]
-extern mod this(name = "rustdoc");
-
-#[cfg(rusti)]
-extern mod this(name = "rusti");
-
-#[cfg(rust)]
-extern mod this(name = "rust");
+extern crate "rustdoc" as this;
 
 #[cfg(rustc)]
-extern mod this(name = "rustc");
-
-#[cfg(rustdoc_ng)]
-extern mod this(name = "rustdoc_ng");
+extern crate "rustc_driver" as this;
 
 fn main() { this::main() }

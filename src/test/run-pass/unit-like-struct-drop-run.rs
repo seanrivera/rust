@@ -9,21 +9,23 @@
 // except according to those terms.
 
 // Make sure the destructor is run for unit-like structs.
-// xfail-fast
 
-use std::task;
+use std::boxed::BoxAny;
+use std::thread;
 
 struct Foo;
 
 impl Drop for Foo {
     fn drop(&mut self) {
-        fail!("This failure should happen.");
+        panic!("This panic should happen.");
     }
 }
 
-fn main() {
-    let x = do task::try {
+pub fn main() {
+    let x = thread::spawn(move|| {
         let _b = Foo;
-    };
-    assert_eq!(x, Err(()));
+    }).join();
+
+    let s = x.err().unwrap().downcast::<&'static str>().ok().unwrap();
+    assert_eq!(&**s, "This panic should happen.");
 }

@@ -16,12 +16,12 @@ trait A {
 }
 
 struct E {
- f: int
+ f: isize
 }
 
 impl A for E {
   // n.b. The error message is awful -- see #3404
-  fn b<F:Clone,G>(&self, _x: G) -> G { fail!() } //~ ERROR method `b` has an incompatible type
+  fn b<F:Clone,G>(&self, _x: G) -> G { panic!() } //~ ERROR method `b` has an incompatible type
 }
 
 fn main() {}

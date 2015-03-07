@@ -16,10 +16,10 @@
 
 fn require_send<T: Send>(_: T){}
 
-trait TragicallySelfIsNotSend: Send {
+trait TragicallySelfIsNotSend: Send + Sized {
     fn x(self) {
         require_send(self);
     }
 }
 
-fn main(){}
+pub fn main(){}

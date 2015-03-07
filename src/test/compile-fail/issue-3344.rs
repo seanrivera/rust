@@ -8,9 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-struct thing(uint);
-impl Ord for thing { //~ ERROR missing method `lt`
-    fn le(&self, other: &thing) -> bool { **self < **other }
-    fn ge(&self, other: &thing) -> bool { **self < **other }
+#[derive(PartialEq)]
+struct thing(usize);
+impl PartialOrd for thing { //~ ERROR not all trait items implemented, missing: `partial_cmp`
+    fn le(&self, other: &thing) -> bool { true }
+    fn ge(&self, other: &thing) -> bool { true }
 }
 fn main() {}

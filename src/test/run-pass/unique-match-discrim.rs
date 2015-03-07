@@ -11,7 +11,7 @@
 // Issue #961
 
 fn altsimple() {
-    match ~true {
+    match Box::new(true) {
       _ => { }
     }
 }

@@ -1,4 +1,4 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,26 +8,60 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// xfail-fast Does not work with main in a submodule
+#![feature(intrinsics, main)]
 
 mod rusti {
-    #[abi = "rust-intrinsic"]
     extern "rust-intrinsic" {
         pub fn pref_align_of<T>() -> uint;
         pub fn min_align_of<T>() -> uint;
     }
 }
 
-#[cfg(target_os = "linux")]
-#[cfg(target_os = "macos")]
-#[cfg(target_os = "freebsd")]
+#[cfg(any(target_os = "linux",
+          target_os = "macos",
+          target_os = "freebsd",
+          target_os = "dragonfly",
+          target_os = "openbsd"))]
 mod m {
     #[main]
     #[cfg(target_arch = "x86")]
     pub fn main() {
         unsafe {
-            assert_eq!(::rusti::pref_align_of::<u64>(), 8u);
-            assert_eq!(::rusti::min_align_of::<u64>(), 4u);
+            assert_eq!(::rusti::pref_align_of::<u64>(), 8);
+            assert_eq!(::rusti::min_align_of::<u64>(), 4);
+        }
+    }
+
+    #[main]
+    #[cfg(any(target_arch = "x86_64", target_arch = "arm", target_arch = "aarch64"))]
+    pub fn main() {
+        unsafe {
+            assert_eq!(::rusti::pref_align_of::<u64>(), 8);
+            assert_eq!(::rusti::min_align_of::<u64>(), 8);
+        }
+    }
+}
+
+#[cfg(target_os = "bitrig")]
+mod m {
+    #[main]
+    #[cfg(target_arch = "x86_64")]
+    pub fn main() {
+        unsafe {
+            assert_eq!(::rusti::pref_align_of::<u64>(), 8);
+            assert_eq!(::rusti::min_align_of::<u64>(), 8);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod m {
+    #[main]
+    #[cfg(target_arch = "x86")]
+    pub fn main() {
+        unsafe {
+            assert_eq!(::rusti::pref_align_of::<u64>(), 8);
+            assert_eq!(::rusti::min_align_of::<u64>(), 8);
         }
     }
 
@@ -35,20 +69,8 @@ mod m {
     #[cfg(target_arch = "x86_64")]
     pub fn main() {
         unsafe {
-            assert_eq!(::rusti::pref_align_of::<u64>(), 8u);
-            assert_eq!(::rusti::min_align_of::<u64>(), 8u);
-        }
-    }
-}
-
-#[cfg(target_os = "win32")]
-mod m {
-    #[main]
-    #[cfg(target_arch = "x86")]
-    pub fn main() {
-        unsafe {
-            assert_eq!(::rusti::pref_align_of::<u64>(), 8u);
-            assert_eq!(::rusti::min_align_of::<u64>(), 8u);
+            assert_eq!(::rusti::pref_align_of::<u64>(), 8);
+            assert_eq!(::rusti::min_align_of::<u64>(), 8);
         }
     }
 }
@@ -56,11 +78,11 @@ mod m {
 #[cfg(target_os = "android")]
 mod m {
     #[main]
-    #[cfg(target_arch = "arm")]
+    #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
     pub fn main() {
         unsafe {
-            assert_eq!(::rusti::pref_align_of::<u64>(), 8u);
-            assert_eq!(::rusti::min_align_of::<u64>(), 8u);
+            assert_eq!(::rusti::pref_align_of::<u64>(), 8);
+            assert_eq!(::rusti::min_align_of::<u64>(), 8);
         }
     }
 }

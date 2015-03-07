@@ -11,18 +11,18 @@
 // Tests the ability for the Self type in default methods to use
 // capabilities granted by builtin kinds as supertraits.
 
-use std::comm;
+use std::sync::mpsc::{Sender, channel};
 
-trait Foo : Send {
-    fn foo(self, chan: comm::Chan<Self>) {
-        chan.send(self);
+trait Foo : Send + Sized + 'static {
+    fn foo(self, tx: Sender<Self>) {
+        tx.send(self).unwrap();
     }
 }
 
-impl <T: Send> Foo for T { }
+impl <T: Send + 'static> Foo for T { }
 
-fn main() {
-    let (p,c) = comm::stream();
-    1193182.foo(c);
-    assert!(p.recv() == 1193182);
+pub fn main() {
+    let (tx, rx) = channel();
+    1193182.foo(tx);
+    assert!(rx.recv().unwrap() == 1193182);
 }

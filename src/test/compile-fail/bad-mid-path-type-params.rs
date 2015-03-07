@@ -1,4 +1,14 @@
-#[no_std];
+// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
+// file at the top-level directory of this distribution and at
+// http://rust-lang.org/COPYRIGHT.
+//
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
+
+// ignore-tidy-linelength
 
 struct S<T> {
     contents: T,
@@ -17,21 +27,29 @@ trait Trait<T> {
 }
 
 struct S2 {
-    contents: int,
+    contents: isize,
 }
 
-impl Trait<int> for S2 {
-    fn new<U>(x: int, _: U) -> S2 {
+impl Trait<isize> for S2 {
+    fn new<U>(x: isize, _: U) -> S2 {
         S2 {
             contents: x,
         }
     }
 }
 
-fn main() {
-    let _ = S::new::<int,float>(1, 1.0);    //~ ERROR the impl referenced by this path has 1 type parameter, but 0 type parameters were supplied
-    let _ = S::<'self,int>::new::<float>(1, 1.0);  //~ ERROR this impl has no lifetime parameter
-    let _: S2 = Trait::new::<int,float>(1, 1.0);    //~ ERROR the trait referenced by this path has 1 type parameter, but 0 type parameters were supplied
-    let _: S2 = Trait::<'self,int>::new::<float>(1, 1.0);   //~ ERROR this trait has no lifetime parameter
+fn foo<'a>() {
+    let _ = S::new::<isize,f64>(1, 1.0);
+    //~^ ERROR too many type parameters provided
+
+    let _ = S::<'a,isize>::new::<f64>(1, 1.0);
+    //~^ ERROR wrong number of lifetime parameters
+
+    let _: S2 = Trait::new::<isize,f64>(1, 1.0);
+    //~^ ERROR too many type parameters provided
+
+    let _: S2 = Trait::<'a,isize>::new::<f64>(1, 1.0);
+    //~^ ERROR too many lifetime parameters provided
 }
 
+fn main() {}

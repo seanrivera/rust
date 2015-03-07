@@ -8,24 +8,25 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+// FIXME (#22405): Replace `Box::new` with `box` here when/if possible.
+
 fn ignore<T>(t: T) {}
 
-fn nested<'x>(x: &'x int) {
+fn nested<'x>(x: &'x isize) {
     let y = 3;
-    let mut ay = &y; //~ ERROR cannot infer an appropriate lifetime
+    let mut ay = &y;
 
-    ignore::<&fn<'z>(&'z int)>(|z| {
-        ay = x;
+    ignore::<Box<for<'z> FnMut(&'z isize)>>(Box::new(|z| {
+        ay = x; //~ ERROR cannot infer
         ay = &y;
         ay = z;
-    });
+    }));
 
-    ignore::<&fn<'z>(&'z int) -> &'z int>(|z| {
-        if false { return x; }  //~ ERROR mismatched types
-        //~^ ERROR cannot infer an appropriate lifetime
+    ignore::< Box<for<'z> FnMut(&'z isize) -> &'z isize>>(Box::new(|z| {
+        if false { return x; }  //~ ERROR cannot infer an appropriate lifetime for automatic
         if false { return ay; }
         return z;
-    });
+    }));
 }
 
 fn main() {}

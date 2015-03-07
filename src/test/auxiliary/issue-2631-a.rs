@@ -8,16 +8,17 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[link(name = "req")];
-#[crate_type = "lib"];
+#![crate_name="req"]
+#![crate_type = "lib"]
 
-extern mod extra;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 
-use std::hashmap::HashMap;
-
-pub type header_map = HashMap<~str, @mut ~[@~str]>;
+pub type header_map = HashMap<String, Rc<RefCell<Vec<Rc<String>>>>>;
 
 // the unused ty param is necessary so this gets monomorphized
 pub fn request<T>(req: &header_map) {
-  let _x = (*((**req.get(&~"METHOD")).clone())[0u]).clone();
+  let data = req["METHOD".to_string()].clone();
+  let _x = data.borrow().clone()[0].clone();
 }

@@ -10,15 +10,21 @@
 
 // Make sure #1399 stays fixed
 
-struct A { a: ~int }
+#![allow(unknown_features)]
+#![feature(box_syntax)]
+#![feature(unboxed_closures)]
 
-fn foo() -> @fn() -> int {
-    let k = ~22;
+struct A { a: Box<isize> }
+
+fn foo() -> Box<FnMut() -> isize + 'static> {
+    let k: Box<_> = box 22;
     let _u = A {a: k.clone()};
-    let result: @fn() -> int = || 22;
-    result
+    // FIXME(#16640) suffix in `22` suffix shouldn't be necessary
+    let result  = || 22;
+    // FIXME (#22405): Replace `Box::new` with `box` here when/if possible.
+    Box::new(result)
 }
 
 pub fn main() {
-    assert_eq!(foo()(), 22);
+    assert_eq!(foo().call_mut(()), 22);
 }

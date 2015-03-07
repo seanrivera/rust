@@ -8,29 +8,31 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[link(name = "issue_2526",
-       vers = "0.2",
-       uuid = "54cc1bc9-02b8-447c-a227-75ebc923bc29")];
-#[crate_type = "lib"];
+#![crate_name="issue_2526"]
+#![crate_type = "lib"]
 
-extern mod extra;
+#![feature(unsafe_destructor)]
+
+use std::marker;
 
 struct arc_destruct<T> {
-  _data: int,
+    _data: int,
+    _marker: marker::PhantomData<T>
 }
 
 #[unsafe_destructor]
-impl<T:Freeze> Drop for arc_destruct<T> {
+impl<T: Sync> Drop for arc_destruct<T> {
     fn drop(&mut self) {}
 }
 
-fn arc_destruct<T:Freeze>(data: int) -> arc_destruct<T> {
+fn arc_destruct<T: Sync>(data: int) -> arc_destruct<T> {
     arc_destruct {
-        _data: data
+        _data: data,
+        _marker: marker::PhantomData
     }
 }
 
-fn arc<T:Freeze>(_data: T) -> arc_destruct<T> {
+fn arc<T: Sync>(_data: T) -> arc_destruct<T> {
     arc_destruct(0)
 }
 

@@ -1,4 +1,4 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,13 +8,13 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// xfail-fast
 
 use std::cmp;
 
+#[derive(Copy, Debug)]
 enum cat_type { tuxedo, tabby, tortoiseshell }
 
-impl cmp::Eq for cat_type {
+impl cmp::PartialEq for cat_type {
     fn eq(&self, other: &cat_type) -> bool {
         ((*self) as uint) == ((*other) as uint)
     }
@@ -27,7 +27,7 @@ impl cmp::Eq for cat_type {
 // ok: T should be in scope when resolving the trait ref for map
 struct cat<T> {
     // Yes, you can have negative meows
-    priv meows : int,
+    meows : int,
 
     how_hungry : int,
     name : T,
@@ -38,44 +38,32 @@ impl<T> cat<T> {
 
     pub fn eat(&mut self) -> bool {
         if self.how_hungry > 0 {
-            error!("OM NOM NOM");
+            println!("OM NOM NOM");
             self.how_hungry -= 2;
             return true;
         } else {
-            error!("Not hungry!");
+            println!("Not hungry!");
             return false;
         }
     }
-}
-
-impl<T> Container for cat<T> {
     fn len(&self) -> uint { self.meows as uint }
     fn is_empty(&self) -> bool { self.meows == 0 }
-}
-
-impl<T> Mutable for cat<T> {
     fn clear(&mut self) {}
-}
-
-impl<T> Map<int, T> for cat<T> {
     fn contains_key(&self, k: &int) -> bool { *k <= self.meows }
 
-    fn find<'a>(&'a self, k: &int) -> Option<&'a T> {
+    fn find(&self, k: &int) -> Option<&T> {
         if *k <= self.meows {
             Some(&self.name)
         } else {
             None
         }
     }
-}
-
-impl<T> MutableMap<int, T> for cat<T> {
     fn insert(&mut self, k: int, _: T) -> bool {
         self.meows += k;
         true
     }
 
-    fn find_mut<'a>(&'a mut self, _k: &int) -> Option<&'a mut T> { fail!() }
+    fn find_mut(&mut self, _k: &int) -> Option<&mut T> { panic!() }
 
     fn remove(&mut self, k: &int) -> bool {
         if self.find(k).is_some() {
@@ -85,16 +73,16 @@ impl<T> MutableMap<int, T> for cat<T> {
         }
     }
 
-    fn pop(&mut self, _k: &int) -> Option<T> { fail!() }
+    fn pop(&mut self, _k: &int) -> Option<T> { panic!() }
 
-    fn swap(&mut self, _k: int, _v: T) -> Option<T> { fail!() }
+    fn swap(&mut self, _k: int, _v: T) -> Option<T> { panic!() }
 }
 
 impl<T> cat<T> {
-    pub fn get<'a>(&'a self, k: &int) -> &'a T {
+    pub fn get(&self, k: &int) -> &T {
         match self.find(k) {
           Some(v) => { v }
-          None    => { fail!("epic fail"); }
+          None    => { panic!("epic fail"); }
         }
     }
 
@@ -106,7 +94,7 @@ impl<T> cat<T> {
 impl<T> cat<T> {
     fn meow(&mut self) {
         self.meows += 1;
-        error!("Meow %d", self.meows);
+        println!("Meow {}", self.meows);
         if self.meows % 5 == 0 {
             self.how_hungry += 1;
         }
@@ -114,13 +102,13 @@ impl<T> cat<T> {
 }
 
 pub fn main() {
-    let mut nyan: cat<~str> = cat::new(0, 2, ~"nyan");
-    for _ in range(1u, 5) { nyan.speak(); }
-    assert!(*nyan.find(&1).unwrap() == ~"nyan");
+    let mut nyan: cat<String> = cat::new(0, 2, "nyan".to_string());
+    for _ in 1_usize..5 { nyan.speak(); }
+    assert!(*nyan.find(&1).unwrap() == "nyan".to_string());
     assert_eq!(nyan.find(&10), None);
-    let mut spotty: cat<cat_type> = cat::new(2, 57, tuxedo);
-    for _ in range(0u, 6) { spotty.speak(); }
+    let mut spotty: cat<cat_type> = cat::new(2, 57, cat_type::tuxedo);
+    for _ in 0_usize..6 { spotty.speak(); }
     assert_eq!(spotty.len(), 8);
     assert!((spotty.contains_key(&2)));
-    assert_eq!(spotty.get(&3), &tuxedo);
+    assert_eq!(spotty.get(&3), &cat_type::tuxedo);
 }

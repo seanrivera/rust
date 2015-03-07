@@ -8,7 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[allow(unreachable_code)];
+#![allow(unreachable_code)]
 
 fn foo() -> bool { false }
 
@@ -22,7 +22,7 @@ fn baz() {
     if "" == "" {}
 }
 
-fn main() {
+pub fn main() {
     bar();
     baz();
 }

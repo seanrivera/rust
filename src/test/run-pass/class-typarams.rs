@@ -8,26 +8,29 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-struct cat<U> {
-    priv meows : uint,
+use std::marker::PhantomData;
 
+struct cat<U> {
+    meows : uint,
     how_hungry : int,
+    m: PhantomData<U>
 }
 
 impl<U> cat<U> {
-    pub fn speak(&mut self) { self.meows += 1u; }
+    pub fn speak(&mut self) { self.meows += 1; }
     pub fn meow_count(&mut self) -> uint { self.meows }
 }
 
 fn cat<U>(in_x : uint, in_y : int) -> cat<U> {
     cat {
         meows: in_x,
-        how_hungry: in_y
+        how_hungry: in_y,
+        m: PhantomData
     }
 }
 
 
 pub fn main() {
-  let _nyan : cat<int> = cat::<int>(52u, 99);
-  //  let mut kitty = cat(1000u, 2);
+  let _nyan : cat<int> = cat::<int>(52, 99);
+  //  let mut kitty = cat(1000, 2);
 }

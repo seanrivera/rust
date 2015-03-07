@@ -1,4 +1,4 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,1446 +8,2621 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-/*!
+//! Cross-platform path manipulation.
+//!
+//! This module provides two types, `PathBuf` and `Path` (akin to `String` and
+//! `str`), for working with paths abstractly. These types are thin wrappers
+//! around `OsString` and `OsStr` respectively, meaning that they work directly
+//! on strings according to the local platform's path syntax.
+//!
+//! ## Simple usage
+//!
+//! Path manipulation involves both parsing components from slices and building
+//! new owned paths.
+//!
+//! To parse a path, you can create a `Path` slice from a `str`
+//! slice and start asking questions:
+//!
+//! ```rust
+//! use std::path::Path;
+//!
+//! let path = Path::new("/tmp/foo/bar.txt");
+//! let file = path.file_name();
+//! let extension = path.extension();
+//! let parent_dir = path.parent();
+//! ```
+//!
+//! To build or modify paths, use `PathBuf`:
+//!
+//! ```rust
+//! use std::path::PathBuf;
+//!
+//! let mut path = PathBuf::new("c:\\");
+//! path.push("windows");
+//! path.push("system32");
+//! path.set_extension("dll");
+//! ```
+//!
+//! ## Path components and normalization
+//!
+//! The path APIs are built around the notion of "components", which roughly
+//! correspond to the substrings between path separators (`/` and, on Windows,
+//! `\`). The APIs for path parsing are largely specified in terms of the path's
+//! components, so it's important to clearly understand how those are determined.
+//!
+//! A path can always be reconstructed into an equivalent path by putting
+//! together its components via `push`. Syntactically, the paths may differ by
+//! the normalization described below.
+//!
+//! ### Component types
+//!
+//! Components come in several types:
+//!
+//! * Normal components are the default: standard references to files or
+//! directories. The path `a/b` has two normal components, `a` and `b`.
+//!
+//! * Current directory components represent the `.` character. For example,
+//! `a/.` has a normal component `a` and a current directory component.
+//!
+//! * The root directory component represents a separator that designates
+//!   starting from root. For example, `/a/b` has a root directory component
+//!   followed by normal components `a` and `b`.
+//!
+//! On Windows, two additional component types come into play:
+//!
+//! * Prefix components, of which there is a large variety. For example, `C:`
+//! and `\\server\share` are prefixes. The path `C:windows` has a prefix
+//! component `C:` and a normal component `windows`; the path `C:\windows` has a
+//! prefix component `C:`, a root directory component, and a normal component
+//! `windows`.
+//!
+//! * Empty components, a special case for so-called "verbatim" paths where very
+//! little normalization is allowed. For example, `\\?\C:\` has a "verbatim"
+//! prefix `\\?\C:`, a root component, and an empty component (as a way of
+//! representing the trailing `\`. Such a trailing `\` is in fact the only
+//! situation in which an empty component is produced.
+//!
+//! ### Normalization
+//!
+//! Aside from splitting on the separator(s), there is a small amount of
+//! "normalization":
+//!
+//! * Repeated separators are ignored: `a/b` and `a//b` both have components `a`
+//!   and `b`.
+//!
+//! * Paths ending in a separator are treated as if they have a current directory
+//!   component at the end (or, in verbatim paths, an empty component).  For
+//!   example, while `a/b` has components `a` and `b`, the paths `a/b/` and
+//!   `a/b/.` both have components `a`, `b`, and `.` (current directory).  The
+//!   reason for this normalization is that `a/b` and `a/b/` are treated
+//!   differently in some contexts, but `a/b/` and `a/b/.` are always treated
+//!   the same.
+//!
+//! No other normalization takes place by default. In particular, `a/./b/` and
+//! `a/b` are treated distinctly in terms of components, as are `a/c` and
+//! `a/b/../c`. Further normalization is possible to build on top of the
+//! components APIs, and will be included in this library very soon.
 
-Cross-platform file path handling
+#![unstable(feature = "path")]
 
-*/
+use core::prelude::*;
 
-#[allow(missing_doc)];
+use ascii::*;
+use borrow::{Borrow, IntoCow, ToOwned, Cow};
+use cmp;
+use iter::{self, IntoIterator};
+use mem;
+use ops::{self, Deref};
+use vec::Vec;
+use fmt;
 
-use c_str::ToCStr;
-use c_str;
-use clone::Clone;
-use cmp::Eq;
-use container::Container;
-use iter::{Iterator, range};
-use libc;
-use num;
-use option::{None, Option, Some};
-use str::{OwnedStr, Str, StrSlice, StrVector};
-use to_str::ToStr;
-use ascii::{AsciiCast, AsciiStr};
-use vec::{Vector, OwnedVector, ImmutableVector, OwnedCopyableVector};
+use ffi::{OsStr, OsString, AsOsStr};
+
+use self::platform::{is_sep_byte, is_verbatim_sep, MAIN_SEP_STR, parse_prefix};
+
+////////////////////////////////////////////////////////////////////////////////
+// GENERAL NOTES
+////////////////////////////////////////////////////////////////////////////////
+//
+// Parsing in this module is done by directly transmuting OsStr to [u8] slices,
+// taking advantage of the fact that OsStr always encodes ASCII characters
+// as-is.  Eventually, this transmutation should be replaced by direct uses of
+// OsStr APIs for parsing, but it will take a while for those to become
+// available.
+
+////////////////////////////////////////////////////////////////////////////////
+// Platform-specific definitions
+////////////////////////////////////////////////////////////////////////////////
+
+// The following modules give the most basic tools for parsing paths on various
+// platforms. The bulk of the code is devoted to parsing prefixes on Windows.
+
+#[cfg(unix)]
+mod platform {
+    use super::Prefix;
+    use core::prelude::*;
+    use ffi::OsStr;
+
+    #[inline]
+    pub fn is_sep_byte(b: u8) -> bool {
+        b == b'/'
+    }
+
+    #[inline]
+    pub fn is_verbatim_sep(b: u8) -> bool {
+        b == b'/'
+    }
+
+    pub fn parse_prefix(_: &OsStr) -> Option<Prefix> {
+        None
+    }
+
+    pub const MAIN_SEP_STR: &'static str = "/";
+    pub const MAIN_SEP: char = '/';
+}
 
 #[cfg(windows)]
-pub use Path = self::WindowsPath;
-#[cfg(unix)]
-pub use Path = self::PosixPath;
+mod platform {
+    use core::prelude::*;
+    use ascii::*;
 
-#[deriving(Clone, Eq)]
-pub struct WindowsPath {
-    host: Option<~str>,
-    device: Option<~str>,
-    is_absolute: bool,
-    components: ~[~str],
-}
+    use char::CharExt as UnicodeCharExt;
+    use super::{os_str_as_u8_slice, u8_slice_as_os_str, Prefix};
+    use ffi::OsStr;
 
-pub fn WindowsPath(s: &str) -> WindowsPath {
-    GenericPath::from_str(s)
-}
-
-#[deriving(Clone, Eq)]
-pub struct PosixPath {
-    is_absolute: bool,
-    components: ~[~str],
-}
-
-pub fn PosixPath(s: &str) -> PosixPath {
-    GenericPath::from_str(s)
-}
-
-pub trait GenericPath : Clone + Eq + ToStr {
-    /// Converts a string to a path.
-    fn from_str(&str) -> Self;
-
-    /// Returns the directory component of `self`, as a string.
-    fn dirname(&self) -> ~str {
-        let s = self.dir_path().to_str();
-        match s.len() {
-            0 => ~".",
-            _ => s,
-        }
+    #[inline]
+    pub fn is_sep_byte(b: u8) -> bool {
+        b == b'/' || b == b'\\'
     }
 
-    /// Returns the file component of `self`, as a string option.
-    /// Returns None if `self` names a directory.
-    fn filename<'a>(&'a self) -> Option<&'a str> {
-        match self.components().len() {
-            0 => None,
-            n => Some(self.components()[n - 1].as_slice()),
-        }
+    #[inline]
+    pub fn is_verbatim_sep(b: u8) -> bool {
+        b == b'\\'
     }
 
-    /// Returns the stem of the file component of `self`, as a string option.
-    /// The stem is the slice of a filename starting at 0 and ending just before
-    /// the last '.' in the name.
-    /// Returns None if `self` names a directory.
-    fn filestem<'a>(&'a self) -> Option<&'a str> {
-        match self.filename() {
-            None => None,
-            Some(ref f) => {
-                match f.rfind('.') {
-                    Some(p) => Some(f.slice_to(p)),
-                    None => Some((*f)),
+    pub fn parse_prefix<'a>(path: &'a OsStr) -> Option<Prefix> {
+        use super::Prefix::*;
+        unsafe {
+            // The unsafety here stems from converting between &OsStr and &[u8]
+            // and back. This is safe to do because (1) we only look at ASCII
+            // contents of the encoding and (2) new &OsStr values are produced
+            // only from ASCII-bounded slices of existing &OsStr values.
+            let mut path = os_str_as_u8_slice(path);
+
+            if path.starts_with(br"\\") {
+                // \\
+                path = &path[2..];
+                if path.starts_with(br"?\") {
+                    // \\?\
+                    path = &path[2..];
+                    if path.starts_with(br"UNC\") {
+                        // \\?\UNC\server\share
+                        path = &path[4..];
+                        let (server, share) = match parse_two_comps(path, is_verbatim_sep) {
+                            Some((server, share)) => (u8_slice_as_os_str(server),
+                                                      u8_slice_as_os_str(share)),
+                            None => (u8_slice_as_os_str(path),
+                                     u8_slice_as_os_str(&[])),
+                        };
+                        return Some(VerbatimUNC(server, share));
+                    } else {
+                        // \\?\path
+                        let idx = path.position_elem(&b'\\');
+                        if idx == Some(2) && path[1] == b':' {
+                            let c = path[0];
+                            if c.is_ascii() && (c as char).is_alphabetic() {
+                                // \\?\C:\ path
+                                return Some(VerbatimDisk(c.to_ascii_uppercase()));
+                            }
+                        }
+                        let slice = &path[.. idx.unwrap_or(path.len())];
+                        return Some(Verbatim(u8_slice_as_os_str(slice)));
+                    }
+                } else if path.starts_with(b".\\") {
+                    // \\.\path
+                    path = &path[2..];
+                    let slice = &path[.. path.position_elem(&b'\\').unwrap_or(path.len())];
+                    return Some(DeviceNS(u8_slice_as_os_str(slice)));
+                }
+                match parse_two_comps(path, is_sep_byte) {
+                    Some((server, share)) if server.len() > 0 && share.len() > 0 => {
+                        // \\server\share
+                        return Some(UNC(u8_slice_as_os_str(server),
+                                        u8_slice_as_os_str(share)));
+                    }
+                    _ => ()
+                }
+            } else if path.len() > 1 && path[1] == b':' {
+                // C:
+                let c = path[0];
+                if c.is_ascii() && (c as char).is_alphabetic() {
+                    return Some(Disk(c.to_ascii_uppercase()));
                 }
             }
+            return None;
+        }
+
+        fn parse_two_comps(mut path: &[u8], f: fn(u8) -> bool) -> Option<(&[u8], &[u8])> {
+            let first = match path.iter().position(|x| f(*x)) {
+                None => return None,
+                Some(x) => &path[.. x]
+            };
+            path = &path[(first.len()+1)..];
+            let idx = path.iter().position(|x| f(*x));
+            let second = &path[.. idx.unwrap_or(path.len())];
+            Some((first, second))
         }
     }
 
-    /// Returns the type of the file component of `self`, as a string option.
-    /// The file type is the slice of a filename starting just after the last
-    /// '.' in the name and ending at the last index in the filename.
-    /// Returns None if `self` names a directory.
-    fn filetype<'a>(&'a self) -> Option<&'a str> {
-        match self.filename() {
-            None => None,
-            Some(ref f) => {
-                match f.rfind('.') {
-                    Some(p) if p < f.len() => Some(f.slice_from(p)),
-                    _ => None,
-                }
-            }
-        }
-    }
-
-    /// Returns a new path consisting of `self` with the parent directory component replaced
-    /// with the given string.
-    fn with_dirname(&self, (&str)) -> Self;
-
-    /// Returns a new path consisting of `self` with the file component replaced
-    /// with the given string.
-    fn with_filename(&self, (&str)) -> Self;
-
-    /// Returns a new path consisting of `self` with the file stem replaced
-    /// with the given string.
-    fn with_filestem(&self, s: &str) -> Self {
-        match self.filetype() {
-            None => self.with_filename(s),
-            Some(ref t) => self.with_filename(s.to_owned() + *t),
-        }
-    }
-
-    /// Returns a new path consisting of `self` with the file type replaced
-    /// with the given string.
-    fn with_filetype(&self, t: &str) -> Self {
-        match (t.len(), self.filestem()) {
-            (0, None)        => (*self).clone(),
-            (0, Some(ref s)) => self.with_filename(*s),
-            (_, None)        => self.with_filename(fmt!(".%s", t)),
-            (_, Some(ref s)) => self.with_filename(fmt!("%s.%s", *s, t)),
-        }
-    }
-
-    /// Returns the directory component of `self`, as a new path.
-    /// If `self` has no parent, returns `self`.
-    fn dir_path(&self) -> Self {
-        match self.components().len() {
-            0 => (*self).clone(),
-            _ => self.pop(),
-        }
-    }
-
-    /// Returns the file component of `self`, as a new path.
-    /// If `self` names a directory, returns the empty path.
-    fn file_path(&self) -> Self;
-
-    /// Returns a new path whose parent directory is `self` and whose
-    /// file component is the given string.
-    fn push(&self, (&str)) -> Self;
-
-    /// Returns a new path consisting of the given path, made relative to `self`.
-    fn push_rel(&self, other: &Self) -> Self {
-        assert!(!other.is_absolute());
-        self.push_many(other.components())
-    }
-
-    /// Returns a new path consisting of the path given by the given vector
-    /// of strings, relative to `self`.
-    fn push_many<S: Str>(&self, (&[S])) -> Self;
-
-    /// Identical to `dir_path` except in the case where `self` has only one
-    /// component. In this case, `pop` returns the empty path.
-    fn pop(&self) -> Self;
-
-    /// The same as `push_rel`, except that the directory argument must not
-    /// contain directory separators in any of its components.
-    fn unsafe_join(&self, (&Self)) -> Self;
-
-    /// On Unix, always returns `false`. On Windows, returns `true` iff `self`'s
-    /// file stem is one of: `con` `aux` `com1` `com2` `com3` `com4`
-    /// `lpt1` `lpt2` `lpt3` `prn` `nul`.
-    fn is_restricted(&self) -> bool;
-
-    /// Returns a new path that names the same file as `self`, without containing
-    /// any '.', '..', or empty components. On Windows, uppercases the drive letter
-    /// as well.
-    fn normalize(&self) -> Self;
-
-    /// Returns `true` if `self` is an absolute path.
-    fn is_absolute(&self) -> bool;
-
-    /// True if `self` is an ancestor of `other`.
-    // See `test_is_ancestor_of` for examples.
-    fn is_ancestor_of(&self, other: &Self) -> bool {
-        debug!("%s / %s %? %?", self.to_str(), other.to_str(), self.is_absolute(),
-               self.components().len());
-        self == other ||
-            (!other.components().is_empty() &&
-             !(self.components().is_empty() && !self.is_absolute()) &&
-             self.is_ancestor_of(&other.pop()))
-    }
-
-    /// Finds the relative path from one file to another.
-    fn get_relative_to(&self, abs2: (&Self)) -> Self {
-        assert!(self.is_absolute());
-        assert!(abs2.is_absolute());
-        let abs1 = self.normalize();
-        let abs2 = abs2.normalize();
-
-        let split1: &[~str] = abs1.components();
-        let split2: &[~str] = abs2.components();
-        let len1 = split1.len();
-        let len2 = split2.len();
-        assert!(len1 > 0);
-        assert!(len2 > 0);
-
-        let max_common_path = num::min(len1, len2) - 1;
-        let mut start_idx = 0;
-        while start_idx < max_common_path
-            && split1[start_idx] == split2[start_idx] {
-            start_idx += 1;
-        }
-
-        let mut path: ~[~str] = ~[];
-        for _ in range(start_idx, len1 - 1) { path.push(~".."); };
-
-        path.push_all(split2.slice(start_idx, len2 - 1));
-
-        let mut result: Self = GenericPath::from_str(".");
-        if !path.is_empty() {
-            // Without this type hint, the typechecker doesn't seem to like it
-            let p: Self = GenericPath::from_str("");
-            result = p.push_many(path);
-        };
-        result
-    }
-
-    fn components<'a>(&'a self) -> &'a [~str];
+    pub const MAIN_SEP_STR: &'static str = "\\";
+    pub const MAIN_SEP: char = '\\';
 }
 
-#[cfg(target_os = "linux")]
-#[cfg(target_os = "android")]
-mod stat {
-    #[cfg(target_arch = "x86")]
-    pub mod arch {
-        use libc;
+////////////////////////////////////////////////////////////////////////////////
+// Windows Prefixes
+////////////////////////////////////////////////////////////////////////////////
 
-        pub fn default_stat() -> libc::stat {
-            libc::stat {
-                st_dev: 0,
-                __pad1: 0,
-                st_ino: 0,
-                st_mode: 0,
-                st_nlink: 0,
-                st_uid: 0,
-                st_gid: 0,
-                st_rdev: 0,
-                __pad2: 0,
-                st_size: 0,
-                st_blksize: 0,
-                st_blocks: 0,
-                st_atime: 0,
-                st_atime_nsec: 0,
-                st_mtime: 0,
-                st_mtime_nsec: 0,
-                st_ctime: 0,
-                st_ctime_nsec: 0,
-                __unused4: 0,
-                __unused5: 0,
-            }
+/// Path prefixes (Windows only).
+///
+/// Windows uses a variety of path styles, including references to drive
+/// volumes (like `C:`), network shared (like `\\server\share`) and
+/// others. In addition, some path prefixes are "verbatim", in which case
+/// `/` is *not* treated as a separator and essentially no normalization is
+/// performed.
+#[derive(Copy, Clone, Debug, Hash, PartialOrd, Ord, PartialEq, Eq)]
+pub enum Prefix<'a> {
+    /// Prefix `\\?\`, together with the given component immediately following it.
+    Verbatim(&'a OsStr),
+
+    /// Prefix `\\?\UNC\`, with the "server" and "share" components following it.
+    VerbatimUNC(&'a OsStr, &'a OsStr),
+
+    /// Prefix like `\\?\C:\`, for the given drive letter
+    VerbatimDisk(u8),
+
+    /// Prefix `\\.\`, together with the given component immediately following it.
+    DeviceNS(&'a OsStr),
+
+    /// Prefix `\\server\share`, with the given "server" and "share" components.
+    UNC(&'a OsStr, &'a OsStr),
+
+    /// Prefix `C:` for the given disk drive.
+    Disk(u8),
+}
+
+impl<'a> Prefix<'a> {
+    #[inline]
+    fn len(&self) -> usize {
+        use self::Prefix::*;
+        fn os_str_len(s: &OsStr) -> usize {
+            os_str_as_u8_slice(s).len()
+        }
+        match *self {
+            Verbatim(x) => 4 + os_str_len(x),
+            VerbatimUNC(x,y) => 8 + os_str_len(x) +
+                if os_str_len(y) > 0 { 1 + os_str_len(y) }
+                else { 0 },
+            VerbatimDisk(_) => 6,
+            UNC(x,y) => 2 + os_str_len(x) +
+                if os_str_len(y) > 0 { 1 + os_str_len(y) }
+                else { 0 },
+            DeviceNS(x) => 4 + os_str_len(x),
+            Disk(_) => 2
+        }
+
+    }
+
+    /// Determine if the prefix is verbatim, i.e. begins `\\?\`.
+    #[inline]
+    pub fn is_verbatim(&self) -> bool {
+        use self::Prefix::*;
+        match *self {
+            Verbatim(_) | VerbatimDisk(_) | VerbatimUNC(_, _) => true,
+            _ => false
         }
     }
 
-    #[cfg(target_arch = "arm")]
-    pub mod arch {
-        use libc;
-
-        pub fn default_stat() -> libc::stat {
-            libc::stat {
-                st_dev: 0,
-                __pad0: [0, ..4],
-                __st_ino: 0,
-                st_mode: 0,
-                st_nlink: 0,
-                st_uid: 0,
-                st_gid: 0,
-                st_rdev: 0,
-                __pad3: [0, ..4],
-                st_size: 0,
-                st_blksize: 0,
-                st_blocks: 0,
-                st_atime: 0,
-                st_atime_nsec: 0,
-                st_mtime: 0,
-                st_mtime_nsec: 0,
-                st_ctime: 0,
-                st_ctime_nsec: 0,
-                st_ino: 0
-            }
+    #[inline]
+    fn is_drive(&self) -> bool {
+        match *self {
+            Prefix::Disk(_) => true,
+            _ => false,
         }
     }
 
-    #[cfg(target_arch = "mips")]
-    pub mod arch {
-        use libc;
-
-        pub fn default_stat() -> libc::stat {
-            libc::stat {
-                st_dev: 0,
-                st_pad1: [0, ..3],
-                st_ino: 0,
-                st_mode: 0,
-                st_nlink: 0,
-                st_uid: 0,
-                st_gid: 0,
-                st_rdev: 0,
-                st_pad2: [0, ..2],
-                st_size: 0,
-                st_pad3: 0,
-                st_atime: 0,
-                st_atime_nsec: 0,
-                st_mtime: 0,
-                st_mtime_nsec: 0,
-                st_ctime: 0,
-                st_ctime_nsec: 0,
-                st_blksize: 0,
-                st_blocks: 0,
-                st_pad5: [0, ..14],
-            }
-        }
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    pub mod arch {
-        use libc;
-
-        pub fn default_stat() -> libc::stat {
-            libc::stat {
-                st_dev: 0,
-                st_ino: 0,
-                st_nlink: 0,
-                st_mode: 0,
-                st_uid: 0,
-                st_gid: 0,
-                __pad0: 0,
-                st_rdev: 0,
-                st_size: 0,
-                st_blksize: 0,
-                st_blocks: 0,
-                st_atime: 0,
-                st_atime_nsec: 0,
-                st_mtime: 0,
-                st_mtime_nsec: 0,
-                st_ctime: 0,
-                st_ctime_nsec: 0,
-                __unused: [0, 0, 0],
-            }
-        }
+    #[inline]
+    fn has_implicit_root(&self) -> bool {
+        !self.is_drive()
     }
 }
 
-#[cfg(target_os = "freebsd")]
-mod stat {
-    #[cfg(target_arch = "x86_64")]
-    pub mod arch {
-        use libc;
+////////////////////////////////////////////////////////////////////////////////
+// Exposed parsing helpers
+////////////////////////////////////////////////////////////////////////////////
 
-        pub fn default_stat() -> libc::stat {
-            libc::stat {
-                st_dev: 0,
-                st_ino: 0,
-                st_mode: 0,
-                st_nlink: 0,
-                st_uid: 0,
-                st_gid: 0,
-                st_rdev: 0,
-                st_atime: 0,
-                st_atime_nsec: 0,
-                st_mtime: 0,
-                st_mtime_nsec: 0,
-                st_ctime: 0,
-                st_ctime_nsec: 0,
-                st_size: 0,
-                st_blocks: 0,
-                st_blksize: 0,
-                st_flags: 0,
-                st_gen: 0,
-                st_lspare: 0,
-                st_birthtime: 0,
-                st_birthtime_nsec: 0,
-                __unused: [0, 0],
+/// Determine whether the character is one of the permitted path
+/// separators for the current platform.
+pub fn is_separator(c: char) -> bool {
+    use ascii::*;
+    c.is_ascii() && is_sep_byte(c as u8)
+}
+
+/// The primary sperator for the current platform
+pub const MAIN_SEPARATOR: char = platform::MAIN_SEP;
+
+////////////////////////////////////////////////////////////////////////////////
+// Misc helpers
+////////////////////////////////////////////////////////////////////////////////
+
+// Iterate through `iter` while it matches `prefix`; return `None` if `prefix`
+// is not a prefix of `iter`, otherwise return `Some(iter_after_prefix)` giving
+// `iter` after having exhausted `prefix`.
+fn iter_after<A, I, J>(mut iter: I, mut prefix: J) -> Option<I> where
+    I: Iterator<Item=A> + Clone, J: Iterator<Item=A>, A: PartialEq
+{
+    loop {
+        let mut iter_next = iter.clone();
+        match (iter_next.next(), prefix.next()) {
+            (Some(x), Some(y)) => {
+                if x != y { return None }
             }
+            (Some(_), None) => return Some(iter),
+            (None, None) => return Some(iter),
+            (None, Some(_)) => return None,
         }
+        iter = iter_next;
     }
 }
 
-#[cfg(target_os = "macos")]
-mod stat {
-    pub mod arch {
-        use libc;
+// See note at the top of this module to understand why these are used:
+fn os_str_as_u8_slice(s: &OsStr) -> &[u8] {
+    unsafe { mem::transmute(s) }
+}
+unsafe fn u8_slice_as_os_str(s: &[u8]) -> &OsStr {
+    mem::transmute(s)
+}
 
-        pub fn default_stat() -> libc::stat {
-            libc::stat {
-                st_dev: 0,
-                st_mode: 0,
-                st_nlink: 0,
-                st_ino: 0,
-                st_uid: 0,
-                st_gid: 0,
-                st_rdev: 0,
-                st_atime: 0,
-                st_atime_nsec: 0,
-                st_mtime: 0,
-                st_mtime_nsec: 0,
-                st_ctime: 0,
-                st_ctime_nsec: 0,
-                st_birthtime: 0,
-                st_birthtime_nsec: 0,
-                st_size: 0,
-                st_blocks: 0,
-                st_blksize: 0,
-                st_flags: 0,
-                st_gen: 0,
-                st_lspare: 0,
-                st_qspare: [0, 0],
-            }
-        }
+////////////////////////////////////////////////////////////////////////////////
+// Cross-platform parsing
+////////////////////////////////////////////////////////////////////////////////
+
+/// Says whether the path ends in a separator character and therefore needs to
+/// be treated as if it ended with an additional `.`
+fn has_suffix(s: &[u8], prefix: Option<Prefix>) -> bool {
+    let (prefix_len, verbatim) = if let Some(p) = prefix {
+        (p.len(), p.is_verbatim())
+    } else { (0, false) };
+    if prefix_len > 0 && prefix_len == s.len() && !verbatim { return true; }
+    let mut splits = s[prefix_len..].split(|b| is_sep_byte(*b));
+    let last = splits.next_back().unwrap();
+    let more = splits.next_back().is_some();
+    more && last == b""
+}
+
+/// Says whether the first byte after the prefix is a separator.
+fn has_physical_root(s: &[u8], prefix: Option<Prefix>) -> bool {
+    let path = if let Some(p) = prefix { &s[p.len()..] } else { s };
+    path.len() > 0 && is_sep_byte(path[0])
+}
+
+fn parse_single_component(comp: &[u8]) -> Option<Component> {
+    match comp {
+        b"." => Some(Component::CurDir),
+        b".." => Some(Component::ParentDir),
+        b"" => None,
+        _ => Some(Component::Normal(unsafe { u8_slice_as_os_str(comp) }))
     }
 }
 
-#[cfg(target_os = "win32")]
-mod stat {
-    pub mod arch {
-        use libc;
-        pub fn default_stat() -> libc::stat {
-            libc::stat {
-                st_dev: 0,
-                st_ino: 0,
-                st_mode: 0,
-                st_nlink: 0,
-                st_uid: 0,
-                st_gid: 0,
-                st_rdev: 0,
-                st_size: 0,
-                st_atime: 0,
-                st_mtime: 0,
-                st_ctime: 0,
-            }
-        }
-    }
-}
+// basic workhorse for splitting stem and extension
+#[allow(unused_unsafe)] // FIXME
+fn split_file_at_dot(file: &OsStr) -> (Option<&OsStr>, Option<&OsStr>) {
+    unsafe {
+        if os_str_as_u8_slice(file) == b".." { return (Some(file), None) }
 
-#[cfg(target_os = "win32")]
-impl WindowsPath {
-    pub fn stat(&self) -> Option<libc::stat> {
-        #[fixed_stack_segment]; #[inline(never)];
-        do self.with_c_str |buf| {
-            let mut st = stat::arch::default_stat();
-            match unsafe { libc::stat(buf, &mut st) } {
-                0 => Some(st),
-                _ => None,
-            }
-        }
-    }
+        // The unsafety here stems from converting between &OsStr and &[u8]
+        // and back. This is safe to do because (1) we only look at ASCII
+        // contents of the encoding and (2) new &OsStr values are produced
+        // only from ASCII-bounded slices of existing &OsStr values.
 
-    pub fn exists(&self) -> bool {
-        match self.stat() {
-            None => false,
-            Some(_) => true,
-        }
-    }
-
-    pub fn get_size(&self) -> Option<i64> {
-        match self.stat() {
-            None => None,
-            Some(ref st) => Some(st.st_size as i64),
-        }
-    }
-
-    pub fn get_mode(&self) -> Option<uint> {
-        match self.stat() {
-            None => None,
-            Some(ref st) => Some(st.st_mode as uint),
-        }
-    }
-}
-
-#[cfg(not(target_os = "win32"))]
-impl PosixPath {
-    pub fn stat(&self) -> Option<libc::stat> {
-        #[fixed_stack_segment]; #[inline(never)];
-        do self.with_c_str |buf| {
-            let mut st = stat::arch::default_stat();
-            match unsafe { libc::stat(buf as *libc::c_char, &mut st) } {
-                0 => Some(st),
-                _ => None,
-            }
-        }
-    }
-
-    pub fn exists(&self) -> bool {
-        match self.stat() {
-            None => false,
-            Some(_) => true,
-        }
-    }
-
-    pub fn get_size(&self) -> Option<i64> {
-        match self.stat() {
-            None => None,
-            Some(ref st) => Some(st.st_size as i64),
-        }
-    }
-
-    pub fn get_mode(&self) -> Option<uint> {
-        match self.stat() {
-            None => None,
-            Some(ref st) => Some(st.st_mode as uint),
-        }
-    }
-
-    /// Executes a function `f` on `self` as well as on all of its ancestors.
-    pub fn each_parent(&self, f: &fn(&Path)) {
-        if !self.components.is_empty() {
-            f(self);
-            self.pop().each_parent(f);
-        }
-    }
-
-}
-
-#[cfg(target_os = "freebsd")]
-#[cfg(target_os = "linux")]
-#[cfg(target_os = "macos")]
-impl PosixPath {
-    pub fn get_atime(&self) -> Option<(i64, int)> {
-        match self.stat() {
-            None => None,
-            Some(ref st) => {
-                Some((st.st_atime as i64,
-                      st.st_atime_nsec as int))
-            }
-        }
-    }
-
-    pub fn get_mtime(&self) -> Option<(i64, int)> {
-        match self.stat() {
-            None => None,
-            Some(ref st) => {
-                Some((st.st_mtime as i64,
-                      st.st_mtime_nsec as int))
-            }
-        }
-    }
-
-    pub fn get_ctime(&self) -> Option<(i64, int)> {
-        match self.stat() {
-            None => None,
-            Some(ref st) => {
-                Some((st.st_ctime as i64,
-                      st.st_ctime_nsec as int))
-            }
-        }
-    }
-}
-
-#[cfg(unix)]
-impl PosixPath {
-    pub fn lstat(&self) -> Option<libc::stat> {
-        #[fixed_stack_segment]; #[inline(never)];
-        do self.with_c_str |buf| {
-            let mut st = stat::arch::default_stat();
-            match unsafe { libc::lstat(buf, &mut st) } {
-                0 => Some(st),
-                _ => None,
-            }
-        }
-    }
-}
-
-#[cfg(target_os = "freebsd")]
-#[cfg(target_os = "macos")]
-impl PosixPath {
-    pub fn get_birthtime(&self) -> Option<(i64, int)> {
-        match self.stat() {
-            None => None,
-            Some(ref st) => {
-                Some((st.st_birthtime as i64,
-                      st.st_birthtime_nsec as int))
-            }
-        }
-    }
-}
-
-#[cfg(target_os = "win32")]
-impl WindowsPath {
-    pub fn get_atime(&self) -> Option<(i64, int)> {
-        match self.stat() {
-            None => None,
-            Some(ref st) => {
-                Some((st.st_atime as i64, 0))
-            }
-        }
-    }
-
-    pub fn get_mtime(&self) -> Option<(i64, int)> {
-        match self.stat() {
-            None => None,
-            Some(ref st) => {
-                Some((st.st_mtime as i64, 0))
-            }
-        }
-    }
-
-    pub fn get_ctime(&self) -> Option<(i64, int)> {
-        match self.stat() {
-            None => None,
-            Some(ref st) => {
-                Some((st.st_ctime as i64, 0))
-            }
-        }
-    }
-
-    /// Executes a function `f` on `self` as well as on all of its ancestors.
-    pub fn each_parent(&self, f: &fn(&Path)) {
-        if !self.components.is_empty() {
-            f(self);
-            self.pop().each_parent(f);
-        }
-    }
-}
-
-impl ToStr for PosixPath {
-    fn to_str(&self) -> ~str {
-        let mut s = ~"";
-        if self.is_absolute {
-            s.push_str("/");
-        }
-        s + self.components.connect("/")
-    }
-}
-
-impl ToCStr for PosixPath {
-    fn to_c_str(&self) -> c_str::CString {
-        self.to_str().to_c_str()
-    }
-
-    unsafe fn to_c_str_unchecked(&self) -> c_str::CString {
-        self.to_str().to_c_str_unchecked()
-    }
-}
-
-impl GenericPath for PosixPath {
-    fn from_str(s: &str) -> PosixPath {
-        let components = s.split_iter('/')
-            .filter_map(|s| if s.is_empty() {None} else {Some(s.to_owned())})
-            .collect();
-        let is_absolute = (s.len() != 0 && s[0] == '/' as u8);
-        PosixPath {
-            is_absolute: is_absolute,
-            components: components,
-        }
-    }
-
-    fn with_dirname(&self, d: &str) -> PosixPath {
-        let dpath = PosixPath(d);
-        match self.filename() {
-            Some(ref f) => dpath.push(*f),
-            None => dpath,
-        }
-    }
-
-    fn with_filename(&self, f: &str) -> PosixPath {
-        assert!(!f.iter().all(posix::is_sep));
-        self.dir_path().push(f)
-    }
-
-    fn file_path(&self) -> PosixPath {
-        let cs = match self.filename() {
-          None => ~[],
-          Some(ref f) => ~[(*f).to_owned()]
-        };
-        PosixPath {
-            is_absolute: false,
-            components: cs,
-        }
-    }
-
-    fn push(&self, s: &str) -> PosixPath {
-        let mut v = self.components.clone();
-        for s in s.split_iter(posix::is_sep) {
-            if !s.is_empty() {
-                v.push(s.to_owned())
-            }
-        }
-        PosixPath {
-            components: v,
-            ..(*self).clone()
-        }
-    }
-
-    fn push_many<S: Str>(&self, cs: &[S]) -> PosixPath {
-        let mut v = self.components.clone();
-        for e in cs.iter() {
-            for s in e.as_slice().split_iter(posix::is_sep) {
-                if !s.is_empty() {
-                    v.push(s.to_owned())
-                }
-            }
-        }
-        PosixPath {
-            is_absolute: self.is_absolute,
-            components: v,
-        }
-    }
-
-    fn pop(&self) -> PosixPath {
-        let mut cs = self.components.clone();
-        if cs.len() != 0 {
-            cs.pop();
-        }
-        PosixPath {
-            is_absolute: self.is_absolute,
-            components: cs,
-        } //..self }
-    }
-
-    fn unsafe_join(&self, other: &PosixPath) -> PosixPath {
-        if other.is_absolute {
-            PosixPath {
-                is_absolute: true,
-                components: other.components.clone(),
-            }
+        let mut iter = os_str_as_u8_slice(file).rsplitn(1, |b| *b == b'.');
+        let after = iter.next();
+        let before = iter.next();
+        if before == Some(b"") {
+            (Some(file), None)
         } else {
-            self.push_rel(other)
+            (before.map(|s| u8_slice_as_os_str(s)),
+             after.map(|s| u8_slice_as_os_str(s)))
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// The core iterators
+////////////////////////////////////////////////////////////////////////////////
+
+/// Component parsing works by a double-ended state machine; the cursors at the
+/// front and back of the path each keep track of what parts of the path have
+/// been consumed so far.
+///
+/// Going front to back, a path is made up of a prefix, a root component, a body
+/// (of normal components), and a suffix/emptycomponent (normalized `.` or ``
+/// for a path ending with the separator)
+#[derive(Copy, Clone, PartialEq, PartialOrd, Debug)]
+enum State {
+    Prefix = 0,         // c:
+    Root = 1,           // /
+    Body = 2,           // foo/bar/baz
+    Suffix = 3,         // .
+    Done = 4,
+}
+
+/// A single component of a path.
+///
+/// See the module documentation for an in-depth explanation of components and
+/// their role in the API.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum Component<'a> {
+    /// A Windows path prefix, e.g. `C:` or `\server\share`.
+    ///
+    /// Does not occur on Unix.
+    Prefix {
+        /// The prefix as an unparsed `OsStr` slice.
+        raw: &'a OsStr,
+
+        /// The parsed prefix data.
+        parsed: Prefix<'a>
+    },
+
+    /// An empty component. Only used on Windows for the last component of
+    /// verbatim paths ending with a separator (e.g. the last component of
+    /// `\\?\C:\windows\` but not `\\?\C:\windows` or `C:\windows`).
+    Empty,
+
+    /// The root directory component, appears after any prefix and before anything else
+    RootDir,
+
+    /// A reference to the current directory, i.e. `.`
+    CurDir,
+
+    /// A reference to the parent directory, i.e. `..`
+    ParentDir,
+
+    /// A normal component, i.e. `a` and `b` in `a/b`
+    Normal(&'a OsStr),
+}
+
+impl<'a> Component<'a> {
+    /// Extract the underlying `OsStr` slice
+    pub fn as_os_str(self) -> &'a OsStr {
+        match self {
+            Component::Prefix { raw, .. } => &raw,
+            Component::Empty => OsStr::from_str(""),
+            Component::RootDir => OsStr::from_str(MAIN_SEP_STR),
+            Component::CurDir => OsStr::from_str("."),
+            Component::ParentDir => OsStr::from_str(".."),
+            Component::Normal(path) => path,
+        }
+    }
+}
+
+/// The core iterator giving the components of a path.
+///
+/// See the module documentation for an in-depth explanation of components and
+/// their role in the API.
+#[derive(Clone)]
+pub struct Components<'a> {
+    // The path left to parse components from
+    path: &'a [u8],
+
+    // The prefix as it was originally parsed, if any
+    prefix: Option<Prefix<'a>>,
+
+    // true if path *physically* has a root separator; for most Windows
+    // prefixes, it may have a "logical" rootseparator for the purposes of
+    // normalization, e.g.  \\server\share == \\server\share\.
+    has_physical_root: bool,
+
+    // The iterator is double-ended, and these two states keep track of what has
+    // been produced from either end
+    front: State,
+    back: State,
+}
+
+/// An iterator over the components of a path, as `OsStr` slices.
+#[derive(Clone)]
+pub struct Iter<'a> {
+    inner: Components<'a>
+}
+
+impl<'a> Components<'a> {
+    // how long is the prefix, if any?
+    #[inline]
+    fn prefix_len(&self) -> usize {
+        self.prefix.as_ref().map(Prefix::len).unwrap_or(0)
+    }
+
+    #[inline]
+    fn prefix_verbatim(&self) -> bool {
+        self.prefix.as_ref().map(Prefix::is_verbatim).unwrap_or(false)
+    }
+
+    /// how much of the prefix is left from the point of view of iteration?
+    #[inline]
+    fn prefix_remaining(&self) -> usize {
+        if self.front == State::Prefix { self.prefix_len() }
+        else { 0 }
+    }
+
+    fn prefix_and_root(&self) -> usize {
+        let root = if self.front <= State::Root && self.has_physical_root { 1 } else { 0 };
+        self.prefix_remaining() + root
+    }
+
+    // is the iteration complete?
+    #[inline]
+    fn finished(&self) -> bool {
+        self.front == State::Done || self.back == State::Done || self.front > self.back
+    }
+
+    #[inline]
+    fn is_sep_byte(&self, b: u8) -> bool {
+        if self.prefix_verbatim() {
+            is_verbatim_sep(b)
+        } else {
+            is_sep_byte(b)
         }
     }
 
-    fn is_restricted(&self) -> bool {
+    /// Extract a slice corresponding to the portion of the path remaining for iteration.
+    pub fn as_path(&self) -> &'a Path {
+        let mut comps = self.clone();
+        if comps.front == State::Body { comps.trim_left(); }
+        if comps.back == State::Body { comps.trim_right(); }
+        if comps.path.is_empty() && comps.front < comps.back && comps.back == State::Suffix {
+            Path::new(".")
+        } else {
+            unsafe { Path::from_u8_slice(comps.path) }
+        }
+    }
+
+    /// Is the *original* path rooted?
+    fn has_root(&self) -> bool {
+        if self.has_physical_root { return true }
+        if let Some(p) = self.prefix {
+            if p.has_implicit_root() { return true }
+        }
         false
     }
 
-    fn normalize(&self) -> PosixPath {
-        PosixPath {
-            is_absolute: self.is_absolute,
-            components: normalize(self.components),
-        } // ..self }
+    // parse a component from the left, saying how many bytes to consume to
+    // remove the component
+    fn parse_next_component(&self) -> (usize, Option<Component<'a>>) {
+        debug_assert!(self.front == State::Body);
+        let (extra, comp) = match self.path.iter().position(|b| self.is_sep_byte(*b)) {
+            None => (0, self.path),
+            Some(i) => (1, &self.path[.. i]),
+        };
+        (comp.len() + extra, parse_single_component(comp))
     }
 
-    fn is_absolute(&self) -> bool {
-        self.is_absolute
+    // parse a component from the right, saying how many bytes to consume to
+    // remove the component
+    fn parse_next_component_back(&self) -> (usize, Option<Component<'a>>) {
+        debug_assert!(self.back == State::Body);
+        let start = self.prefix_and_root();
+        let (extra, comp) = match self.path[start..].iter().rposition(|b| self.is_sep_byte(*b)) {
+            None => (0, &self.path[start ..]),
+            Some(i) => (1, &self.path[start + i + 1 ..]),
+        };
+        (comp.len() + extra, parse_single_component(comp))
     }
 
-    fn components<'a>(&'a self) -> &'a [~str] { self.components.as_slice() }
+    // trim away repeated separators (i.e. emtpy components) on the left
+    fn trim_left(&mut self) {
+        while !self.path.is_empty() {
+            let (size, comp) = self.parse_next_component();
+            if comp.is_some() {
+                return;
+            } else {
+                self.path = &self.path[size ..];
+            }
+        }
+    }
 
+    // trim away repeated separators (i.e. emtpy components) on the right
+    fn trim_right(&mut self) {
+        while self.path.len() > self.prefix_and_root() {
+            let (size, comp) = self.parse_next_component_back();
+            if comp.is_some() {
+                return;
+            } else {
+                self.path = &self.path[.. self.path.len() - size];
+            }
+        }
+    }
+
+    /// Examine the next component without consuming it.
+    pub fn peek(&self) -> Option<Component<'a>> {
+        self.clone().next()
+    }
 }
 
-
-impl ToStr for WindowsPath {
-    fn to_str(&self) -> ~str {
-        let mut s = ~"";
-        match self.host {
-          Some(ref h) => {
-            s.push_str("\\\\");
-            s.push_str(*h);
-          }
-          None => { }
-        }
-        match self.device {
-          Some(ref d) => {
-            s.push_str(*d);
-            s.push_str(":");
-          }
-          None => { }
-        }
-        if self.is_absolute {
-            s.push_str("\\");
-        }
-        s + self.components.connect("\\")
+impl<'a> Iter<'a> {
+    /// Extract a slice corresponding to the portion of the path remaining for iteration.
+    pub fn as_path(&self) -> &'a Path {
+        self.inner.as_path()
     }
 }
 
-impl c_str::ToCStr for WindowsPath {
-    fn to_c_str(&self) -> c_str::CString {
-        self.to_str().to_c_str()
-    }
+impl<'a> Iterator for Iter<'a> {
+    type Item = &'a OsStr;
 
-    unsafe fn to_c_str_unchecked(&self) -> c_str::CString {
-        self.to_str().to_c_str_unchecked()
+    fn next(&mut self) -> Option<&'a OsStr> {
+        self.inner.next().map(Component::as_os_str)
     }
 }
 
-impl GenericPath for WindowsPath {
-    fn from_str(s: &str) -> WindowsPath {
-        let host;
-        let device;
-        let rest;
-
-        match (
-            windows::extract_drive_prefix(s),
-            windows::extract_unc_prefix(s),
-        ) {
-            (Some((ref d, ref r)), _) => {
-                host = None;
-                device = Some((*d).clone());
-                rest = (*r).clone();
-            }
-            (None, Some((ref h, ref r))) => {
-                host = Some((*h).clone());
-                device = None;
-                rest = (*r).clone();
-            }
-            (None, None) => {
-                host = None;
-                device = None;
-                rest = s.to_owned();
-            }
-        }
-
-        let components = rest.split_iter(windows::is_sep)
-            .filter_map(|s| if s.is_empty() {None} else {Some(s.to_owned())})
-            .collect();
-
-        let is_absolute = (rest.len() != 0 && windows::is_sep(rest[0] as char));
-        WindowsPath {
-            host: host,
-            device: device,
-            is_absolute: is_absolute,
-            components: components,
-        }
+impl<'a> DoubleEndedIterator for Iter<'a> {
+    fn next_back(&mut self) -> Option<&'a OsStr> {
+        self.inner.next_back().map(Component::as_os_str)
     }
+}
 
-    fn with_dirname(&self, d: &str) -> WindowsPath {
-        let dpath = WindowsPath(d);
-        match self.filename() {
-            Some(ref f) => dpath.push(*f),
-            None => dpath,
-        }
-    }
+impl<'a> Iterator for Components<'a> {
+    type Item = Component<'a>;
 
-    fn with_filename(&self, f: &str) -> WindowsPath {
-        assert!(! f.iter().all(windows::is_sep));
-        self.dir_path().push(f)
-    }
-
-    fn file_path(&self) -> WindowsPath {
-        WindowsPath {
-            host: None,
-            device: None,
-            is_absolute: false,
-            components: match self.filename() {
-                None => ~[],
-                Some(ref f) => ~[(*f).to_owned()],
-            }
-        }
-    }
-
-    fn push(&self, s: &str) -> WindowsPath {
-        let mut v = self.components.clone();
-        for s in s.split_iter(windows::is_sep) {
-            if !s.is_empty() {
-                v.push(s.to_owned())
-            }
-        }
-        WindowsPath { components: v, ..(*self).clone() }
-    }
-
-    fn push_many<S: Str>(&self, cs: &[S]) -> WindowsPath {
-        let mut v = self.components.clone();
-        for e in cs.iter() {
-            for s in e.as_slice().split_iter(windows::is_sep) {
-                if !s.is_empty() {
-                    v.push(s.to_owned())
+    fn next(&mut self) -> Option<Component<'a>> {
+        while !self.finished() {
+            match self.front {
+                State::Prefix if self.prefix_len() > 0 => {
+                    self.front = State::Root;
+                    debug_assert!(self.prefix_len() <= self.path.len());
+                    let raw = &self.path[.. self.prefix_len()];
+                    self.path = &self.path[self.prefix_len() .. ];
+                    return Some(Component::Prefix {
+                        raw: unsafe { u8_slice_as_os_str(raw) },
+                        parsed: self.prefix.unwrap()
+                    })
                 }
-            }
-        }
-        // tedious, but as-is, we can't use ..self
-        WindowsPath {
-            host: self.host.clone(),
-            device: self.device.clone(),
-            is_absolute: self.is_absolute,
-            components: v
-        }
-    }
-
-    fn pop(&self) -> WindowsPath {
-        let mut cs = self.components.clone();
-        if cs.len() != 0 {
-            cs.pop();
-        }
-        WindowsPath {
-            host: self.host.clone(),
-            device: self.device.clone(),
-            is_absolute: self.is_absolute,
-            components: cs,
-        }
-    }
-
-    fn unsafe_join(&self, other: &WindowsPath) -> WindowsPath {
-        /* rhs not absolute is simple push */
-        if !other.is_absolute {
-            return self.push_many(other.components);
-        }
-
-        /* if rhs has a host set, then the whole thing wins */
-        match other.host {
-            Some(ref host) => {
-                return WindowsPath {
-                    host: Some((*host).clone()),
-                    device: other.device.clone(),
-                    is_absolute: true,
-                    components: other.components.clone(),
-                };
-            }
-            _ => {}
-        }
-
-        /* if rhs has a device set, then a part wins */
-        match other.device {
-            Some(ref device) => {
-                return WindowsPath {
-                    host: None,
-                    device: Some((*device).clone()),
-                    is_absolute: true,
-                    components: other.components.clone(),
-                };
-            }
-            _ => {}
-        }
-
-        /* fallback: host and device of lhs win, but the
-           whole path of the right */
-        WindowsPath {
-            host: self.host.clone(),
-            device: self.device.clone(),
-            is_absolute: self.is_absolute || other.is_absolute,
-            components: other.components.clone(),
-        }
-    }
-
-    fn is_restricted(&self) -> bool {
-        match self.filestem() {
-            Some(stem) => {
-                // FIXME: #4318 Instead of to_ascii and to_str_ascii, could use
-                // to_ascii_move and to_str_move to not do a unnecessary copy.
-                match stem.to_ascii().to_lower().to_str_ascii() {
-                    ~"con" | ~"aux" | ~"com1" | ~"com2" | ~"com3" | ~"com4" |
-                    ~"lpt1" | ~"lpt2" | ~"lpt3" | ~"prn" | ~"nul" => true,
-                    _ => false
+                State::Prefix => {
+                    self.front = State::Root;
                 }
-            },
-            None => false
-        }
-    }
-
-    fn normalize(&self) -> WindowsPath {
-        WindowsPath {
-            host: self.host.clone(),
-            device: match self.device {
-                None => None,
-
-                // FIXME: #4318 Instead of to_ascii and to_str_ascii, could use
-                // to_ascii_move and to_str_move to not do a unnecessary copy.
-                Some(ref device) => Some(device.to_ascii().to_upper().to_str_ascii())
-            },
-            is_absolute: self.is_absolute,
-            components: normalize(self.components)
-        }
-    }
-
-    fn is_absolute(&self) -> bool {
-        self.is_absolute
-    }
-
-    fn components<'a>(&'a self) -> &'a [~str] { self.components.as_slice() }
-
-}
-
-pub fn normalize(components: &[~str]) -> ~[~str] {
-    let mut cs = ~[];
-    for c in components.iter() {
-        if *c == ~"." && components.len() > 1 { loop; }
-        if *c == ~"" { loop; }
-        if *c == ~".." && cs.len() != 0 {
-            cs.pop();
-            loop;
-        }
-        cs.push((*c).clone());
-    }
-    cs
-}
-
-// Various posix helpers.
-pub mod posix {
-
-    #[inline]
-    pub fn is_sep(u: char) -> bool {
-        u == '/'
-    }
-
-}
-
-// Various windows helpers.
-pub mod windows {
-    use libc;
-    use option::{None, Option, Some};
-
-    #[inline]
-    pub fn is_sep(u: char) -> bool {
-        u == '/' || u == '\\'
-    }
-
-    pub fn extract_unc_prefix(s: &str) -> Option<(~str,~str)> {
-        if (s.len() > 1 &&
-            (s[0] == '\\' as u8 || s[0] == '/' as u8) &&
-            s[0] == s[1]) {
-            let mut i = 2;
-            while i < s.len() {
-                if is_sep(s[i] as char) {
-                    let pre = s.slice(2, i).to_owned();
-                    let rest = s.slice(i, s.len()).to_owned();
-                    return Some((pre, rest));
+                State::Root => {
+                    self.front = State::Body;
+                    if self.has_physical_root {
+                        debug_assert!(self.path.len() > 0);
+                        self.path = &self.path[1..];
+                        return Some(Component::RootDir)
+                    } else if let Some(p) = self.prefix {
+                        if p.has_implicit_root() && !p.is_verbatim() {
+                            return Some(Component::RootDir)
+                        }
+                    }
                 }
-                i += 1;
+                State::Body if !self.path.is_empty() => {
+                    let (size, comp) = self.parse_next_component();
+                    self.path = &self.path[size ..];
+                    if comp.is_some() { return comp }
+                }
+                State::Body => {
+                    self.front = State::Suffix;
+                }
+                State::Suffix => {
+                    self.front = State::Done;
+                    if self.prefix_verbatim() {
+                        return Some(Component::Empty)
+                    } else {
+                        return Some(Component::CurDir)
+                    }
+                }
+                State::Done => unreachable!()
             }
         }
         None
     }
+}
 
-    pub fn extract_drive_prefix(s: &str) -> Option<(~str,~str)> {
-        #[fixed_stack_segment]; #[inline(never)];
-
-        unsafe {
-            if (s.len() > 1 &&
-                libc::isalpha(s[0] as libc::c_int) != 0 &&
-                s[1] == ':' as u8) {
-                let rest = if s.len() == 2 {
-                    ~""
-                } else {
-                    s.slice(2, s.len()).to_owned()
-                };
-                return Some((s.slice(0,1).to_owned(), rest));
+impl<'a> DoubleEndedIterator for Components<'a> {
+    fn next_back(&mut self) -> Option<Component<'a>> {
+        while !self.finished() {
+            match self.back {
+                State::Suffix => {
+                    self.back = State::Body;
+                    if self.prefix_verbatim() {
+                        return Some(Component::Empty)
+                    } else {
+                        return Some(Component::CurDir)
+                    }
+                }
+                State::Body if self.path.len() > self.prefix_and_root() => {
+                    let (size, comp) = self.parse_next_component_back();
+                    self.path = &self.path[.. self.path.len() - size];
+                    if comp.is_some() { return comp }
+                }
+                State::Body => {
+                    self.back = State::Root;
+                }
+                State::Root => {
+                    self.back = State::Prefix;
+                    if self.has_physical_root {
+                        self.path = &self.path[.. self.path.len() - 1];
+                        return Some(Component::RootDir)
+                    } else if let Some(p) = self.prefix {
+                        if p.has_implicit_root() && !p.is_verbatim() {
+                            return Some(Component::RootDir)
+                        }
+                    }
+                }
+                State::Prefix if self.prefix_len() > 0 => {
+                    self.back = State::Done;
+                    return Some(Component::Prefix {
+                        raw: unsafe { u8_slice_as_os_str(self.path) },
+                        parsed: self.prefix.unwrap()
+                    })
+                }
+                State::Prefix => {
+                    self.back = State::Done;
+                    return None
+                }
+                State::Done => unreachable!()
             }
-            None
+        }
+        None
+    }
+}
+
+fn optional_path(path: &Path) -> Option<&Path> {
+    if path.as_u8_slice().is_empty() { None } else { Some(path) }
+}
+
+impl<'a> cmp::PartialEq for Components<'a> {
+    fn eq(&self, other: &Components<'a>) -> bool {
+        iter::order::eq(self.clone(), other.clone())
+    }
+}
+
+impl<'a> cmp::Eq for Components<'a> {}
+
+impl<'a> cmp::PartialOrd for Components<'a> {
+    fn partial_cmp(&self, other: &Components<'a>) -> Option<cmp::Ordering> {
+        iter::order::partial_cmp(self.clone(), other.clone())
+    }
+}
+
+impl<'a> cmp::Ord for Components<'a> {
+    fn cmp(&self, other: &Components<'a>) -> cmp::Ordering {
+        iter::order::cmp(self.clone(), other.clone())
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Basic types and traits
+////////////////////////////////////////////////////////////////////////////////
+
+/// An owned, mutable path (akin to `String`).
+///
+/// This type provides methods like `push` and `set_extension` that mutate the
+/// path in place. It also implements `Deref` to `Path`, meaning that all
+/// methods on `Path` slices are available on `PathBuf` values as well.
+///
+/// More details about the overall approach can be found in
+/// the module documentation.
+///
+/// # Example
+///
+/// ```rust
+/// use std::path::PathBuf;
+///
+/// let mut path = PathBuf::new("c:\\");
+/// path.push("windows");
+/// path.push("system32");
+/// path.set_extension("dll");
+/// ```
+#[derive(Clone, Hash)]
+pub struct PathBuf {
+    inner: OsString
+}
+
+impl PathBuf {
+    fn as_mut_vec(&mut self) -> &mut Vec<u8> {
+        unsafe { mem::transmute(self) }
+    }
+
+    /// Allocate a `PathBuf` with initial contents given by the
+    /// argument.
+    pub fn new<S: ?Sized + AsOsStr>(s: &S) -> PathBuf {
+        PathBuf { inner: s.as_os_str().to_os_string() }
+    }
+
+    /// Extend `self` with `path`.
+    ///
+    /// If `path` is absolute, it replaces the current path.
+    ///
+    /// On Windows:
+    ///
+    /// * if `path` has a root but no prefix (e.g. `\windows`), it
+    ///   replaces everything except for the prefix (if any) of `self`.
+    /// * if `path` has a prefix but no root, it replaces `self.
+    pub fn push<P: ?Sized>(&mut self, path: &P) where P: AsPath {
+        // in general, a separator is needed if the rightmost byte is not a separator
+        let mut need_sep = self.as_mut_vec().last().map(|c| !is_sep_byte(*c)).unwrap_or(false);
+
+        // in the special case of `C:` on Windows, do *not* add a separator
+        {
+            let comps = self.components();
+            if comps.prefix_len() > 0 &&
+                comps.prefix_len() == comps.path.len() &&
+                comps.prefix.unwrap().is_drive()
+            {
+                need_sep = false
+            }
+        }
+
+        let path = path.as_path();
+
+        // absolute `path` replaces `self`
+        if path.is_absolute() || path.prefix().is_some() {
+            self.as_mut_vec().truncate(0);
+
+        // `path` has a root but no prefix, e.g. `\windows` (Windows only)
+        } else if path.has_root() {
+            let prefix_len = self.components().prefix_remaining();
+            self.as_mut_vec().truncate(prefix_len);
+
+        // `path` is a pure relative path
+        } else if need_sep {
+            self.inner.push(MAIN_SEP_STR);
+        }
+
+        self.inner.push(path);
+    }
+
+    /// Truncate `self` to `self.parent()`.
+    ///
+    /// Returns `false` and does nothing if `self.parent()` is `None`.
+    /// Otherwise, returns `true`.
+    pub fn pop(&mut self) -> bool {
+        match self.parent().map(|p| p.as_u8_slice().len()) {
+            Some(len) => {
+                self.as_mut_vec().truncate(len);
+                true
+            }
+            None => false
+        }
+    }
+
+    /// Updates `self.file_name()` to `file_name`.
+    ///
+    /// If `self.file_name()` was `None`, this is equivalent to pushing
+    /// `file_name`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::path::{Path, PathBuf};
+    ///
+    /// let mut buf = PathBuf::new("/foo/");
+    /// assert!(buf.file_name() == None);
+    /// buf.set_file_name("bar");
+    /// assert!(buf == PathBuf::new("/foo/bar"));
+    /// assert!(buf.file_name().is_some());
+    /// buf.set_file_name("baz.txt");
+    /// assert!(buf == PathBuf::new("/foo/baz.txt"));
+    /// ```
+    pub fn set_file_name<S: ?Sized>(&mut self, file_name: &S) where S: AsOsStr {
+        if self.file_name().is_some() && !self.pop() {
+            // Given that there is a file name, this is reachable only for
+            // Windows paths like c:file or paths like `foo`, but not `c:\` or
+            // `/`.
+            let prefix_len = self.components().prefix_remaining();
+            self.as_mut_vec().truncate(prefix_len);
+        }
+        self.push(file_name.as_os_str());
+    }
+
+    /// Updates `self.extension()` to `extension`.
+    ///
+    /// If `self.file_name()` is `None`, does nothing and returns `false`.
+    ///
+    /// Otherwise, returns `true`; if `self.extension()` is `None`, the extension
+    /// is added; otherwise it is replaced.
+    pub fn set_extension<S: ?Sized + AsOsStr>(&mut self, extension: &S) -> bool {
+        if self.file_name().is_none() { return false; }
+
+        let mut stem = match self.file_stem() {
+            Some(stem) => stem.to_os_string(),
+            None => OsString::from_str(""),
+        };
+
+        let extension = extension.as_os_str();
+        if os_str_as_u8_slice(extension).len() > 0 {
+            stem.push(".");
+            stem.push(extension);
+        }
+        self.set_file_name(&stem);
+
+        true
+    }
+
+    /// Consume the `PathBuf`, yielding its internal `OsString` storage
+    pub fn into_os_string(self) -> OsString {
+        self.inner
+    }
+}
+
+impl<'a, P: ?Sized + 'a> iter::FromIterator<&'a P> for PathBuf where P: AsPath {
+    fn from_iter<I: IntoIterator<Item = &'a P>>(iter: I) -> PathBuf {
+        let mut buf = PathBuf::new("");
+        buf.extend(iter);
+        buf
+    }
+}
+
+impl<'a, P: ?Sized + 'a> iter::Extend<&'a P> for PathBuf where P: AsPath {
+    fn extend<I: IntoIterator<Item = &'a P>>(&mut self, iter: I) {
+        for p in iter {
+            self.push(p)
         }
     }
 }
 
+impl fmt::Debug for PathBuf {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        fmt::Debug::fmt(&**self, formatter)
+    }
+}
+
+impl ops::Deref for PathBuf {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        unsafe { mem::transmute(&self.inner[..]) }
+    }
+}
+
+impl Borrow<Path> for PathBuf {
+    fn borrow(&self) -> &Path {
+        self.deref()
+    }
+}
+
+impl IntoCow<'static, Path> for PathBuf {
+    fn into_cow(self) -> Cow<'static, Path> {
+        Cow::Owned(self)
+    }
+}
+
+impl<'a> IntoCow<'a, Path> for &'a Path {
+    fn into_cow(self) -> Cow<'a, Path> {
+        Cow::Borrowed(self)
+    }
+}
+
+impl ToOwned for Path {
+    type Owned = PathBuf;
+    fn to_owned(&self) -> PathBuf { self.to_path_buf() }
+}
+
+impl cmp::PartialEq for PathBuf {
+    fn eq(&self, other: &PathBuf) -> bool {
+        self.components() == other.components()
+    }
+}
+
+impl cmp::Eq for PathBuf {}
+
+impl cmp::PartialOrd for PathBuf {
+    fn partial_cmp(&self, other: &PathBuf) -> Option<cmp::Ordering> {
+        self.components().partial_cmp(&other.components())
+    }
+}
+
+impl cmp::Ord for PathBuf {
+    fn cmp(&self, other: &PathBuf) -> cmp::Ordering {
+        self.components().cmp(&other.components())
+    }
+}
+
+impl AsOsStr for PathBuf {
+    fn as_os_str(&self) -> &OsStr {
+        &self.inner[..]
+    }
+}
+
+/// A slice of a path (akin to `str`).
+///
+/// This type supports a number of operations for inspecting a path, including
+/// breaking the path into its components (separated by `/` or `\`, depending on
+/// the platform), extracting the file name, determining whether the path is
+/// absolute, and so on. More details about the overall approach can be found in
+/// the module documentation.
+///
+/// This is an *unsized* type, meaning that it must always be used with behind a
+/// pointer like `&` or `Box`.
+///
+/// # Example
+///
+/// ```rust
+/// use std::path::Path;
+///
+/// let path = Path::new("/tmp/foo/bar.txt");
+/// let file = path.file_name();
+/// let extension = path.extension();
+/// let parent_dir = path.parent();
+/// ```
+///
+#[derive(Hash)]
+pub struct Path {
+    inner: OsStr
+}
+
+impl Path {
+    // The following (private!) function allows construction of a path from a u8
+    // slice, which is only safe when it is known to follow the OsStr encoding.
+    unsafe fn from_u8_slice(s: &[u8]) -> &Path {
+        mem::transmute(s)
+    }
+    // The following (private!) function reveals the byte encoding used for OsStr.
+    fn as_u8_slice(&self) -> &[u8] {
+        unsafe { mem::transmute(self) }
+    }
+
+    /// Directly wrap a string slice as a `Path` slice.
+    ///
+    /// This is a cost-free conversion.
+    pub fn new<S: ?Sized + AsOsStr>(s: &S) -> &Path {
+        unsafe { mem::transmute(s.as_os_str()) }
+    }
+
+    /// Yield a `&str` slice if the `Path` is valid unicode.
+    ///
+    /// This conversion may entail doing a check for UTF-8 validity.
+    pub fn to_str(&self) -> Option<&str> {
+        self.inner.to_str()
+    }
+
+    /// Convert a `Path` to a `Cow<str>`.
+    ///
+    /// Any non-Unicode sequences are replaced with U+FFFD REPLACEMENT CHARACTER.
+    pub fn to_string_lossy(&self) -> Cow<str> {
+        self.inner.to_string_lossy()
+    }
+
+    /// Convert a `Path` to an owned `PathBuf`.
+    pub fn to_path_buf(&self) -> PathBuf {
+        PathBuf::new(self)
+    }
+
+    /// A path is *absolute* if it is independent of the current directory.
+    ///
+    /// * On Unix, a path is absolute if it starts with the root, so
+    /// `is_absolute` and `has_root` are equivalent.
+    ///
+    /// * On Windows, a path is absolute if it has a prefix and starts with the
+    /// root: `c:\windows` is absolute, while `c:temp` and `\temp` are not. In
+    /// other words, `path.is_absolute() == path.prefix().is_some() && path.has_root()`.
+    pub fn is_absolute(&self) -> bool {
+        self.has_root() &&
+            (cfg!(unix) || self.prefix().is_some())
+    }
+
+    /// A path is *relative* if it is not absolute.
+    pub fn is_relative(&self) -> bool {
+        !self.is_absolute()
+    }
+
+    /// Returns the *prefix* of a path, if any.
+    ///
+    /// Prefixes are relevant only for Windows paths, and consist of volumes
+    /// like `C:`, UNC prefixes like `\\server`, and others described in more
+    /// detail in `std::os::windows::PathExt`.
+    pub fn prefix(&self) -> Option<&Path> {
+        let iter = self.components();
+        optional_path(unsafe {
+            Path::from_u8_slice(
+                &self.as_u8_slice()[.. iter.prefix_remaining()])
+        })
+    }
+
+    /// A path has a root if the body of the path begins with the directory separator.
+    ///
+    /// * On Unix, a path has a root if it begins with `/`.
+    ///
+    /// * On Windows, a path has a root if it:
+    ///     * has no prefix and begins with a separator, e.g. `\\windows`
+    ///     * has a prefix followed by a separator, e.g. `c:\windows` but not `c:windows`
+    ///     * has any non-disk prefix, e.g. `\\server\share`
+    pub fn has_root(&self) -> bool {
+         self.components().has_root()
+    }
+
+    /// The path without its final component.
+    ///
+    /// Does nothing, returning `None` if the path consists of just a prefix
+    /// and/or root directory reference.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::path::Path;
+    ///
+    /// let path = Path::new("/foo/bar");
+    /// let foo = path.parent().unwrap();
+    /// assert!(foo == Path::new("/foo"));
+    /// let root = foo.parent().unwrap();
+    /// assert!(root == Path::new("/"));
+    /// assert!(root.parent() == None);
+    /// ```
+    pub fn parent(&self) -> Option<&Path> {
+        let mut comps = self.components();
+        let comp = comps.next_back();
+        let rest = optional_path(comps.as_path());
+
+        match (comp, comps.next_back()) {
+            (Some(Component::CurDir), Some(Component::RootDir)) => None,
+            (Some(Component::CurDir), Some(Component::Prefix { .. })) => None,
+            (Some(Component::Empty), Some(Component::RootDir)) => None,
+            (Some(Component::Empty), Some(Component::Prefix { .. })) => None,
+            (Some(Component::Prefix { .. }), None) => None,
+            (Some(Component::RootDir), Some(Component::Prefix { .. })) => None,
+            _ => rest
+        }
+    }
+
+    /// The final component of the path, if it is a normal file.
+    ///
+    /// If the path terminates in `.`, `..`, or consists solely or a root of
+    /// prefix, `file` will return `None`.
+    pub fn file_name(&self) -> Option<&OsStr> {
+        self.components().next_back().and_then(|p| match p {
+            Component::Normal(p) => Some(p.as_os_str()),
+            _ => None
+        })
+    }
+
+    /// Returns a path that, when joined onto `base`, yields `self`.
+    pub fn relative_from<'a, P: ?Sized>(&'a self, base: &'a P) -> Option<&Path> where
+        P: AsPath
+    {
+        iter_after(self.components(), base.as_path().components()).map(|c| c.as_path())
+    }
+
+    /// Determines whether `base` is a prefix of `self`.
+    pub fn starts_with<P: ?Sized>(&self, base: &P) -> bool where P: AsPath {
+        iter_after(self.components(), base.as_path().components()).is_some()
+    }
+
+    /// Determines whether `child` is a suffix of `self`.
+    pub fn ends_with<P: ?Sized>(&self, child: &P) -> bool where P: AsPath {
+        iter_after(self.components().rev(), child.as_path().components().rev()).is_some()
+    }
+
+    /// Extract the stem (non-extension) portion of `self.file()`.
+    ///
+    /// The stem is:
+    ///
+    /// * None, if there is no file name;
+    /// * The entire file name if there is no embedded `.`;
+    /// * The entire file name if the file name begins with `.` and has no other `.`s within;
+    /// * Otherwise, the portion of the file name before the final `.`
+    pub fn file_stem(&self) -> Option<&OsStr> {
+        self.file_name().map(split_file_at_dot).and_then(|(before, after)| before.or(after))
+    }
+
+    /// Extract the extension of `self.file()`, if possible.
+    ///
+    /// The extension is:
+    ///
+    /// * None, if there is no file name;
+    /// * None, if there is no embedded `.`;
+    /// * None, if the file name begins with `.` and has no other `.`s within;
+    /// * Otherwise, the portion of the file name after the final `.`
+    pub fn extension(&self) -> Option<&OsStr> {
+        self.file_name().map(split_file_at_dot).and_then(|(before, after)| before.and(after))
+    }
+
+    /// Creates an owned `PathBuf` with `path` adjoined to `self`.
+    ///
+    /// See `PathBuf::push` for more details on what it means to adjoin a path.
+    pub fn join<P: ?Sized>(&self, path: &P) -> PathBuf where P: AsPath {
+        let mut buf = self.to_path_buf();
+        buf.push(path);
+        buf
+    }
+
+    /// Creates an owned `PathBuf` like `self` but with the given file name.
+    ///
+    /// See `PathBuf::set_file_name` for more details.
+    pub fn with_file_name<S: ?Sized>(&self, file_name: &S) -> PathBuf where S: AsOsStr {
+        let mut buf = self.to_path_buf();
+        buf.set_file_name(file_name);
+        buf
+    }
+
+    /// Creates an owned `PathBuf` like `self` but with the given extension.
+    ///
+    /// See `PathBuf::set_extension` for more details.
+    pub fn with_extension<S: ?Sized>(&self, extension: &S) -> PathBuf where S: AsOsStr {
+        let mut buf = self.to_path_buf();
+        buf.set_extension(extension);
+        buf
+    }
+
+    /// Produce an iterator over the components of the path.
+    pub fn components(&self) -> Components {
+        let prefix = parse_prefix(self.as_os_str());
+        Components {
+            path: self.as_u8_slice(),
+            prefix: prefix,
+            has_physical_root: has_physical_root(self.as_u8_slice(), prefix),
+            front: State::Prefix,
+            back: if has_suffix(self.as_u8_slice(), prefix) { State::Suffix }
+                  else { State::Body },
+        }
+    }
+
+    /// Produce an iterator over the path's components viewed as `OsStr` slices.
+    pub fn iter(&self) -> Iter {
+        Iter { inner: self.components() }
+    }
+
+    /// Returns an object that implements `Display` for safely printing paths
+    /// that may contain non-Unicode data.
+    pub fn display(&self) -> Display {
+        Display { path: self }
+    }
+}
+
+impl AsOsStr for Path {
+    fn as_os_str(&self) -> &OsStr {
+        &self.inner
+    }
+}
+
+impl fmt::Debug for Path {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        self.inner.fmt(formatter)
+    }
+}
+
+/// Helper struct for safely printing paths with `format!()` and `{}`
+pub struct Display<'a> {
+    path: &'a Path
+}
+
+impl<'a> fmt::Debug for Display<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Debug::fmt(&self.path.to_string_lossy(), f)
+    }
+}
+
+impl<'a> fmt::Display for Display<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Display::fmt(&self.path.to_string_lossy(), f)
+    }
+}
+
+impl cmp::PartialEq for Path {
+    fn eq(&self, other: &Path) -> bool {
+        iter::order::eq(self.components(), other.components())
+    }
+}
+
+impl cmp::Eq for Path {}
+
+impl cmp::PartialOrd for Path {
+    fn partial_cmp(&self, other: &Path) -> Option<cmp::Ordering> {
+        self.components().partial_cmp(&other.components())
+    }
+}
+
+impl cmp::Ord for Path {
+    fn cmp(&self, other: &Path) -> cmp::Ordering {
+        self.components().cmp(&other.components())
+    }
+}
+
+/// Freely convertible to a `Path`.
+pub trait AsPath {
+    /// Convert to a `Path`.
+    fn as_path(&self) -> &Path;
+}
+
+impl<T: AsOsStr + ?Sized> AsPath for T {
+    fn as_path(&self) -> &Path { Path::new(self.as_os_str()) }
+}
+
 #[cfg(test)]
 mod tests {
-    use option::{None, Some};
-    use path::{PosixPath, WindowsPath, windows};
+    use super::*;
+    use core::prelude::*;
+    use string::{ToString, String};
+    use vec::Vec;
 
-    #[test]
-    fn test_double_slash_collapsing() {
-        let path = PosixPath("tmp/");
-        let path = path.push("/hmm");
-        let path = path.normalize();
-        assert_eq!(~"tmp/hmm", path.to_str());
+    macro_rules! t(
+        ($path:expr, iter: $iter:expr) => (
+            {
+                let path = Path::new($path);
 
-        let path = WindowsPath("tmp/");
-        let path = path.push("/hmm");
-        let path = path.normalize();
-        assert_eq!(~"tmp\\hmm", path.to_str());
-    }
+                // Forward iteration
+                let comps = path.iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect::<Vec<String>>();
+                let exp: &[&str] = &$iter;
+                let exps = exp.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+                assert!(comps == exps, "iter: Expected {:?}, found {:?}",
+                        exps, comps);
 
-    #[test]
-    fn test_filetype_foo_bar() {
-        let wp = PosixPath("foo.bar");
-        assert_eq!(wp.filetype(), Some(".bar"));
-
-        let wp = WindowsPath("foo.bar");
-        assert_eq!(wp.filetype(), Some(".bar"));
-    }
-
-    #[test]
-    fn test_filetype_foo() {
-        let wp = PosixPath("foo");
-        assert_eq!(wp.filetype(), None);
-
-        let wp = WindowsPath("foo");
-        assert_eq!(wp.filetype(), None);
-    }
-
-    #[test]
-    fn test_posix_paths() {
-        fn t(wp: &PosixPath, s: &str) {
-            let ss = wp.to_str();
-            let sss = s.to_owned();
-            if (ss != sss) {
-                debug!("got %s", ss);
-                debug!("expected %s", sss);
-                assert_eq!(ss, sss);
+                // Reverse iteration
+                let comps = Path::new($path).iter().rev()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect::<Vec<String>>();
+                let exps = exps.into_iter().rev().collect::<Vec<String>>();
+                assert!(comps == exps, "iter().rev(): Expected {:?}, found {:?}",
+                        exps, comps);
             }
+        );
+
+        ($path:expr, has_root: $has_root:expr, is_absolute: $is_absolute:expr) => (
+            {
+                let path = Path::new($path);
+
+                let act_root = path.has_root();
+                assert!(act_root == $has_root, "has_root: Expected {:?}, found {:?}",
+                        $has_root, act_root);
+
+                let act_abs = path.is_absolute();
+                assert!(act_abs == $is_absolute, "is_absolute: Expected {:?}, found {:?}",
+                        $is_absolute, act_abs);
+            }
+        );
+
+        ($path:expr, parent: $parent:expr, file_name: $file:expr) => (
+            {
+                let path = Path::new($path);
+
+                let parent = path.parent().map(|p| p.to_str().unwrap());
+                let exp_parent: Option<&str> = $parent;
+                assert!(parent == exp_parent, "parent: Expected {:?}, found {:?}",
+                        exp_parent, parent);
+
+                let file = path.file_name().map(|p| p.to_str().unwrap());
+                let exp_file: Option<&str> = $file;
+                assert!(file == exp_file, "file_name: Expected {:?}, found {:?}",
+                        exp_file, file);
+            }
+        );
+
+        ($path:expr, file_stem: $file_stem:expr, extension: $extension:expr) => (
+            {
+                let path = Path::new($path);
+
+                let stem = path.file_stem().map(|p| p.to_str().unwrap());
+                let exp_stem: Option<&str> = $file_stem;
+                assert!(stem == exp_stem, "file_stem: Expected {:?}, found {:?}",
+                        exp_stem, stem);
+
+                let ext = path.extension().map(|p| p.to_str().unwrap());
+                let exp_ext: Option<&str> = $extension;
+                assert!(ext == exp_ext, "extension: Expected {:?}, found {:?}",
+                        exp_ext, ext);
+            }
+        );
+
+        ($path:expr, iter: $iter:expr,
+                     has_root: $has_root:expr, is_absolute: $is_absolute:expr,
+                     parent: $parent:expr, file_name: $file:expr,
+                     file_stem: $file_stem:expr, extension: $extension:expr) => (
+            {
+                t!($path, iter: $iter);
+                t!($path, has_root: $has_root, is_absolute: $is_absolute);
+                t!($path, parent: $parent, file_name: $file);
+                t!($path, file_stem: $file_stem, extension: $extension);
+            }
+        );
+    );
+
+    #[test]
+    fn into_cow() {
+        use borrow::{Cow, IntoCow};
+
+        let static_path = Path::new("/home/foo");
+        let static_cow_path: Cow<'static, Path> = static_path.into_cow();
+        let pathbuf = PathBuf::new("/home/foo");
+
+        {
+            let path: &Path = &pathbuf;
+            let borrowed_cow_path: Cow<Path> = path.into_cow();
+
+            assert_eq!(static_cow_path, borrowed_cow_path);
         }
 
-        t(&(PosixPath("hi")), "hi");
-        t(&(PosixPath("/lib")), "/lib");
-        t(&(PosixPath("hi/there")), "hi/there");
-        t(&(PosixPath("hi/there.txt")), "hi/there.txt");
+        let owned_cow_path: Cow<'static, Path> = pathbuf.into_cow();
 
-        t(&(PosixPath("hi/there.txt")), "hi/there.txt");
-        t(&(PosixPath("hi/there.txt")
-           .with_filetype("")), "hi/there");
-
-        t(&(PosixPath("/a/b/c/there.txt")
-            .with_dirname("hi")), "hi/there.txt");
-
-        t(&(PosixPath("hi/there.txt")
-            .with_dirname(".")), "./there.txt");
-
-        t(&(PosixPath("a/b/c")
-            .push("..")), "a/b/c/..");
-
-        t(&(PosixPath("there.txt")
-            .with_filetype("o")), "there.o");
-
-        t(&(PosixPath("hi/there.txt")
-            .with_filetype("o")), "hi/there.o");
-
-        t(&(PosixPath("hi/there.txt")
-            .with_filetype("o")
-            .with_dirname("/usr/lib")),
-          "/usr/lib/there.o");
-
-        t(&(PosixPath("hi/there.txt")
-            .with_filetype("o")
-            .with_dirname("/usr/lib/")),
-          "/usr/lib/there.o");
-
-        t(&(PosixPath("hi/there.txt")
-            .with_filetype("o")
-            .with_dirname("/usr//lib//")),
-            "/usr/lib/there.o");
-
-        t(&(PosixPath("/usr/bin/rust")
-            .push_many([~"lib", ~"thingy.so"])
-            .with_filestem("librustc")),
-          "/usr/bin/rust/lib/librustc.so");
-
+        assert_eq!(static_cow_path, owned_cow_path);
     }
 
     #[test]
-    fn test_posix_push_with_backslash() {
-        let a = PosixPath("/aaa/bbb");
-        let b = a.push("x\\y"); // \ is not a file separator for posix paths
-        assert_eq!(a.components.len(), 2);
-        assert_eq!(b.components.len(), 3);
+    #[cfg(unix)]
+    pub fn test_decompositions_unix() {
+        t!("",
+           iter: [],
+           has_root: false,
+           is_absolute: false,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("foo",
+           iter: ["foo"],
+           has_root: false,
+           is_absolute: false,
+           parent: None,
+           file_name: Some("foo"),
+           file_stem: Some("foo"),
+           extension: None
+           );
+
+        t!("/",
+           iter: ["/", "."],
+           has_root: true,
+           is_absolute: true,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("/foo",
+           iter: ["/", "foo"],
+           has_root: true,
+           is_absolute: true,
+           parent: Some("/"),
+           file_name: Some("foo"),
+           file_stem: Some("foo"),
+           extension: None
+           );
+
+        t!("foo/",
+           iter: ["foo", "."],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("foo"),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("/foo/",
+           iter: ["/", "foo", "."],
+           has_root: true,
+           is_absolute: true,
+           parent: Some("/foo"),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("foo/bar",
+           iter: ["foo", "bar"],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("foo"),
+           file_name: Some("bar"),
+           file_stem: Some("bar"),
+           extension: None
+           );
+
+        t!("/foo/bar",
+           iter: ["/", "foo", "bar"],
+           has_root: true,
+           is_absolute: true,
+           parent: Some("/foo"),
+           file_name: Some("bar"),
+           file_stem: Some("bar"),
+           extension: None
+           );
+
+        t!("///foo///",
+           iter: ["/", "foo", "."],
+           has_root: true,
+           is_absolute: true,
+           parent: Some("///foo"),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("///foo///bar",
+           iter: ["/", "foo", "bar"],
+           has_root: true,
+           is_absolute: true,
+           parent: Some("///foo"),
+           file_name: Some("bar"),
+           file_stem: Some("bar"),
+           extension: None
+           );
+
+        t!("./.",
+           iter: [".", "."],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("."),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("./.",
+           iter: [".", "."],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("."),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("/..",
+           iter: ["/", ".."],
+           has_root: true,
+           is_absolute: true,
+           parent: Some("/"),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("../",
+           iter: ["..", "."],
+           has_root: false,
+           is_absolute: false,
+           parent: Some(".."),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("foo/.",
+           iter: ["foo", "."],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("foo"),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("foo/..",
+           iter: ["foo", ".."],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("foo"),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("foo/./",
+           iter: ["foo", ".", "."],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("foo/."),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("foo/./bar",
+           iter: ["foo", ".", "bar"],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("foo/."),
+           file_name: Some("bar"),
+           file_stem: Some("bar"),
+           extension: None
+           );
+
+        t!("foo/../",
+           iter: ["foo", "..", "."],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("foo/.."),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("foo/../bar",
+           iter: ["foo", "..", "bar"],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("foo/.."),
+           file_name: Some("bar"),
+           file_stem: Some("bar"),
+           extension: None
+           );
+
+        t!("./a",
+           iter: [".", "a"],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("."),
+           file_name: Some("a"),
+           file_stem: Some("a"),
+           extension: None
+           );
+
+        t!(".",
+           iter: ["."],
+           has_root: false,
+           is_absolute: false,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("./",
+           iter: [".", "."],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("."),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("a/b",
+           iter: ["a", "b"],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("a"),
+           file_name: Some("b"),
+           file_stem: Some("b"),
+           extension: None
+           );
+
+        t!("a//b",
+           iter: ["a", "b"],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("a"),
+           file_name: Some("b"),
+           file_stem: Some("b"),
+           extension: None
+           );
+
+        t!("a/./b",
+           iter: ["a", ".", "b"],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("a/."),
+           file_name: Some("b"),
+           file_stem: Some("b"),
+           extension: None
+           );
+
+        t!("a/b/c",
+           iter: ["a", "b", "c"],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("a/b"),
+           file_name: Some("c"),
+           file_stem: Some("c"),
+           extension: None
+           );
     }
 
     #[test]
-    fn test_normalize() {
-        fn t(wp: &PosixPath, s: &str) {
-            let ss = wp.to_str();
-            let sss = s.to_owned();
-            if (ss != sss) {
-                debug!("got %s", ss);
-                debug!("expected %s", sss);
-                assert_eq!(ss, sss);
-            }
+    #[cfg(windows)]
+    pub fn test_decompositions_windows() {
+        t!("",
+           iter: [],
+           has_root: false,
+           is_absolute: false,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("foo",
+           iter: ["foo"],
+           has_root: false,
+           is_absolute: false,
+           parent: None,
+           file_name: Some("foo"),
+           file_stem: Some("foo"),
+           extension: None
+           );
+
+        t!("/",
+           iter: ["\\", "."],
+           has_root: true,
+           is_absolute: false,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("\\",
+           iter: ["\\", "."],
+           has_root: true,
+           is_absolute: false,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("c:",
+           iter: ["c:", "."],
+           has_root: false,
+           is_absolute: false,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("c:\\",
+           iter: ["c:", "\\", "."],
+           has_root: true,
+           is_absolute: true,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("c:\\",
+           iter: ["c:", "\\", "."],
+           has_root: true,
+           is_absolute: true,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("c:/",
+           iter: ["c:", "\\", "."],
+           has_root: true,
+           is_absolute: true,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("/foo",
+           iter: ["\\", "foo"],
+           has_root: true,
+           is_absolute: false,
+           parent: Some("/"),
+           file_name: Some("foo"),
+           file_stem: Some("foo"),
+           extension: None
+           );
+
+        t!("foo/",
+           iter: ["foo", "."],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("foo"),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("/foo/",
+           iter: ["\\", "foo", "."],
+           has_root: true,
+           is_absolute: false,
+           parent: Some("/foo"),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("foo/bar",
+           iter: ["foo", "bar"],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("foo"),
+           file_name: Some("bar"),
+           file_stem: Some("bar"),
+           extension: None
+           );
+
+        t!("/foo/bar",
+           iter: ["\\", "foo", "bar"],
+           has_root: true,
+           is_absolute: false,
+           parent: Some("/foo"),
+           file_name: Some("bar"),
+           file_stem: Some("bar"),
+           extension: None
+           );
+
+        t!("///foo///",
+           iter: ["\\", "foo", "."],
+           has_root: true,
+           is_absolute: false,
+           parent: Some("///foo"),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("///foo///bar",
+           iter: ["\\", "foo", "bar"],
+           has_root: true,
+           is_absolute: false,
+           parent: Some("///foo"),
+           file_name: Some("bar"),
+           file_stem: Some("bar"),
+           extension: None
+           );
+
+        t!("./.",
+           iter: [".", "."],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("."),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("./.",
+           iter: [".", "."],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("."),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("/..",
+           iter: ["\\", ".."],
+           has_root: true,
+           is_absolute: false,
+           parent: Some("/"),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("../",
+           iter: ["..", "."],
+           has_root: false,
+           is_absolute: false,
+           parent: Some(".."),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("foo/.",
+           iter: ["foo", "."],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("foo"),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("foo/..",
+           iter: ["foo", ".."],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("foo"),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("foo/./",
+           iter: ["foo", ".", "."],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("foo/."),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("foo/./bar",
+           iter: ["foo", ".", "bar"],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("foo/."),
+           file_name: Some("bar"),
+           file_stem: Some("bar"),
+           extension: None
+           );
+
+        t!("foo/../",
+           iter: ["foo", "..", "."],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("foo/.."),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("foo/../bar",
+           iter: ["foo", "..", "bar"],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("foo/.."),
+           file_name: Some("bar"),
+           file_stem: Some("bar"),
+           extension: None
+           );
+
+        t!("./a",
+           iter: [".", "a"],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("."),
+           file_name: Some("a"),
+           file_stem: Some("a"),
+           extension: None
+           );
+
+        t!(".",
+           iter: ["."],
+           has_root: false,
+           is_absolute: false,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("./",
+           iter: [".", "."],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("."),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("a/b",
+           iter: ["a", "b"],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("a"),
+           file_name: Some("b"),
+           file_stem: Some("b"),
+           extension: None
+           );
+
+        t!("a//b",
+           iter: ["a", "b"],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("a"),
+           file_name: Some("b"),
+           file_stem: Some("b"),
+           extension: None
+           );
+
+        t!("a/./b",
+           iter: ["a", ".", "b"],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("a/."),
+           file_name: Some("b"),
+           file_stem: Some("b"),
+           extension: None
+           );
+
+        t!("a/b/c",
+           iter: ["a", "b", "c"],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("a/b"),
+           file_name: Some("c"),
+           file_stem: Some("c"),
+           extension: None);
+
+        t!("a\\b\\c",
+           iter: ["a", "b", "c"],
+           has_root: false,
+           is_absolute: false,
+           parent: Some("a\\b"),
+           file_name: Some("c"),
+           file_stem: Some("c"),
+           extension: None
+           );
+
+        t!("\\a",
+           iter: ["\\", "a"],
+           has_root: true,
+           is_absolute: false,
+           parent: Some("\\"),
+           file_name: Some("a"),
+           file_stem: Some("a"),
+           extension: None
+           );
+
+        t!("c:\\foo.txt",
+           iter: ["c:", "\\", "foo.txt"],
+           has_root: true,
+           is_absolute: true,
+           parent: Some("c:\\"),
+           file_name: Some("foo.txt"),
+           file_stem: Some("foo"),
+           extension: Some("txt")
+           );
+
+        t!("\\\\server\\share\\foo.txt",
+           iter: ["\\\\server\\share", "\\", "foo.txt"],
+           has_root: true,
+           is_absolute: true,
+           parent: Some("\\\\server\\share\\"),
+           file_name: Some("foo.txt"),
+           file_stem: Some("foo"),
+           extension: Some("txt")
+           );
+
+        t!("\\\\server\\share",
+           iter: ["\\\\server\\share", "\\", "."],
+           has_root: true,
+           is_absolute: true,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("\\\\server",
+           iter: ["\\", "server"],
+           has_root: true,
+           is_absolute: false,
+           parent: Some("\\"),
+           file_name: Some("server"),
+           file_stem: Some("server"),
+           extension: None
+           );
+
+        t!("\\\\?\\bar\\foo.txt",
+           iter: ["\\\\?\\bar", "\\", "foo.txt"],
+           has_root: true,
+           is_absolute: true,
+           parent: Some("\\\\?\\bar\\"),
+           file_name: Some("foo.txt"),
+           file_stem: Some("foo"),
+           extension: Some("txt")
+           );
+
+        t!("\\\\?\\bar",
+           iter: ["\\\\?\\bar"],
+           has_root: true,
+           is_absolute: true,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("\\\\?\\",
+           iter: ["\\\\?\\"],
+           has_root: true,
+           is_absolute: true,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("\\\\?\\UNC\\server\\share\\foo.txt",
+           iter: ["\\\\?\\UNC\\server\\share", "\\", "foo.txt"],
+           has_root: true,
+           is_absolute: true,
+           parent: Some("\\\\?\\UNC\\server\\share\\"),
+           file_name: Some("foo.txt"),
+           file_stem: Some("foo"),
+           extension: Some("txt")
+           );
+
+        t!("\\\\?\\UNC\\server",
+           iter: ["\\\\?\\UNC\\server"],
+           has_root: true,
+           is_absolute: true,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("\\\\?\\UNC\\",
+           iter: ["\\\\?\\UNC\\"],
+           has_root: true,
+           is_absolute: true,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("\\\\?\\C:\\foo.txt",
+           iter: ["\\\\?\\C:", "\\", "foo.txt"],
+           has_root: true,
+           is_absolute: true,
+           parent: Some("\\\\?\\C:\\"),
+           file_name: Some("foo.txt"),
+           file_stem: Some("foo"),
+           extension: Some("txt")
+           );
+
+
+        t!("\\\\?\\C:\\",
+           iter: ["\\\\?\\C:", "\\", ""],
+           has_root: true,
+           is_absolute: true,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+
+        t!("\\\\?\\C:",
+           iter: ["\\\\?\\C:"],
+           has_root: true,
+           is_absolute: true,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+
+        t!("\\\\?\\foo/bar",
+           iter: ["\\\\?\\foo/bar"],
+           has_root: true,
+           is_absolute: true,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+
+        t!("\\\\?\\C:/foo",
+           iter: ["\\\\?\\C:/foo"],
+           has_root: true,
+           is_absolute: true,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+
+        t!("\\\\.\\foo\\bar",
+           iter: ["\\\\.\\foo", "\\", "bar"],
+           has_root: true,
+           is_absolute: true,
+           parent: Some("\\\\.\\foo\\"),
+           file_name: Some("bar"),
+           file_stem: Some("bar"),
+           extension: None
+           );
+
+
+        t!("\\\\.\\foo",
+           iter: ["\\\\.\\foo", "\\", "."],
+           has_root: true,
+           is_absolute: true,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+
+        t!("\\\\.\\foo/bar",
+           iter: ["\\\\.\\foo/bar", "\\", "."],
+           has_root: true,
+           is_absolute: true,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+
+        t!("\\\\.\\foo\\bar/baz",
+           iter: ["\\\\.\\foo", "\\", "bar", "baz"],
+           has_root: true,
+           is_absolute: true,
+           parent: Some("\\\\.\\foo\\bar"),
+           file_name: Some("baz"),
+           file_stem: Some("baz"),
+           extension: None
+           );
+
+
+        t!("\\\\.\\",
+           iter: ["\\\\.\\", "\\", "."],
+           has_root: true,
+           is_absolute: true,
+           parent: None,
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+
+        t!("\\\\?\\a\\b\\",
+           iter: ["\\\\?\\a", "\\", "b", ""],
+           has_root: true,
+           is_absolute: true,
+           parent: Some("\\\\?\\a\\b"),
+           file_name: None,
+           file_stem: None,
+           extension: None
+           );
+    }
+
+    #[test]
+    pub fn test_stem_ext() {
+        t!("foo",
+           file_stem: Some("foo"),
+           extension: None
+           );
+
+        t!("foo.",
+           file_stem: Some("foo"),
+           extension: Some("")
+           );
+
+        t!(".foo",
+           file_stem: Some(".foo"),
+           extension: None
+           );
+
+        t!("foo.txt",
+           file_stem: Some("foo"),
+           extension: Some("txt")
+           );
+
+        t!("foo.bar.txt",
+           file_stem: Some("foo.bar"),
+           extension: Some("txt")
+           );
+
+        t!("foo.bar.",
+           file_stem: Some("foo.bar"),
+           extension: Some("")
+           );
+
+        t!(".",
+           file_stem: None,
+           extension: None
+           );
+
+        t!("..",
+           file_stem: None,
+           extension: None
+           );
+
+        t!("",
+           file_stem: None,
+           extension: None
+           );
+    }
+
+    #[test]
+    pub fn test_push() {
+        macro_rules! tp(
+            ($path:expr, $push:expr, $expected:expr) => ( {
+                let mut actual = PathBuf::new($path);
+                actual.push($push);
+                assert!(actual.to_str() == Some($expected),
+                        "pushing {:?} onto {:?}: Expected {:?}, got {:?}",
+                        $push, $path, $expected, actual.to_str().unwrap());
+            });
+        );
+
+        if cfg!(unix) {
+            tp!("", "foo", "foo");
+            tp!("foo", "bar", "foo/bar");
+            tp!("foo/", "bar", "foo/bar");
+            tp!("foo//", "bar", "foo//bar");
+            tp!("foo/.", "bar", "foo/./bar");
+            tp!("foo./.", "bar", "foo././bar");
+            tp!("foo", "", "foo/");
+            tp!("foo", ".", "foo/.");
+            tp!("foo", "..", "foo/..");
+            tp!("foo", "/", "/");
+            tp!("/foo/bar", "/", "/");
+            tp!("/foo/bar", "/baz", "/baz");
+            tp!("/foo/bar", "./baz", "/foo/bar/./baz");
+        } else {
+            tp!("", "foo", "foo");
+            tp!("foo", "bar", r"foo\bar");
+            tp!("foo/", "bar", r"foo/bar");
+            tp!(r"foo\", "bar", r"foo\bar");
+            tp!("foo//", "bar", r"foo//bar");
+            tp!(r"foo\\", "bar", r"foo\\bar");
+            tp!("foo/.", "bar", r"foo/.\bar");
+            tp!("foo./.", "bar", r"foo./.\bar");
+            tp!(r"foo\.", "bar", r"foo\.\bar");
+            tp!(r"foo.\.", "bar", r"foo.\.\bar");
+            tp!("foo", "", "foo\\");
+            tp!("foo", ".", r"foo\.");
+            tp!("foo", "..", r"foo\..");
+            tp!("foo", "/", "/");
+            tp!("foo", r"\", r"\");
+            tp!("/foo/bar", "/", "/");
+            tp!(r"\foo\bar", r"\", r"\");
+            tp!("/foo/bar", "/baz", "/baz");
+            tp!("/foo/bar", r"\baz", r"\baz");
+            tp!("/foo/bar", "./baz", r"/foo/bar\./baz");
+            tp!("/foo/bar", r".\baz", r"/foo/bar\.\baz");
+
+            tp!("c:\\", "windows", "c:\\windows");
+            tp!("c:", "windows", "c:windows");
+
+            tp!("a\\b\\c", "d", "a\\b\\c\\d");
+            tp!("\\a\\b\\c", "d", "\\a\\b\\c\\d");
+            tp!("a\\b", "c\\d", "a\\b\\c\\d");
+            tp!("a\\b", "\\c\\d", "\\c\\d");
+            tp!("a\\b", ".", "a\\b\\.");
+            tp!("a\\b", "..\\c", "a\\b\\..\\c");
+            tp!("a\\b", "C:a.txt", "C:a.txt");
+            tp!("a\\b", "C:\\a.txt", "C:\\a.txt");
+            tp!("C:\\a", "C:\\b.txt", "C:\\b.txt");
+            tp!("C:\\a\\b\\c", "C:d", "C:d");
+            tp!("C:a\\b\\c", "C:d", "C:d");
+            tp!("C:", r"a\b\c", r"C:a\b\c");
+            tp!("C:", r"..\a", r"C:..\a");
+            tp!("\\\\server\\share\\foo", "bar", "\\\\server\\share\\foo\\bar");
+            tp!("\\\\server\\share\\foo", "C:baz", "C:baz");
+            tp!("\\\\?\\C:\\a\\b", "C:c\\d", "C:c\\d");
+            tp!("\\\\?\\C:a\\b", "C:c\\d", "C:c\\d");
+            tp!("\\\\?\\C:\\a\\b", "C:\\c\\d", "C:\\c\\d");
+            tp!("\\\\?\\foo\\bar", "baz", "\\\\?\\foo\\bar\\baz");
+            tp!("\\\\?\\UNC\\server\\share\\foo", "bar", "\\\\?\\UNC\\server\\share\\foo\\bar");
+            tp!("\\\\?\\UNC\\server\\share", "C:\\a", "C:\\a");
+            tp!("\\\\?\\UNC\\server\\share", "C:a", "C:a");
+
+            // Note: modified from old path API
+            tp!("\\\\?\\UNC\\server", "foo", "\\\\?\\UNC\\server\\foo");
+
+            tp!("C:\\a", "\\\\?\\UNC\\server\\share", "\\\\?\\UNC\\server\\share");
+            tp!("\\\\.\\foo\\bar", "baz", "\\\\.\\foo\\bar\\baz");
+            tp!("\\\\.\\foo\\bar", "C:a", "C:a");
+            // again, not sure about the following, but I'm assuming \\.\ should be verbatim
+            tp!("\\\\.\\foo", "..\\bar", "\\\\.\\foo\\..\\bar");
+
+            tp!("\\\\?\\C:", "foo", "\\\\?\\C:\\foo"); // this is a weird one
         }
-
-        t(&(PosixPath("hi/there.txt")
-            .with_dirname(".").normalize()), "there.txt");
-
-        t(&(PosixPath("a/b/../c/././/../foo.txt/").normalize()),
-          "a/foo.txt");
-
-        t(&(PosixPath("a/b/c")
-            .push("..").normalize()), "a/b");
     }
 
     #[test]
-    fn test_extract_unc_prefixes() {
-        assert!(windows::extract_unc_prefix("\\\\").is_none());
-        assert!(windows::extract_unc_prefix("//").is_none());
-        assert!(windows::extract_unc_prefix("\\\\hi").is_none());
-        assert!(windows::extract_unc_prefix("//hi").is_none());
-        assert!(windows::extract_unc_prefix("\\\\hi\\") ==
-            Some((~"hi", ~"\\")));
-        assert!(windows::extract_unc_prefix("//hi\\") ==
-            Some((~"hi", ~"\\")));
-        assert!(windows::extract_unc_prefix("\\\\hi\\there") ==
-            Some((~"hi", ~"\\there")));
-        assert!(windows::extract_unc_prefix("//hi/there") ==
-            Some((~"hi", ~"/there")));
-        assert!(windows::extract_unc_prefix(
-            "\\\\hi\\there\\friends.txt") ==
-            Some((~"hi", ~"\\there\\friends.txt")));
-        assert!(windows::extract_unc_prefix(
-            "//hi\\there\\friends.txt") ==
-            Some((~"hi", ~"\\there\\friends.txt")));
-    }
+    pub fn test_pop() {
+        macro_rules! tp(
+            ($path:expr, $expected:expr, $output:expr) => ( {
+                let mut actual = PathBuf::new($path);
+                let output = actual.pop();
+                assert!(actual.to_str() == Some($expected) && output == $output,
+                        "popping from {:?}: Expected {:?}/{:?}, got {:?}/{:?}",
+                        $path, $expected, $output,
+                        actual.to_str().unwrap(), output);
+            });
+        );
 
-    #[test]
-    fn test_extract_drive_prefixes() {
-        assert!(windows::extract_drive_prefix("c").is_none());
-        assert!(windows::extract_drive_prefix("c:") ==
-                     Some((~"c", ~"")));
-        assert!(windows::extract_drive_prefix("d:") ==
-                     Some((~"d", ~"")));
-        assert!(windows::extract_drive_prefix("z:") ==
-                     Some((~"z", ~"")));
-        assert!(windows::extract_drive_prefix("c:\\hi") ==
-                     Some((~"c", ~"\\hi")));
-        assert!(windows::extract_drive_prefix("d:hi") ==
-                     Some((~"d", ~"hi")));
-        assert!(windows::extract_drive_prefix("c:hi\\there.txt") ==
-                     Some((~"c", ~"hi\\there.txt")));
-        assert!(windows::extract_drive_prefix("c:\\hi\\there.txt") ==
-                     Some((~"c", ~"\\hi\\there.txt")));
-    }
+        tp!("", "", false);
+        tp!("/", "/", false);
+        tp!("foo", "foo", false);
+        tp!(".", ".", false);
+        tp!("/foo", "/", true);
+        tp!("/foo/bar", "/foo", true);
+        tp!("foo/bar", "foo", true);
+        tp!("foo/.", "foo", true);
+        tp!("foo//bar", "foo", true);
 
-    #[test]
-    fn test_windows_paths() {
-        fn t(wp: &WindowsPath, s: &str) {
-            let ss = wp.to_str();
-            let sss = s.to_owned();
-            if (ss != sss) {
-                debug!("got %s", ss);
-                debug!("expected %s", sss);
-                assert_eq!(ss, sss);
-            }
+        if cfg!(windows) {
+            tp!("a\\b\\c", "a\\b", true);
+            tp!("\\a", "\\", true);
+            tp!("\\", "\\", false);
+
+            tp!("C:\\a\\b", "C:\\a", true);
+            tp!("C:\\a", "C:\\", true);
+            tp!("C:\\", "C:\\", false);
+            tp!("C:a\\b", "C:a", true);
+            tp!("C:a", "C:", true);
+            tp!("C:", "C:", false);
+            tp!("\\\\server\\share\\a\\b", "\\\\server\\share\\a", true);
+            tp!("\\\\server\\share\\a", "\\\\server\\share\\", true);
+            tp!("\\\\server\\share", "\\\\server\\share", false);
+            tp!("\\\\?\\a\\b\\c", "\\\\?\\a\\b", true);
+            tp!("\\\\?\\a\\b", "\\\\?\\a\\", true);
+            tp!("\\\\?\\a", "\\\\?\\a", false);
+            tp!("\\\\?\\C:\\a\\b", "\\\\?\\C:\\a", true);
+            tp!("\\\\?\\C:\\a", "\\\\?\\C:\\", true);
+            tp!("\\\\?\\C:\\", "\\\\?\\C:\\", false);
+            tp!("\\\\?\\UNC\\server\\share\\a\\b", "\\\\?\\UNC\\server\\share\\a", true);
+            tp!("\\\\?\\UNC\\server\\share\\a", "\\\\?\\UNC\\server\\share\\", true);
+            tp!("\\\\?\\UNC\\server\\share", "\\\\?\\UNC\\server\\share", false);
+            tp!("\\\\.\\a\\b\\c", "\\\\.\\a\\b", true);
+            tp!("\\\\.\\a\\b", "\\\\.\\a\\", true);
+            tp!("\\\\.\\a", "\\\\.\\a", false);
+
+            tp!("\\\\?\\a\\b\\", "\\\\?\\a\\b", true);
         }
-
-        t(&(WindowsPath("hi")), "hi");
-        t(&(WindowsPath("hi/there")), "hi\\there");
-        t(&(WindowsPath("hi/there.txt")), "hi\\there.txt");
-
-        t(&(WindowsPath("there.txt")
-            .with_filetype("o")), "there.o");
-
-        t(&(WindowsPath("hi/there.txt")
-            .with_filetype("o")), "hi\\there.o");
-
-        t(&(WindowsPath("hi/there.txt")
-            .with_filetype("o")
-            .with_dirname("c:\\program files A")),
-          "c:\\program files A\\there.o");
-
-        t(&(WindowsPath("hi/there.txt")
-            .with_filetype("o")
-            .with_dirname("c:\\program files B\\")),
-          "c:\\program files B\\there.o");
-
-        t(&(WindowsPath("hi/there.txt")
-            .with_filetype("o")
-            .with_dirname("c:\\program files C\\/")),
-            "c:\\program files C\\there.o");
-
-        t(&(WindowsPath("c:\\program files (x86)\\rust")
-            .push_many([~"lib", ~"thingy.dll"])
-            .with_filename("librustc.dll")),
-          "c:\\program files (x86)\\rust\\lib\\librustc.dll");
-
-        t(&(WindowsPath("\\\\computer\\share")
-            .unsafe_join(&WindowsPath("\\a"))),
-          "\\\\computer\\a");
-
-        t(&(WindowsPath("//computer/share")
-            .unsafe_join(&WindowsPath("\\a"))),
-          "\\\\computer\\a");
-
-        t(&(WindowsPath("//computer/share")
-            .unsafe_join(&WindowsPath("\\\\computer\\share"))),
-          "\\\\computer\\share");
-
-        t(&(WindowsPath("C:/whatever")
-            .unsafe_join(&WindowsPath("//computer/share/a/b"))),
-          "\\\\computer\\share\\a\\b");
-
-        t(&(WindowsPath("C:")
-            .unsafe_join(&WindowsPath("D:/foo"))),
-          "D:\\foo");
-
-        t(&(WindowsPath("C:")
-            .unsafe_join(&WindowsPath("B"))),
-          "C:B");
-
-        t(&(WindowsPath("C:")
-            .unsafe_join(&WindowsPath("/foo"))),
-          "C:\\foo");
-
-        t(&(WindowsPath("C:\\")
-            .unsafe_join(&WindowsPath("\\bar"))),
-          "C:\\bar");
-
-        t(&(WindowsPath("")
-            .unsafe_join(&WindowsPath(""))),
-          "");
-
-        t(&(WindowsPath("")
-            .unsafe_join(&WindowsPath("a"))),
-          "a");
-
-        t(&(WindowsPath("")
-            .unsafe_join(&WindowsPath("C:\\a"))),
-          "C:\\a");
-
-        t(&(WindowsPath("c:\\foo")
-            .normalize()),
-          "C:\\foo");
     }
 
     #[test]
-    fn test_windows_path_restrictions() {
-        assert_eq!(WindowsPath("hi").is_restricted(), false);
-        assert_eq!(WindowsPath("C:\\NUL").is_restricted(), true);
-        assert_eq!(WindowsPath("C:\\COM1.TXT").is_restricted(), true);
-        assert_eq!(WindowsPath("c:\\prn.exe").is_restricted(), true);
+    pub fn test_set_file_name() {
+        macro_rules! tfn(
+                ($path:expr, $file:expr, $expected:expr) => ( {
+                let mut p = PathBuf::new($path);
+                p.set_file_name($file);
+                assert!(p.to_str() == Some($expected),
+                        "setting file name of {:?} to {:?}: Expected {:?}, got {:?}",
+                        $path, $file, $expected,
+                        p.to_str().unwrap());
+            });
+        );
+
+        tfn!("foo", "foo", "foo");
+        tfn!("foo", "bar", "bar");
+        tfn!("foo", "", "");
+        tfn!("", "foo", "foo");
+        if cfg!(unix) {
+            tfn!(".", "foo", "./foo");
+            tfn!("foo/", "bar", "foo/bar");
+            tfn!("foo/.", "bar", "foo/./bar");
+            tfn!("..", "foo", "../foo");
+            tfn!("foo/..", "bar", "foo/../bar");
+            tfn!("/", "foo", "/foo");
+        } else {
+            tfn!(".", "foo", r".\foo");
+            tfn!(r"foo\", "bar", r"foo\bar");
+            tfn!(r"foo\.", "bar", r"foo\.\bar");
+            tfn!("..", "foo", r"..\foo");
+            tfn!(r"foo\..", "bar", r"foo\..\bar");
+            tfn!(r"\", "foo", r"\foo");
+        }
     }
 
     #[test]
-    fn test_is_ancestor_of() {
-        assert!(&PosixPath("/a/b").is_ancestor_of(&PosixPath("/a/b/c/d")));
-        assert!(!&PosixPath("/a/b/c/d").is_ancestor_of(&PosixPath("/a/b")));
-        assert!(!&PosixPath("/a/b").is_ancestor_of(&PosixPath("/c/d")));
-        assert!(&PosixPath("/a/b").is_ancestor_of(&PosixPath("/a/b/c/d")));
-        assert!(&PosixPath("/").is_ancestor_of(&PosixPath("/a/b/c")));
-        assert!(!&PosixPath("/").is_ancestor_of(&PosixPath("")));
-        assert!(!&PosixPath("/a/b/c").is_ancestor_of(&PosixPath("")));
-        assert!(!&PosixPath("").is_ancestor_of(&PosixPath("/a/b/c")));
+    pub fn test_set_extension() {
+        macro_rules! tfe(
+                ($path:expr, $ext:expr, $expected:expr, $output:expr) => ( {
+                let mut p = PathBuf::new($path);
+                let output = p.set_extension($ext);
+                assert!(p.to_str() == Some($expected) && output == $output,
+                        "setting extension of {:?} to {:?}: Expected {:?}/{:?}, got {:?}/{:?}",
+                        $path, $ext, $expected, $output,
+                        p.to_str().unwrap(), output);
+            });
+        );
 
-        assert!(&WindowsPath("C:\\a\\b").is_ancestor_of(&WindowsPath("C:\\a\\b\\c\\d")));
-        assert!(!&WindowsPath("C:\\a\\b\\c\\d").is_ancestor_of(&WindowsPath("C:\\a\\b")));
-        assert!(!&WindowsPath("C:\\a\\b").is_ancestor_of(&WindowsPath("C:\\c\\d")));
-        assert!(&WindowsPath("C:\\a\\b").is_ancestor_of(&WindowsPath("C:\\a\\b\\c\\d")));
-        assert!(&WindowsPath("C:\\").is_ancestor_of(&WindowsPath("C:\\a\\b\\c")));
-        assert!(!&WindowsPath("C:\\").is_ancestor_of(&WindowsPath("")));
-        assert!(!&WindowsPath("C:\\a\\b\\c").is_ancestor_of(&WindowsPath("")));
-        assert!(!&WindowsPath("").is_ancestor_of(&WindowsPath("C:\\a\\b\\c")));
-
+        tfe!("foo", "txt", "foo.txt", true);
+        tfe!("foo.bar", "txt", "foo.txt", true);
+        tfe!("foo.bar.baz", "txt", "foo.bar.txt", true);
+        tfe!(".test", "txt", ".test.txt", true);
+        tfe!("foo.txt", "", "foo", true);
+        tfe!("foo", "", "foo", true);
+        tfe!("", "foo", "", false);
+        tfe!(".", "foo", ".", false);
+        tfe!("foo/", "bar", "foo/", false);
+        tfe!("foo/.", "bar", "foo/.", false);
+        tfe!("..", "foo", "..",  false);
+        tfe!("foo/..", "bar", "foo/..", false);
+        tfe!("/", "foo", "/", false);
     }
 
     #[test]
-    fn test_relative_to1() {
-        let p1 = PosixPath("/usr/bin/rustc");
-        let p2 = PosixPath("/usr/lib/mylib");
-        let res = p1.get_relative_to(&p2);
-        assert_eq!(res, PosixPath("../lib"));
+    pub fn test_compare() {
+        macro_rules! tc(
+            ($path1:expr, $path2:expr, eq: $eq:expr,
+             starts_with: $starts_with:expr, ends_with: $ends_with:expr,
+             relative_from: $relative_from:expr) => ({
+                 let path1 = Path::new($path1);
+                 let path2 = Path::new($path2);
 
-        let p1 = WindowsPath("C:\\usr\\bin\\rustc");
-        let p2 = WindowsPath("C:\\usr\\lib\\mylib");
-        let res = p1.get_relative_to(&p2);
-        assert_eq!(res, WindowsPath("..\\lib"));
+                 let eq = path1 == path2;
+                 assert!(eq == $eq, "{:?} == {:?}, expected {:?}, got {:?}",
+                         $path1, $path2, $eq, eq);
 
+                 let starts_with = path1.starts_with(path2);
+                 assert!(starts_with == $starts_with,
+                         "{:?}.starts_with({:?}), expected {:?}, got {:?}", $path1, $path2,
+                         $starts_with, starts_with);
+
+                 let ends_with = path1.ends_with(path2);
+                 assert!(ends_with == $ends_with,
+                         "{:?}.ends_with({:?}), expected {:?}, got {:?}", $path1, $path2,
+                         $ends_with, ends_with);
+
+                 let relative_from = path1.relative_from(path2).map(|p| p.to_str().unwrap());
+                 let exp: Option<&str> = $relative_from;
+                 assert!(relative_from == exp,
+                         "{:?}.relative_from({:?}), expected {:?}, got {:?}", $path1, $path2,
+                         exp, relative_from);
+            });
+        );
+
+        tc!("", "",
+            eq: true,
+            starts_with: true,
+            ends_with: true,
+            relative_from: Some("")
+            );
+
+        tc!("foo", "",
+            eq: false,
+            starts_with: true,
+            ends_with: true,
+            relative_from: Some("foo")
+            );
+
+        tc!("", "foo",
+            eq: false,
+            starts_with: false,
+            ends_with: false,
+            relative_from: None
+            );
+
+        tc!("foo", "foo",
+            eq: true,
+            starts_with: true,
+            ends_with: true,
+            relative_from: Some("")
+            );
+
+        tc!("foo/", "foo",
+            eq: false,
+            starts_with: true,
+            ends_with: false,
+            relative_from: Some(".")
+            );
+
+        tc!("foo/bar", "foo",
+            eq: false,
+            starts_with: true,
+            ends_with: false,
+            relative_from: Some("bar")
+            );
+
+        tc!("foo/bar/baz", "foo/bar",
+            eq: false,
+            starts_with: true,
+            ends_with: false,
+            relative_from: Some("baz")
+            );
+
+        tc!("foo/bar", "foo/bar/baz",
+            eq: false,
+            starts_with: false,
+            ends_with: false,
+            relative_from: None
+            );
+
+        tc!("./foo/bar/", ".",
+            eq: false,
+            starts_with: true,
+            ends_with: true,
+            relative_from: Some("foo/bar/")
+            );
     }
-
-    #[test]
-    fn test_relative_to2() {
-        let p1 = PosixPath("/usr/bin/rustc");
-        let p2 = PosixPath("/usr/bin/../lib/mylib");
-        let res = p1.get_relative_to(&p2);
-        assert_eq!(res, PosixPath("../lib"));
-
-        let p1 = WindowsPath("C:\\usr\\bin\\rustc");
-        let p2 = WindowsPath("C:\\usr\\bin\\..\\lib\\mylib");
-        let res = p1.get_relative_to(&p2);
-        assert_eq!(res, WindowsPath("..\\lib"));
-    }
-
-    #[test]
-    fn test_relative_to3() {
-        let p1 = PosixPath("/usr/bin/whatever/rustc");
-        let p2 = PosixPath("/usr/lib/whatever/mylib");
-        let res = p1.get_relative_to(&p2);
-        assert_eq!(res, PosixPath("../../lib/whatever"));
-
-        let p1 = WindowsPath("C:\\usr\\bin\\whatever\\rustc");
-        let p2 = WindowsPath("C:\\usr\\lib\\whatever\\mylib");
-        let res = p1.get_relative_to(&p2);
-        assert_eq!(res, WindowsPath("..\\..\\lib\\whatever"));
-
-    }
-
-    #[test]
-    fn test_relative_to4() {
-        let p1 = PosixPath("/usr/bin/whatever/../rustc");
-        let p2 = PosixPath("/usr/lib/whatever/mylib");
-        let res = p1.get_relative_to(&p2);
-        assert_eq!(res, PosixPath("../lib/whatever"));
-
-        let p1 = WindowsPath("C:\\usr\\bin\\whatever\\..\\rustc");
-        let p2 = WindowsPath("C:\\usr\\lib\\whatever\\mylib");
-        let res = p1.get_relative_to(&p2);
-        assert_eq!(res, WindowsPath("..\\lib\\whatever"));
-
-    }
-
-    #[test]
-    fn test_relative_to5() {
-        let p1 = PosixPath("/usr/bin/whatever/../rustc");
-        let p2 = PosixPath("/usr/lib/whatever/../mylib");
-        let res = p1.get_relative_to(&p2);
-        assert_eq!(res, PosixPath("../lib"));
-
-        let p1 = WindowsPath("C:\\usr\\bin/whatever\\..\\rustc");
-        let p2 = WindowsPath("C:\\usr\\lib\\whatever\\..\\mylib");
-        let res = p1.get_relative_to(&p2);
-        assert_eq!(res, WindowsPath("..\\lib"));
-    }
-
-    #[test]
-    fn test_relative_to6() {
-        let p1 = PosixPath("/1");
-        let p2 = PosixPath("/2/3");
-        let res = p1.get_relative_to(&p2);
-        assert_eq!(res, PosixPath("2"));
-
-        let p1 = WindowsPath("C:\\1");
-        let p2 = WindowsPath("C:\\2\\3");
-        let res = p1.get_relative_to(&p2);
-        assert_eq!(res, WindowsPath("2"));
-
-    }
-
-    #[test]
-    fn test_relative_to7() {
-        let p1 = PosixPath("/1/2");
-        let p2 = PosixPath("/3");
-        let res = p1.get_relative_to(&p2);
-        assert_eq!(res, PosixPath(".."));
-
-        let p1 = WindowsPath("C:\\1\\2");
-        let p2 = WindowsPath("C:\\3");
-        let res = p1.get_relative_to(&p2);
-        assert_eq!(res, WindowsPath(".."));
-
-    }
-
-    #[test]
-    fn test_relative_to8() {
-        let p1 = PosixPath("/home/brian/Dev/rust/build/").push_rel(
-            &PosixPath("stage2/lib/rustc/i686-unknown-linux-gnu/lib/librustc.so"));
-        let p2 = PosixPath("/home/brian/Dev/rust/build/stage2/bin/..").push_rel(
-            &PosixPath("lib/rustc/i686-unknown-linux-gnu/lib/libstd.so"));
-        let res = p1.get_relative_to(&p2);
-        debug!("test_relative_to8: %s vs. %s",
-               res.to_str(),
-               PosixPath(".").to_str());
-        assert_eq!(res, PosixPath("."));
-
-        let p1 = WindowsPath("C:\\home\\brian\\Dev\\rust\\build\\").push_rel(
-            &WindowsPath("stage2\\lib\\rustc\\i686-unknown-linux-gnu\\lib\\librustc.so"));
-        let p2 = WindowsPath("\\home\\brian\\Dev\\rust\\build\\stage2\\bin\\..").push_rel(
-            &WindowsPath("lib\\rustc\\i686-unknown-linux-gnu\\lib\\libstd.so"));
-        let res = p1.get_relative_to(&p2);
-        debug!("test_relative_to8: %s vs. %s",
-               res.to_str(),
-               WindowsPath(".").to_str());
-        assert_eq!(res, WindowsPath("."));
-
-    }
-
 }

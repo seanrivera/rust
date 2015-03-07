@@ -8,18 +8,25 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-struct closure_box<'self> {
-    cl: &'self fn(),
+#![allow(unknown_features)]
+#![feature(unboxed_closures)]
+
+struct closure_box<'a> {
+    cl: Box<FnMut() + 'a>,
 }
 
-fn box_it<'r>(x: &'r fn()) -> closure_box<'r> {
+fn box_it<'a>(x: Box<FnMut() + 'a>) -> closure_box<'a> {
     closure_box {cl: x}
 }
 
 pub fn main() {
     let mut i = 3;
-    let cl_box = box_it(|| i += 1);
     assert_eq!(i, 3);
-    (cl_box.cl)();
+    {
+        let cl = || i += 1;
+        // FIXME (#22405): Replace `Box::new` with `box` here when/if possible.
+        let mut cl_box = box_it(Box::new(cl));
+        cl_box.cl.call_mut(());
+    }
     assert_eq!(i, 4);
 }

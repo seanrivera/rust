@@ -1,4 +1,4 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -7,69 +7,75 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
+use self::Context::*;
 
+use session::Session;
 
-use middle::ty;
-
-use syntax::ast::*;
-use syntax::visit;
+use syntax::ast;
+use syntax::codemap::Span;
 use syntax::visit::Visitor;
+use syntax::visit;
 
-#[deriving(Clone)]
-pub struct Context {
-    in_loop: bool,
-    can_ret: bool
+#[derive(Clone, Copy, PartialEq)]
+enum Context {
+    Normal, Loop, Closure
 }
 
-struct CheckLoopVisitor {
-    tcx: ty::ctxt,
+#[derive(Copy)]
+struct CheckLoopVisitor<'a> {
+    sess: &'a Session,
+    cx: Context
 }
 
-pub fn check_crate(tcx: ty::ctxt, crate: &Crate) {
-    visit::walk_crate(&mut CheckLoopVisitor { tcx: tcx },
-                      crate,
-                      Context { in_loop: false, can_ret: true });
+pub fn check_crate(sess: &Session, krate: &ast::Crate) {
+    visit::walk_crate(&mut CheckLoopVisitor { sess: sess, cx: Normal }, krate)
 }
 
-impl Visitor<Context> for CheckLoopVisitor {
-    fn visit_item(&mut self, i:@item, _cx:Context) {
-        visit::walk_item(self, i, Context {
-                                    in_loop: false,
-                                    can_ret: true
-                                  });
+impl<'a, 'v> Visitor<'v> for CheckLoopVisitor<'a> {
+    fn visit_item(&mut self, i: &ast::Item) {
+        self.with_context(Normal, |v| visit::walk_item(v, i));
     }
 
-    fn visit_expr(&mut self, e:@Expr, cx:Context) {
-
-            match e.node {
-              ExprWhile(e, ref b) => {
-                self.visit_expr(e, cx);
-                self.visit_block(b, Context { in_loop: true,.. cx });
-              }
-              ExprLoop(ref b, _) => {
-                self.visit_block(b, Context { in_loop: true,.. cx });
-              }
-              ExprFnBlock(_, ref b) => {
-                self.visit_block(b, Context { in_loop: false, can_ret: false });
-              }
-              ExprBreak(_) => {
-                if !cx.in_loop {
-                    self.tcx.sess.span_err(e.span, "`break` outside of loop");
-                }
-              }
-              ExprAgain(_) => {
-                if !cx.in_loop {
-                    self.tcx.sess.span_err(e.span, "`loop` outside of loop");
-                }
-              }
-              ExprRet(oe) => {
-                if !cx.can_ret {
-                    self.tcx.sess.span_err(e.span, "`return` in block function");
-                }
-                visit::walk_expr_opt(self, oe, cx);
-              }
-              _ => visit::walk_expr(self, e, cx)
+    fn visit_expr(&mut self, e: &ast::Expr) {
+        match e.node {
+            ast::ExprWhile(ref e, ref b, _) => {
+                self.visit_expr(&**e);
+                self.with_context(Loop, |v| v.visit_block(&**b));
             }
+            ast::ExprLoop(ref b, _) => {
+                self.with_context(Loop, |v| v.visit_block(&**b));
+            }
+            ast::ExprClosure(_, _, ref b) => {
+                self.with_context(Closure, |v| v.visit_block(&**b));
+            }
+            ast::ExprBreak(_) => self.require_loop("break", e.span),
+            ast::ExprAgain(_) => self.require_loop("continue", e.span),
+            _ => visit::walk_expr(self, e)
+        }
+    }
+}
 
+impl<'a> CheckLoopVisitor<'a> {
+    fn with_context<F>(&mut self, cx: Context, f: F) where
+        F: FnOnce(&mut CheckLoopVisitor<'a>),
+    {
+        let old_cx = self.cx;
+        self.cx = cx;
+        f(self);
+        self.cx = old_cx;
+    }
+
+    fn require_loop(&self, name: &str, span: Span) {
+        match self.cx {
+            Loop => {}
+            Closure => {
+                span_err!(self.sess, span, E0267,
+                                   "`{}` inside of a closure", name);
+            }
+            Normal => {
+                span_err!(self.sess, span, E0268,
+                                   "`{}` outside of loop", name);
+            }
+        }
     }
 }

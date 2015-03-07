@@ -9,21 +9,21 @@
 // except according to those terms.
 
 //error-pattern: lower range bound
-//error-pattern: non-numeric
+//error-pattern: only char and numeric types
 //error-pattern: mismatched types
 
 fn main() {
-    match 5u {
-      6u .. 1u => { }
+    match 5 {
+      6 ... 1 => { }
       _ => { }
     };
 
     match "wow" {
-      "bar" .. "foo" => { }
+      "bar" ... "foo" => { }
     };
 
-    match 5u {
-      'c' .. 100u => { }
+    match 5 {
+      'c' ... 100 => { }
       _ => { }
     };
 }

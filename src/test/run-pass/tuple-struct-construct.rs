@@ -8,9 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#[derive(Debug)]
 struct Foo(int, int);
 
 pub fn main() {
     let x = Foo(1, 2);
-    printfln!(x);
+    println!("{:?}", x);
 }

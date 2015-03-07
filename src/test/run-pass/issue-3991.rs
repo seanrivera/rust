@@ -8,8 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 struct HasNested {
-    nest: ~[~[int]],
+    nest: Vec<Vec<int> > ,
 }
 
 impl HasNested {
@@ -18,4 +19,4 @@ impl HasNested {
     }
 }
 
-fn main() {}
+pub fn main() {}

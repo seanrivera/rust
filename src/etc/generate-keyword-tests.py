@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# xfail-license
+#
 # Copyright 2013 The Rust Project Developers. See the COPYRIGHT
 # file at the top-level directory of this distribution and at
 # http://rust-lang.org/COPYRIGHT.
@@ -13,7 +13,7 @@
 This script takes a list of keywords and generates a testcase, that checks
 if using the keyword as identifier fails, for every keyword. The generate
 test files are set read-only.
-Test for https://github.com/mozilla/rust/issues/2275
+Test for https://github.com/rust-lang/rust/issues/2275
 
 sample usage: src/etc/generate-keyword-tests.py as break
 """
@@ -56,4 +56,4 @@ for kw in sys.argv[1:]:
         f.write(template % (datetime.datetime.now().year, kw, kw))
 
     # mark file read-only
-    os.chmod(test_file, stat.S_IRUSR|stat.S_IRGRP|stat.S_IROTH)
+    os.chmod(test_file, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)

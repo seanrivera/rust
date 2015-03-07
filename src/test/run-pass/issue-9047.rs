@@ -8,12 +8,14 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-fn decode() -> ~str {
+fn decode() -> String {
     'outer: loop {
         let mut ch_start: uint;
         break 'outer;
     }
-    ~""
+    "".to_string()
 }
 
-fn main() {}
+pub fn main() {
+    println!("{}", decode());
+}

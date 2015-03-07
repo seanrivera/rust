@@ -1,4 +1,4 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,21 +8,18 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// xfail-fast
-
-use std::comm;
-use std::task;
+use std::sync::mpsc::{channel, Sender};
+use std::thread::Thread;
 
 pub fn main() {
-    let (po, ch) = comm::stream();
-    let ch = comm::SharedChan::new(ch);
+    let (tx, rx) = channel();
 
     // Spawn 10 tasks each sending us back one int.
     let mut i = 10;
     while (i > 0) {
-        info!(i);
-        let ch = ch.clone();
-        task::spawn({let i = i; || child(i, &ch)});
+        println!("{}", i);
+        let tx = tx.clone();
+        Thread::spawn({let i = i; move|| { child(i, &tx) }});
         i = i - 1;
     }
 
@@ -31,15 +28,15 @@ pub fn main() {
 
     i = 10;
     while (i > 0) {
-        info!(i);
-        po.recv();
+        println!("{}", i);
+        rx.recv().unwrap();
         i = i - 1;
     }
 
-    info!("main thread exiting");
+    println!("main thread exiting");
 }
 
-fn child(x: int, ch: &comm::SharedChan<int>) {
-    info!(x);
-    ch.send(x);
+fn child(x: int, tx: &Sender<int>) {
+    println!("{}", x);
+    tx.send(x).unwrap();
 }

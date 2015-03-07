@@ -10,11 +10,11 @@
 
 pub fn main() {
     let _foo = 100;
-    static quux: int = 5;
+    const quux: int = 5;
 
     enum Stuff {
         Bar = quux
     }
 
-    assert_eq!(Bar as int, quux);
+    assert_eq!(Stuff::Bar as int, quux);
 }

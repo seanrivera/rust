@@ -8,15 +8,13 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::libc;
+extern crate libc;
 
-#[abi = "cdecl"]
-#[link_name = "rustrt"]
+#[link(name = "rust_test_helpers")]
 extern {
     fn rust_get_test_int() -> libc::intptr_t;
 }
 
-#[fixed_stack_segment]
 pub fn main() {
     unsafe {
         let _ = rust_get_test_int();

@@ -8,4 +8,5 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-fn main() { fmt!("%?", None); } //~ ERROR unconstrained type
+fn main() { format!("{:?}", None); }
+    //~^ ERROR type annotations required

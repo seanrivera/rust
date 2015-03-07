@@ -8,16 +8,20 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::io;
+use std::marker::MarkerTrait;
+
+trait A : MarkerTrait {}
 
 struct Struct {
-    r: io::Reader //~ ERROR reference to trait `io::Reader` where a type is expected
+    r: A+'static
 }
 
-fn new_struct(r: io::Reader) -> Struct { //~ ERROR reference to trait `io::Reader` where a type is expected
+fn new_struct(r: A+'static)
+    -> Struct { //~^  ERROR the trait `core::marker::Sized` is not implemented
+    //~^ ERROR the trait `core::marker::Sized` is not implemented
     Struct { r: r }
 }
 
-trait Curve {}
-enum E {X(Curve)} //~ ERROR reference to trait `Curve` where a type is expected
+trait Curve : MarkerTrait {}
+enum E {X(Curve+'static)}
 fn main() {}

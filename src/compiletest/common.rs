@@ -1,5 +1,5 @@
-// Copyright 2012-2013 The Rust Project Developers. See the
-// COPYRIGHT file at the top-level directory of this distribution and at
+// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
+// file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
@@ -7,95 +7,147 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
+pub use self::Mode::*;
 
-#[deriving(Clone, Eq)]
-pub enum mode {
-    mode_compile_fail,
-    mode_run_fail,
-    mode_run_pass,
-    mode_pretty,
-    mode_debug_info,
-    mode_codegen
+use std::fmt;
+use std::str::FromStr;
+use std::path::PathBuf;
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Mode {
+    CompileFail,
+    ParseFail,
+    RunFail,
+    RunPass,
+    RunPassValgrind,
+    Pretty,
+    DebugInfoGdb,
+    DebugInfoLldb,
+    Codegen
 }
 
-#[deriving(Clone)]
-pub struct config {
+impl FromStr for Mode {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Mode, ()> {
+        match s {
+          "compile-fail" => Ok(CompileFail),
+          "parse-fail" => Ok(ParseFail),
+          "run-fail" => Ok(RunFail),
+          "run-pass" => Ok(RunPass),
+          "run-pass-valgrind" => Ok(RunPassValgrind),
+          "pretty" => Ok(Pretty),
+          "debuginfo-lldb" => Ok(DebugInfoLldb),
+          "debuginfo-gdb" => Ok(DebugInfoGdb),
+          "codegen" => Ok(Codegen),
+          _ => Err(()),
+        }
+    }
+}
+
+impl fmt::Display for Mode {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Display::fmt(match *self {
+            CompileFail => "compile-fail",
+            ParseFail => "parse-fail",
+            RunFail => "run-fail",
+            RunPass => "run-pass",
+            RunPassValgrind => "run-pass-valgrind",
+            Pretty => "pretty",
+            DebugInfoGdb => "debuginfo-gdb",
+            DebugInfoLldb => "debuginfo-lldb",
+            Codegen => "codegen",
+        }, f)
+    }
+}
+
+#[derive(Clone)]
+pub struct Config {
     // The library paths required for running the compiler
-    compile_lib_path: ~str,
+    pub compile_lib_path: String,
 
     // The library paths required for running compiled programs
-    run_lib_path: ~str,
+    pub run_lib_path: String,
 
     // The rustc executable
-    rustc_path: Path,
+    pub rustc_path: PathBuf,
 
     // The clang executable
-    clang_path: Option<Path>,
+    pub clang_path: Option<PathBuf>,
 
     // The llvm binaries path
-    llvm_bin_path: Option<Path>,
+    pub llvm_bin_path: Option<PathBuf>,
+
+    // The valgrind path
+    pub valgrind_path: Option<String>,
+
+    // Whether to fail if we can't run run-pass-valgrind tests under valgrind
+    // (or, alternatively, to silently run them like regular run-pass tests).
+    pub force_valgrind: bool,
 
     // The directory containing the tests to run
-    src_base: Path,
+    pub src_base: PathBuf,
 
     // The directory where programs should be built
-    build_base: Path,
+    pub build_base: PathBuf,
 
     // Directory for auxiliary libraries
-    aux_base: Path,
+    pub aux_base: PathBuf,
 
     // The name of the stage being built (stage1, etc)
-    stage_id: ~str,
+    pub stage_id: String,
 
     // The test mode, compile-fail, run-fail, run-pass
-    mode: mode,
+    pub mode: Mode,
 
     // Run ignored tests
-    run_ignored: bool,
+    pub run_ignored: bool,
 
     // Only run tests that match this filter
-    filter: Option<~str>,
+    pub filter: Option<String>,
 
     // Write out a parseable log of tests that were run
-    logfile: Option<Path>,
-
-    // Write out a json file containing any metrics of the run
-    save_metrics: Option<Path>,
-
-    // Write and ratchet a metrics file
-    ratchet_metrics: Option<Path>,
-
-    // Percent change in metrics to consider noise
-    ratchet_noise_percent: Option<f64>,
-
-    // "Shard" of the testsuite to run: this has the form of
-    // two numbers (a,b), and causes only those tests with
-    // positional order equal to a mod b to run.
-    test_shard: Option<(uint,uint)>,
+    pub logfile: Option<PathBuf>,
 
     // A command line to prefix program execution with,
     // for running under valgrind
-    runtool: Option<~str>,
+    pub runtool: Option<String>,
 
-    // Flags to pass to the compiler
-    rustcflags: Option<~str>,
+    // Flags to pass to the compiler when building for the host
+    pub host_rustcflags: Option<String>,
+
+    // Flags to pass to the compiler when building for the target
+    pub target_rustcflags: Option<String>,
 
     // Run tests using the JIT
-    jit: bool,
+    pub jit: bool,
 
     // Target system to be tested
-    target: ~str,
+    pub target: String,
+
+    // Host triple for the compiler being invoked
+    pub host: String,
+
+    // Version of GDB
+    pub gdb_version: Option<String>,
+
+    // Version of LLDB
+    pub lldb_version: Option<String>,
+
+    // Path to the android tools
+    pub android_cross_path: PathBuf,
 
     // Extra parameter to run adb on arm-linux-androideabi
-    adb_path: ~str,
+    pub adb_path: String,
 
-    // Extra parameter to run test sute on arm-linux-androideabi
-    adb_test_dir: ~str,
+    // Extra parameter to run test suite on arm-linux-androideabi
+    pub adb_test_dir: String,
 
     // status whether android device available or not
-    adb_device_status: bool,
+    pub adb_device_status: bool,
+
+    // the path containing LLDB's Python module
+    pub lldb_python_dir: Option<String>,
 
     // Explain what's going on
-    verbose: bool
-
+    pub verbose: bool
 }

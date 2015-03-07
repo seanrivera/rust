@@ -1,89 +1,122 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
+// The Computer Language Benchmarks Game
+// http://benchmarksgame.alioth.debian.org/
 //
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+// contributed by the Rust Project Developers
 
-extern mod extra;
-use extra::arena::Arena;
+// Copyright (c) 2012-2014 The Rust Project Developers
+//
+// All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions
+// are met:
+//
+// - Redistributions of source code must retain the above copyright
+//   notice, this list of conditions and the following disclaimer.
+//
+// - Redistributions in binary form must reproduce the above copyright
+//   notice, this list of conditions and the following disclaimer in
+//   the documentation and/or other materials provided with the
+//   distribution.
+//
+// - Neither the name of "The Computer Language Benchmarks Game" nor
+//   the name of "The Computer Language Shootout Benchmarks" nor the
+//   names of its contributors may be used to endorse or promote
+//   products derived from this software without specific prior
+//   written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+// FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+// COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+// INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+// HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+// STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+// OF THE POSSIBILITY OF SUCH DAMAGE.
 
-enum Tree<'self> {
-    Nil,
-    Node(&'self Tree<'self>, &'self Tree<'self>, int),
+extern crate arena;
+
+use std::iter::range_step;
+use std::thread;
+use arena::TypedArena;
+
+struct Tree<'a> {
+    l: Option<&'a Tree<'a>>,
+    r: Option<&'a Tree<'a>>,
+    i: i32
 }
 
-fn item_check(t: &Tree) -> int {
+fn item_check(t: &Option<&Tree>) -> i32 {
     match *t {
-      Nil => { return 0; }
-      Node(left, right, item) => {
-        return item + item_check(left) - item_check(right);
-      }
+        None => 0,
+        Some(&Tree { ref l, ref r, i }) => i + item_check(l) - item_check(r)
     }
 }
 
-fn bottom_up_tree<'r>(arena: &'r Arena, item: int, depth: int)
-                   -> &'r Tree<'r> {
+fn bottom_up_tree<'r>(arena: &'r TypedArena<Tree<'r>>, item: i32, depth: i32)
+                  -> Option<&'r Tree<'r>> {
     if depth > 0 {
-        return arena.alloc(
-            || Node(bottom_up_tree(arena, 2 * item - 1, depth - 1),
-                    bottom_up_tree(arena, 2 * item, depth - 1),
-                    item));
+        let t: &Tree<'r> = arena.alloc(Tree {
+            l: bottom_up_tree(arena, 2 * item - 1, depth - 1),
+            r: bottom_up_tree(arena, 2 * item, depth - 1),
+            i: item
+        });
+        Some(t)
+    } else {
+        None
     }
-    return arena.alloc(|| Nil);
+}
+
+fn inner(depth: i32, iterations: i32) -> String {
+    let mut chk = 0;
+    for i in 1 .. iterations + 1 {
+        let arena = TypedArena::new();
+        let a = bottom_up_tree(&arena, i, depth);
+        let b = bottom_up_tree(&arena, -i, depth);
+        chk += item_check(&a) + item_check(&b);
+    }
+    format!("{}\t trees of depth {}\t check: {}",
+            iterations * 2, depth, chk)
 }
 
 fn main() {
-    use std::os;
-    use std::int;
-    let args = std::os::args();
-    let args = if os::getenv("RUST_BENCH").is_some() {
-        ~[~"", ~"17"]
-    } else if args.len() <= 1u {
-        ~[~"", ~"8"]
+    let mut args = std::env::args();
+    let n = if std::env::var_os("RUST_BENCH").is_some() {
+        17
+    } else if args.len() <= 1 {
+        8
     } else {
-        args
+        args.nth(1).unwrap().parse().unwrap()
     };
-
-    let n = from_str::<int>(args[1]).unwrap();
     let min_depth = 4;
-    let mut max_depth;
-    if min_depth + 2 > n {
-        max_depth = min_depth + 2;
-    } else {
-        max_depth = n;
+    let max_depth = if min_depth + 2 > n {min_depth + 2} else {n};
+
+    {
+        let arena = TypedArena::new();
+        let depth = max_depth + 1;
+        let tree = bottom_up_tree(&arena, 0, depth);
+
+        println!("stretch tree of depth {}\t check: {}",
+                 depth, item_check(&tree));
     }
 
-    let stretch_arena = Arena::new();
-    let stretch_depth = max_depth + 1;
-    let stretch_tree = bottom_up_tree(&stretch_arena, 0, stretch_depth);
-
-    printfln!("stretch tree of depth %d\t check: %d",
-              stretch_depth,
-              item_check(stretch_tree));
-
-    let long_lived_arena = Arena::new();
+    let long_lived_arena = TypedArena::new();
     let long_lived_tree = bottom_up_tree(&long_lived_arena, 0, max_depth);
-    let mut depth = min_depth;
-    while depth <= max_depth {
-        let iterations = int::pow(2, (max_depth - depth + min_depth) as uint);
-        let mut chk = 0;
-        let mut i = 1;
-        while i <= iterations {
-            let mut temp_tree = bottom_up_tree(&long_lived_arena, i, depth);
-            chk += item_check(temp_tree);
-            temp_tree = bottom_up_tree(&long_lived_arena, -i, depth);
-            chk += item_check(temp_tree);
-            i += 1;
-        }
-        printfln!("%d\t trees of depth %d\t check: %d",
-                  iterations * 2, depth, chk);
-        depth += 2;
+
+    let messages = range_step(min_depth, max_depth + 1, 2).map(|depth| {
+        use std::num::Int;
+        let iterations = 2.pow((max_depth - depth + min_depth) as u32);
+        thread::scoped(move || inner(depth, iterations))
+    }).collect::<Vec<_>>();
+
+    for message in messages {
+        println!("{}", message.join());
     }
-    printfln!("long lived tree of depth %d\t check: %d",
-              max_depth,
-              item_check(long_lived_tree));
+
+    println!("long lived tree of depth {}\t check: {}",
+             max_depth, item_check(&long_lived_tree));
 }

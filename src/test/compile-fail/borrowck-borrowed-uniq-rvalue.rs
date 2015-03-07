@@ -10,13 +10,18 @@
 
 //buggy.rs
 
-use std::hashmap::HashMap;
+#![feature(box_syntax)]
+
+extern crate collections;
+use std::collections::HashMap;
 
 fn main() {
-    let mut buggy_map: HashMap<uint, &uint> = HashMap::new();
-    buggy_map.insert(42, &*~1); //~ ERROR borrowed value does not live long enough
+    let tmp: Box<_>;
+    let mut buggy_map: HashMap<usize, &usize> = HashMap::new();
+    // FIXME (#22405): Replace `Box::new` with `box` here when/if possible.
+    buggy_map.insert(42, &*Box::new(1)); //~ ERROR borrowed value does not live long enough
 
     // but it is ok if we use a temporary
-    let tmp = ~2;
+    tmp = box 2;
     buggy_map.insert(43, &*tmp);
 }

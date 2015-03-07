@@ -12,9 +12,13 @@
 
 use std::option::Option;
 
-fn bar(x: uint) -> Option<uint> {
+fn bar(x: usize) -> Option<usize> {
     return x;
-    //~^ ERROR mismatched types: expected `std::option::Option<uint>`
+    //~^ ERROR mismatched types
+    //~| expected `core::option::Option<usize>`
+    //~| found `usize`
+    //~| expected enum `core::option::Option`
+    //~| found usize
 }
 
 fn main() {

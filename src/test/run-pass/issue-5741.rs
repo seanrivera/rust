@@ -8,11 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[allow(unreachable_code)];
+#![allow(unreachable_code)]
 
-use std::io;
-
-fn main() {
+pub fn main() {
     return;
-    while io::stdin().read_line() != ~"quit" { };
+    while true {};
 }

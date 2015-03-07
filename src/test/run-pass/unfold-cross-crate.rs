@@ -8,12 +8,14 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::iter::*;
+// no-pretty-expanded FIXME #15189
 
-// Unfold had a bug with 'self that mean it didn't work
+use std::iter::Unfold;
+
+// Unfold had a bug with 'a that mean it didn't work
 // cross-crate
 
-fn main() {
+pub fn main() {
     fn count(st: &mut uint) -> Option<uint> {
         if *st < 10 {
             let ret = Some(*st);

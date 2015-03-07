@@ -1,5 +1,4 @@
-// -*- rust -*-
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -10,15 +9,14 @@
 // except according to those terms.
 
 
-#[cfg(target_arch = "x86")]
-#[cfg(target_arch = "arm")]
+#[cfg(any(target_arch = "x86", target_arch = "arm"))]
 fn target() {
-    assert_eq!(-1000 as uint >> 3u, 536870787u);
+    assert_eq!(-1000 as uint >> 3_usize, 536870787_usize);
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn target() {
-    assert_eq!(-1000 as uint >> 3u, 2305843009213693827u);
+    assert_eq!(-1000 as uint >> 3_usize, 2305843009213693827_usize);
 }
 
 fn general() {
@@ -27,16 +25,16 @@ fn general() {
     a ^= b;
     b ^= a;
     a = a ^ b;
-    info!(a);
-    info!(b);
+    println!("{}", a);
+    println!("{}", b);
     assert_eq!(b, 1);
     assert_eq!(a, 2);
-    assert_eq!(!0xf0 & 0xff, 0xf);
-    assert_eq!(0xf0 | 0xf, 0xff);
-    assert_eq!(0xf << 4, 0xf0);
-    assert_eq!(0xf0 >> 4, 0xf);
+    assert_eq!(!0xf0_isize & 0xff, 0xf);
+    assert_eq!(0xf0_isize | 0xf, 0xff);
+    assert_eq!(0xf_isize << 4, 0xf0);
+    assert_eq!(0xf0_isize >> 4, 0xf);
     assert_eq!(-16 >> 2, -4);
-    assert_eq!(0b1010_1010 | 0b0101_0101, 0xff);
+    assert_eq!(0b1010_1010_isize | 0b0101_0101, 0xff);
 }
 
 pub fn main() {

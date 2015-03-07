@@ -11,7 +11,9 @@
 // Check that non-constant exprs do fail as count in fixed length vec type
 
 fn main() {
-    fn bar(n: int) {
-        let _x: [int, ..n]; //~ ERROR expected constant expr for vector length: Non-constant path in constant expr
+    fn bar(n: isize) {
+        let _x: [isize; n];
+        //~^ ERROR no type for local variable
+        //~| ERROR array length constant evaluation error: non-constant path in constant expr
     }
 }

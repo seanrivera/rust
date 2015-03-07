@@ -8,37 +8,31 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-extern mod extra;
-
-use std::os;
-use std::uint;
-use std::rt::test::spawntask_later;
-use std::cell::Cell;
-use std::comm::*;
+use std::sync::mpsc::channel;
+use std::env;
+use std::thread;
 
 // A simple implementation of parfib. One subtree is found in a new
 // task and communicated over a oneshot pipe, the other is found
 // locally. There is no sequential-mode threshold.
 
-fn parfib(n: uint) -> uint {
-    if(n == 0 || n == 1) {
+fn parfib(n: u64) -> u64 {
+    if n == 0 || n == 1 {
         return 1;
     }
 
-    let (port,chan) = oneshot::<uint>();
-    let chan = Cell::new(chan);
-    do spawntask_later {
-        chan.take().send(parfib(n-1));
-    };
+    let (tx, rx) = channel();
+    thread::spawn(move|| {
+        tx.send(parfib(n-1)).unwrap();
+    });
     let m2 = parfib(n-2);
-    return (port.recv() + m2);
+    return rx.recv().unwrap() + m2;
 }
 
 fn main() {
-
-    let args = os::args();
+    let mut args = env::args();
     let n = if args.len() == 2 {
-        from_str::<uint>(args[1]).unwrap()
+        args.nth(1).unwrap().parse::<u64>().unwrap()
     } else {
         10
     };

@@ -8,36 +8,31 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-extern mod extra;
-use extra::rc::RcMut;
+#![feature(box_syntax)]
 
-trait Foo
-{
-    fn set(&mut self, v: RcMut<A>);
+use std::cell::RefCell;
+use std::rc::Rc;
+
+trait Foo {
+    fn set(&mut self, v: Rc<RefCell<A>>);
 }
 
-struct B
-{
-    v: Option<RcMut<A>>
+struct B {
+    v: Option<Rc<RefCell<A>>>
 }
 
-impl Foo for B
-{
-    fn set(&mut self, v: RcMut<A>)
+impl Foo for B {
+    fn set(&mut self, v: Rc<RefCell<A>>)
     {
         self.v = Some(v);
     }
 }
 
-struct A
-{
-    v: ~Foo,
+struct A {
+    v: Box<Foo + Send>,
 }
 
-fn main()
-{
-    let a = A {v: ~B{v: None} as ~Foo}; //~ ERROR cannot pack type `~B`, which does not fulfill `Send`
-    let v = RcMut::from_freeze(a); //~ ERROR instantiating a type parameter with an incompatible type
-    let w = v.clone();
-    v.with_mut_borrow(|p| {p.v.set(w.clone());})
+fn main() {
+    let a = A {v: box B{v: None} as Box<Foo+Send>};
+    //~^ ERROR the trait `core::marker::Send` is not implemented
 }

@@ -8,18 +8,24 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![allow(unknown_features)]
+#![feature(box_syntax)]
+
+use std::cell::RefCell;
+
 pub struct Entry<A,B> {
     key: A,
     value: B
 }
 
 pub struct alist<A,B> {
-    eq_fn: @fn(A,A) -> bool,
-    data: @mut ~[Entry<A,B>]
+    eq_fn: extern "Rust" fn(A,A) -> bool,
+    data: Box<RefCell<Vec<Entry<A,B>>>>,
 }
 
 pub fn alist_add<A:'static,B:'static>(lst: &alist<A,B>, k: A, v: B) {
-    lst.data.push(Entry{key:k, value:v});
+    let mut data = lst.data.borrow_mut();
+    (*data).push(Entry{key:k, value:v});
 }
 
 pub fn alist_get<A:Clone + 'static,
@@ -28,23 +34,30 @@ pub fn alist_get<A:Clone + 'static,
                  k: A)
                  -> B {
     let eq_fn = lst.eq_fn;
-    for entry in lst.data.iter() {
+    let data = lst.data.borrow();
+    for entry in &(*data) {
         if eq_fn(entry.key.clone(), k.clone()) {
             return entry.value.clone();
         }
     }
-    fail!();
+    panic!();
 }
 
 #[inline]
 pub fn new_int_alist<B:'static>() -> alist<int, B> {
     fn eq_int(a: int, b: int) -> bool { a == b }
-    return alist {eq_fn: eq_int, data: @mut ~[]};
+    return alist {
+        eq_fn: eq_int,
+        data: box RefCell::new(Vec::new()),
+    };
 }
 
 #[inline]
 pub fn new_int_alist_2<B:'static>() -> alist<int, B> {
     #[inline]
     fn eq_int(a: int, b: int) -> bool { a == b }
-    return alist {eq_fn: eq_int, data: @mut ~[]};
+    return alist {
+        eq_fn: eq_int,
+        data: box RefCell::new(Vec::new()),
+    };
 }

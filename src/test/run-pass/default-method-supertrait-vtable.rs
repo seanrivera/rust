@@ -7,6 +7,8 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
+//
+// ignore-lexer-test FIXME #15877
 
 
 // Tests that we can call a function bounded over a supertrait from
@@ -19,7 +21,7 @@ trait Y {
 }
 
 
-trait Z: Y {
+trait Z: Y + Sized {
     fn x(self) -> int {
         require_y(self)
     }
@@ -29,8 +31,8 @@ impl Y for int {
     fn y(self) -> int { self }
 }
 
-impl Z for int;
+impl Z for int {}
 
-fn main() {
+pub fn main() {
     assert_eq!(12.x(), 12);
 }

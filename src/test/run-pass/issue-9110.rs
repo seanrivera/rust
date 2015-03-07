@@ -8,15 +8,15 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-macro_rules! silly_macro(
+macro_rules! silly_macro {
     () => (
         pub mod Qux {
             pub struct Foo { x : u8 }
             pub fn bar(_foo : Foo) {}
         }
     );
-)
+}
 
-silly_macro!()
+silly_macro!();
 
-fn main() {}
+pub fn main() {}

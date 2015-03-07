@@ -1,4 +1,4 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -10,17 +10,15 @@
 
 // issue 7327
 
-// xfail-fast #7103
-extern mod extra;
-use extra::arc::*;
+use std::sync::Arc;
 
-struct A { y: Arc<int>, x: Arc<int> }
+struct A { y: Arc<isize>, x: Arc<isize> }
 
 impl Drop for A {
-    fn drop(&mut self) { println(fmt!("x=%?", self.x.get())); }
+    fn drop(&mut self) { println!("x={}", *self.x); }
 }
 fn main() {
     let a = A { y: Arc::new(1), x: Arc::new(2) };
-    let _b = A { y: Arc::new(3), ..a };
-    let _c = a; //~ ERROR use of moved value
+    let _b = A { y: Arc::new(3), ..a }; //~ ERROR cannot move out of type `A`
+    let _c = a;
 }

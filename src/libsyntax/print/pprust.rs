@@ -1,4 +1,4 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,2291 +8,2996 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use abi::AbiSet;
-use ast::{RegionTyParamBound, TraitTyParamBound, required, provided};
+pub use self::AnnNode::*;
+
+use abi;
 use ast;
+use ast::{MethodImplItem, RegionTyParamBound, TraitTyParamBound, TraitBoundModifier};
+use ast::{RequiredMethod, ProvidedMethod, TypeImplItem, TypeTraitItem};
 use ast_util;
-use opt_vec::OptVec;
-use opt_vec;
+use attr;
+use owned_slice::OwnedSlice;
 use attr::{AttrMetaMethods, AttributeMethods};
-use codemap::{CodeMap, BytePos};
-use codemap;
+use codemap::{self, CodeMap, BytePos};
 use diagnostic;
-use parse::classify::expr_is_simple_block;
-use parse::token::{ident_interner, ident_to_str, interner_get};
-use parse::{comments, token};
+use parse::token::{self, BinOpToken, Token, InternedString};
+use parse::lexer::comments;
 use parse;
-use print::pp::{break_offset, word, space, zerobreak, hardbreak};
-use print::pp::{breaks, consistent, inconsistent, eof};
-use print::pp;
-use print::pprust;
+use print::pp::{self, break_offset, word, space, zerobreak, hardbreak};
+use print::pp::{Breaks, eof};
+use print::pp::Breaks::{Consistent, Inconsistent};
+use ptr::P;
+use std_inject;
 
-use std::char;
-use std::io;
+use std::{ascii, mem};
+use std::io::{self, Write, Read};
+use std::iter;
 
-// The @ps is stored here to prevent recursive type.
-pub enum ann_node<'self> {
-    node_block(@ps, &'self ast::Block),
-    node_item(@ps, &'self ast::item),
-    node_expr(@ps, &'self ast::Expr),
-    node_pat(@ps, &'self ast::Pat),
-}
-pub struct pp_ann {
-    pre: @fn(ann_node),
-    post: @fn(ann_node)
-}
-
-pub fn no_ann() -> pp_ann {
-    fn ignore(_node: ann_node) { }
-    return pp_ann {pre: ignore, post: ignore};
+pub enum AnnNode<'a> {
+    NodeIdent(&'a ast::Ident),
+    NodeName(&'a ast::Name),
+    NodeBlock(&'a ast::Block),
+    NodeItem(&'a ast::Item),
+    NodeExpr(&'a ast::Expr),
+    NodePat(&'a ast::Pat),
 }
 
+pub trait PpAnn {
+    fn pre(&self, _state: &mut State, _node: AnnNode) -> io::Result<()> { Ok(()) }
+    fn post(&self, _state: &mut State, _node: AnnNode) -> io::Result<()> { Ok(()) }
+}
+
+#[derive(Copy)]
+pub struct NoAnn;
+
+impl PpAnn for NoAnn {}
+
+#[derive(Copy)]
 pub struct CurrentCommentAndLiteral {
-    cur_cmnt: uint,
-    cur_lit: uint,
+    cur_cmnt: usize,
+    cur_lit: usize,
 }
 
-pub struct ps {
-    s: @mut pp::Printer,
-    cm: Option<@CodeMap>,
-    intr: @token::ident_interner,
-    comments: Option<~[comments::cmnt]>,
-    literals: Option<~[comments::lit]>,
-    cur_cmnt_and_lit: @mut CurrentCommentAndLiteral,
-    boxes: @mut ~[pp::breaks],
-    ann: pp_ann
+pub struct State<'a> {
+    pub s: pp::Printer<'a>,
+    cm: Option<&'a CodeMap>,
+    comments: Option<Vec<comments::Comment> >,
+    literals: Option<Vec<comments::Literal> >,
+    cur_cmnt_and_lit: CurrentCommentAndLiteral,
+    boxes: Vec<pp::Breaks>,
+    ann: &'a (PpAnn+'a),
+    encode_idents_with_hygiene: bool,
 }
 
-pub fn ibox(s: @ps, u: uint) {
-    s.boxes.push(pp::inconsistent);
-    pp::ibox(s.s, u);
+pub fn rust_printer<'a>(writer: Box<Write+'a>) -> State<'a> {
+    static NO_ANN: NoAnn = NoAnn;
+    rust_printer_annotated(writer, &NO_ANN)
 }
 
-pub fn end(s: @ps) {
-    s.boxes.pop();
-    pp::end(s.s);
-}
-
-pub fn rust_printer(writer: @io::Writer, intr: @ident_interner) -> @ps {
-    return rust_printer_annotated(writer, intr, no_ann());
-}
-
-pub fn rust_printer_annotated(writer: @io::Writer,
-                              intr: @ident_interner,
-                              ann: pp_ann) -> @ps {
-    return @ps {
+pub fn rust_printer_annotated<'a>(writer: Box<Write+'a>,
+                                  ann: &'a PpAnn) -> State<'a> {
+    State {
         s: pp::mk_printer(writer, default_columns),
-        cm: None::<@CodeMap>,
-        intr: intr,
-        comments: None::<~[comments::cmnt]>,
-        literals: None::<~[comments::lit]>,
-        cur_cmnt_and_lit: @mut CurrentCommentAndLiteral {
+        cm: None,
+        comments: None,
+        literals: None,
+        cur_cmnt_and_lit: CurrentCommentAndLiteral {
             cur_cmnt: 0,
             cur_lit: 0
         },
-        boxes: @mut ~[],
-        ann: ann
-    };
-}
-
-pub static indent_unit: uint = 4u;
-
-pub static default_columns: uint = 78u;
-
-// Requires you to pass an input filename and reader so that
-// it can scan the input text for comments and literals to
-// copy forward.
-pub fn print_crate(cm: @CodeMap,
-                   intr: @ident_interner,
-                   span_diagnostic: @mut diagnostic::span_handler,
-                   crate: &ast::Crate,
-                   filename: @str,
-                   input: @io::Reader,
-                   out: @io::Writer,
-                   ann: pp_ann,
-                   is_expanded: bool) {
-    let (cmnts, lits) = comments::gather_comments_and_literals(
-        span_diagnostic,
-        filename,
-        input
-    );
-    let s = @ps {
-        s: pp::mk_printer(out, default_columns),
-        cm: Some(cm),
-        intr: intr,
-        comments: Some(cmnts),
-        // If the code is post expansion, don't use the table of
-        // literals, since it doesn't correspond with the literals
-        // in the AST anymore.
-        literals: if is_expanded {
-            None
-        } else {
-            Some(lits)
-        },
-        cur_cmnt_and_lit: @mut CurrentCommentAndLiteral {
-            cur_cmnt: 0,
-            cur_lit: 0
-        },
-        boxes: @mut ~[],
-        ann: ann
-    };
-    print_crate_(s, crate);
-}
-
-pub fn print_crate_(s: @ps, crate: &ast::Crate) {
-    print_mod(s, &crate.module, crate.attrs);
-    print_remaining_comments(s);
-    eof(s.s);
-}
-
-pub fn ty_to_str(ty: &ast::Ty, intr: @ident_interner) -> ~str {
-    to_str(ty, print_type, intr)
-}
-
-pub fn pat_to_str(pat: &ast::Pat, intr: @ident_interner) -> ~str {
-    to_str(pat, print_pat, intr)
-}
-
-pub fn expr_to_str(e: &ast::Expr, intr: @ident_interner) -> ~str {
-    to_str(e, print_expr, intr)
-}
-
-pub fn lifetime_to_str(e: &ast::Lifetime, intr: @ident_interner) -> ~str {
-    to_str(e, print_lifetime, intr)
-}
-
-pub fn tt_to_str(tt: &ast::token_tree, intr: @ident_interner) -> ~str {
-    to_str(tt, print_tt, intr)
-}
-
-pub fn tts_to_str(tts: &[ast::token_tree], intr: @ident_interner) -> ~str {
-    to_str(&tts, print_tts, intr)
-}
-
-pub fn stmt_to_str(s: &ast::Stmt, intr: @ident_interner) -> ~str {
-    to_str(s, print_stmt, intr)
-}
-
-pub fn item_to_str(i: &ast::item, intr: @ident_interner) -> ~str {
-    to_str(i, print_item, intr)
-}
-
-pub fn generics_to_str(generics: &ast::Generics,
-                       intr: @ident_interner) -> ~str {
-    to_str(generics, print_generics, intr)
-}
-
-pub fn path_to_str(p: &ast::Path, intr: @ident_interner) -> ~str {
-    to_str(p, |a,b| print_path(a, b, false), intr)
-}
-
-pub fn fun_to_str(decl: &ast::fn_decl, purity: ast::purity, name: ast::Ident,
-                  opt_explicit_self: Option<ast::explicit_self_>,
-                  generics: &ast::Generics, intr: @ident_interner) -> ~str {
-    do io::with_str_writer |wr| {
-        let s = rust_printer(wr, intr);
-        print_fn(s, decl, Some(purity), AbiSet::Rust(),
-                 name, generics, opt_explicit_self, ast::inherited);
-        end(s); // Close the head box
-        end(s); // Close the outer box
-        eof(s.s);
+        boxes: Vec::new(),
+        ann: ann,
+        encode_idents_with_hygiene: false,
     }
 }
 
-pub fn block_to_str(blk: &ast::Block, intr: @ident_interner) -> ~str {
-    do io::with_str_writer |wr| {
-        let s = rust_printer(wr, intr);
+#[allow(non_upper_case_globals)]
+pub const indent_unit: usize = 4;
+
+#[allow(non_upper_case_globals)]
+pub const default_columns: usize = 78;
+
+/// Requires you to pass an input filename and reader so that
+/// it can scan the input text for comments and literals to
+/// copy forward.
+pub fn print_crate<'a>(cm: &'a CodeMap,
+                       span_diagnostic: &diagnostic::SpanHandler,
+                       krate: &ast::Crate,
+                       filename: String,
+                       input: &mut Read,
+                       out: Box<Write+'a>,
+                       ann: &'a PpAnn,
+                       is_expanded: bool) -> io::Result<()> {
+    let mut s = State::new_from_input(cm,
+                                      span_diagnostic,
+                                      filename,
+                                      input,
+                                      out,
+                                      ann,
+                                      is_expanded);
+    if is_expanded && std_inject::use_std(krate) {
+        // We need to print `#![no_std]` (and its feature gate) so that
+        // compiling pretty-printed source won't inject libstd again.
+        // However we don't want these attributes in the AST because
+        // of the feature gate, so we fake them up here.
+
+        let no_std_meta = attr::mk_word_item(InternedString::new("no_std"));
+
+        // #![feature(no_std)]
+        let fake_attr = attr::mk_attr_inner(attr::mk_attr_id(),
+                                            attr::mk_list_item(InternedString::new("feature"),
+                                                               vec![no_std_meta.clone()]));
+        try!(s.print_attribute(&fake_attr));
+
+        // #![no_std]
+        let fake_attr = attr::mk_attr_inner(attr::mk_attr_id(), no_std_meta);
+        try!(s.print_attribute(&fake_attr));
+    }
+
+    try!(s.print_mod(&krate.module, &krate.attrs));
+    try!(s.print_remaining_comments());
+    eof(&mut s.s)
+}
+
+impl<'a> State<'a> {
+    pub fn new_from_input(cm: &'a CodeMap,
+                          span_diagnostic: &diagnostic::SpanHandler,
+                          filename: String,
+                          input: &mut Read,
+                          out: Box<Write+'a>,
+                          ann: &'a PpAnn,
+                          is_expanded: bool) -> State<'a> {
+        let (cmnts, lits) = comments::gather_comments_and_literals(
+            span_diagnostic,
+            filename,
+            input);
+
+        State::new(
+            cm,
+            out,
+            ann,
+            Some(cmnts),
+            // If the code is post expansion, don't use the table of
+            // literals, since it doesn't correspond with the literals
+            // in the AST anymore.
+            if is_expanded { None } else { Some(lits) })
+    }
+
+    pub fn new(cm: &'a CodeMap,
+               out: Box<Write+'a>,
+               ann: &'a PpAnn,
+               comments: Option<Vec<comments::Comment>>,
+               literals: Option<Vec<comments::Literal>>) -> State<'a> {
+        State {
+            s: pp::mk_printer(out, default_columns),
+            cm: Some(cm),
+            comments: comments,
+            literals: literals,
+            cur_cmnt_and_lit: CurrentCommentAndLiteral {
+                cur_cmnt: 0,
+                cur_lit: 0
+            },
+            boxes: Vec::new(),
+            ann: ann,
+            encode_idents_with_hygiene: false,
+        }
+    }
+}
+
+pub fn to_string<F>(f: F) -> String where
+    F: FnOnce(&mut State) -> io::Result<()>,
+{
+    use std::raw::TraitObject;
+    let mut s = rust_printer(box Vec::new());
+    f(&mut s).unwrap();
+    eof(&mut s.s).unwrap();
+    let wr = unsafe {
+        // FIXME(pcwalton): A nasty function to extract the string from an `Write`
+        // that we "know" to be a `Vec<u8>` that works around the lack of checked
+        // downcasts.
+        let obj: &TraitObject = mem::transmute(&s.s.out);
+        mem::transmute::<*mut (), &Vec<u8>>(obj.data)
+    };
+    String::from_utf8(wr.clone()).unwrap()
+}
+
+pub fn binop_to_string(op: BinOpToken) -> &'static str {
+    match op {
+        token::Plus     => "+",
+        token::Minus    => "-",
+        token::Star     => "*",
+        token::Slash    => "/",
+        token::Percent  => "%",
+        token::Caret    => "^",
+        token::And      => "&",
+        token::Or       => "|",
+        token::Shl      => "<<",
+        token::Shr      => ">>",
+    }
+}
+
+pub fn token_to_string(tok: &Token) -> String {
+    match *tok {
+        token::Eq                   => "=".to_string(),
+        token::Lt                   => "<".to_string(),
+        token::Le                   => "<=".to_string(),
+        token::EqEq                 => "==".to_string(),
+        token::Ne                   => "!=".to_string(),
+        token::Ge                   => ">=".to_string(),
+        token::Gt                   => ">".to_string(),
+        token::Not                  => "!".to_string(),
+        token::Tilde                => "~".to_string(),
+        token::OrOr                 => "||".to_string(),
+        token::AndAnd               => "&&".to_string(),
+        token::BinOp(op)            => binop_to_string(op).to_string(),
+        token::BinOpEq(op)          => format!("{}=", binop_to_string(op)),
+
+        /* Structural symbols */
+        token::At                   => "@".to_string(),
+        token::Dot                  => ".".to_string(),
+        token::DotDot               => "..".to_string(),
+        token::DotDotDot            => "...".to_string(),
+        token::Comma                => ",".to_string(),
+        token::Semi                 => ";".to_string(),
+        token::Colon                => ":".to_string(),
+        token::ModSep               => "::".to_string(),
+        token::RArrow               => "->".to_string(),
+        token::LArrow               => "<-".to_string(),
+        token::FatArrow             => "=>".to_string(),
+        token::OpenDelim(token::Paren) => "(".to_string(),
+        token::CloseDelim(token::Paren) => ")".to_string(),
+        token::OpenDelim(token::Bracket) => "[".to_string(),
+        token::CloseDelim(token::Bracket) => "]".to_string(),
+        token::OpenDelim(token::Brace) => "{".to_string(),
+        token::CloseDelim(token::Brace) => "}".to_string(),
+        token::Pound                => "#".to_string(),
+        token::Dollar               => "$".to_string(),
+        token::Question             => "?".to_string(),
+
+        /* Literals */
+        token::Literal(lit, suf) => {
+            let mut out = match lit {
+                token::Byte(b)           => format!("b'{}'", b.as_str()),
+                token::Char(c)           => format!("'{}'", c.as_str()),
+                token::Float(c)          => c.as_str().to_string(),
+                token::Integer(c)        => c.as_str().to_string(),
+                token::Str_(s)           => format!("\"{}\"", s.as_str()),
+                token::StrRaw(s, n)      => format!("r{delim}\"{string}\"{delim}",
+                                                    delim=repeat("#", n),
+                                                    string=s.as_str()),
+                token::Binary(v)         => format!("b\"{}\"", v.as_str()),
+                token::BinaryRaw(s, n)   => format!("br{delim}\"{string}\"{delim}",
+                                                    delim=repeat("#", n),
+                                                    string=s.as_str()),
+            };
+
+            if let Some(s) = suf {
+                out.push_str(s.as_str())
+            }
+
+            out
+        }
+
+        /* Name components */
+        token::Ident(s, _)          => token::get_ident(s).to_string(),
+        token::Lifetime(s)          => format!("{}", token::get_ident(s)),
+        token::Underscore           => "_".to_string(),
+
+        /* Other */
+        token::DocComment(s)        => s.as_str().to_string(),
+        token::SubstNt(s, _)        => format!("${}", s),
+        token::MatchNt(s, t, _, _)  => format!("${}:{}", s, t),
+        token::Eof                  => "<eof>".to_string(),
+        token::Whitespace           => " ".to_string(),
+        token::Comment              => "/* */".to_string(),
+        token::Shebang(s)           => format!("/* shebang: {}*/", s.as_str()),
+
+        token::SpecialVarNt(var)    => format!("${}", var.as_str()),
+
+        token::Interpolated(ref nt) => match *nt {
+            token::NtExpr(ref e)  => expr_to_string(&**e),
+            token::NtMeta(ref e)  => meta_item_to_string(&**e),
+            token::NtTy(ref e)    => ty_to_string(&**e),
+            token::NtPath(ref e)  => path_to_string(&**e),
+            token::NtItem(..)     => "an interpolated item".to_string(),
+            token::NtBlock(..)    => "an interpolated block".to_string(),
+            token::NtStmt(..)     => "an interpolated statement".to_string(),
+            token::NtPat(..)      => "an interpolated pattern".to_string(),
+            token::NtIdent(..)    => "an interpolated identifier".to_string(),
+            token::NtTT(..)       => "an interpolated tt".to_string(),
+        }
+    }
+}
+
+// FIXME (Issue #16472): the thing_to_string_impls macro should go away
+// after we revise the syntax::ext::quote::ToToken impls to go directly
+// to token-trees instead of thing -> string -> token-trees.
+
+macro_rules! thing_to_string_impls {
+    ($to_string:ident) => {
+
+pub fn ty_to_string(ty: &ast::Ty) -> String {
+    $to_string(|s| s.print_type(ty))
+}
+
+pub fn bounds_to_string(bounds: &[ast::TyParamBound]) -> String {
+    $to_string(|s| s.print_bounds("", bounds))
+}
+
+pub fn pat_to_string(pat: &ast::Pat) -> String {
+    $to_string(|s| s.print_pat(pat))
+}
+
+pub fn arm_to_string(arm: &ast::Arm) -> String {
+    $to_string(|s| s.print_arm(arm))
+}
+
+pub fn expr_to_string(e: &ast::Expr) -> String {
+    $to_string(|s| s.print_expr(e))
+}
+
+pub fn lifetime_to_string(e: &ast::Lifetime) -> String {
+    $to_string(|s| s.print_lifetime(e))
+}
+
+pub fn tt_to_string(tt: &ast::TokenTree) -> String {
+    $to_string(|s| s.print_tt(tt))
+}
+
+pub fn tts_to_string(tts: &[ast::TokenTree]) -> String {
+    $to_string(|s| s.print_tts(tts))
+}
+
+pub fn stmt_to_string(stmt: &ast::Stmt) -> String {
+    $to_string(|s| s.print_stmt(stmt))
+}
+
+pub fn item_to_string(i: &ast::Item) -> String {
+    $to_string(|s| s.print_item(i))
+}
+
+pub fn generics_to_string(generics: &ast::Generics) -> String {
+    $to_string(|s| s.print_generics(generics))
+}
+
+pub fn ty_method_to_string(p: &ast::TypeMethod) -> String {
+    $to_string(|s| s.print_ty_method(p))
+}
+
+pub fn method_to_string(p: &ast::Method) -> String {
+    $to_string(|s| s.print_method(p))
+}
+
+pub fn fn_block_to_string(p: &ast::FnDecl) -> String {
+    $to_string(|s| s.print_fn_block_args(p))
+}
+
+pub fn path_to_string(p: &ast::Path) -> String {
+    $to_string(|s| s.print_path(p, false, 0))
+}
+
+pub fn ident_to_string(id: &ast::Ident) -> String {
+    $to_string(|s| s.print_ident(*id))
+}
+
+pub fn fun_to_string(decl: &ast::FnDecl, unsafety: ast::Unsafety, name: ast::Ident,
+                  opt_explicit_self: Option<&ast::ExplicitSelf_>,
+                  generics: &ast::Generics) -> String {
+    $to_string(|s| {
+        try!(s.print_fn(decl, Some(unsafety), abi::Rust,
+                        name, generics, opt_explicit_self, ast::Inherited));
+        try!(s.end()); // Close the head box
+        s.end() // Close the outer box
+    })
+}
+
+pub fn block_to_string(blk: &ast::Block) -> String {
+    $to_string(|s| {
         // containing cbox, will be closed by print-block at }
-        cbox(s, indent_unit);
+        try!(s.cbox(indent_unit));
         // head-ibox, will be closed by print-block after {
-        ibox(s, 0u);
-        print_block(s, blk);
-        eof(s.s);
+        try!(s.ibox(0));
+        s.print_block(blk)
+    })
+}
+
+pub fn meta_item_to_string(mi: &ast::MetaItem) -> String {
+    $to_string(|s| s.print_meta_item(mi))
+}
+
+pub fn attribute_to_string(attr: &ast::Attribute) -> String {
+    $to_string(|s| s.print_attribute(attr))
+}
+
+pub fn lit_to_string(l: &ast::Lit) -> String {
+    $to_string(|s| s.print_literal(l))
+}
+
+pub fn explicit_self_to_string(explicit_self: &ast::ExplicitSelf_) -> String {
+    $to_string(|s| s.print_explicit_self(explicit_self, ast::MutImmutable).map(|_| {}))
+}
+
+pub fn variant_to_string(var: &ast::Variant) -> String {
+    $to_string(|s| s.print_variant(var))
+}
+
+pub fn arg_to_string(arg: &ast::Arg) -> String {
+    $to_string(|s| s.print_arg(arg))
+}
+
+pub fn mac_to_string(arg: &ast::Mac) -> String {
+    $to_string(|s| s.print_mac(arg, ::parse::token::Paren))
+}
+
+} }
+
+thing_to_string_impls! { to_string }
+
+// FIXME (Issue #16472): the whole `with_hygiene` mod should go away
+// after we revise the syntax::ext::quote::ToToken impls to go directly
+// to token-trees instea of thing -> string -> token-trees.
+
+pub mod with_hygiene {
+    use abi;
+    use ast;
+    use std::io;
+    use super::indent_unit;
+
+    // This function is the trick that all the rest of the routines
+    // hang on.
+    pub fn to_string_hyg<F>(f: F) -> String where
+        F: FnOnce(&mut super::State) -> io::Result<()>,
+    {
+        super::to_string(move |s| {
+            s.encode_idents_with_hygiene = true;
+            f(s)
+        })
     }
+
+    thing_to_string_impls! { to_string_hyg }
 }
 
-pub fn meta_item_to_str(mi: &ast::MetaItem, intr: @ident_interner) -> ~str {
-    to_str(mi, print_meta_item, intr)
-}
-
-pub fn attribute_to_str(attr: &ast::Attribute, intr: @ident_interner) -> ~str {
-    to_str(attr, print_attribute, intr)
-}
-
-pub fn variant_to_str(var: &ast::variant, intr: @ident_interner) -> ~str {
-    to_str(var, print_variant, intr)
-}
-
-pub fn cbox(s: @ps, u: uint) {
-    s.boxes.push(pp::consistent);
-    pp::cbox(s.s, u);
-}
-
-pub fn box(s: @ps, u: uint, b: pp::breaks) {
-    s.boxes.push(b);
-    pp::box(s.s, u, b);
-}
-
-pub fn nbsp(s: @ps) { word(s.s, " "); }
-
-pub fn word_nbsp(s: @ps, w: &str) { word(s.s, w); nbsp(s); }
-
-pub fn word_space(s: @ps, w: &str) { word(s.s, w); space(s.s); }
-
-pub fn popen(s: @ps) { word(s.s, "("); }
-
-pub fn pclose(s: @ps) { word(s.s, ")"); }
-
-pub fn head(s: @ps, w: &str) {
-    // outer-box is consistent
-    cbox(s, indent_unit);
-    // head-box is inconsistent
-    ibox(s, w.len() + 1);
-    // keyword that starts the head
-    if !w.is_empty() {
-        word_nbsp(s, w);
-    }
-}
-
-pub fn bopen(s: @ps) {
-    word(s.s, "{");
-    end(s); // close the head-box
-}
-
-pub fn bclose_(s: @ps, span: codemap::Span, indented: uint) {
-    bclose_maybe_open(s, span, indented, true);
-}
-pub fn bclose_maybe_open (s: @ps, span: codemap::Span, indented: uint,
-                          close_box: bool) {
-    maybe_print_comment(s, span.hi);
-    break_offset_if_not_bol(s, 1u, -(indented as int));
-    word(s.s, "}");
-    if close_box {
-        end(s); // close the outer-box
-    }
-}
-pub fn bclose(s: @ps, span: codemap::Span) { bclose_(s, span, indent_unit); }
-
-pub fn is_begin(s: @ps) -> bool {
-    match s.s.last_token() { pp::BEGIN(_) => true, _ => false }
-}
-
-pub fn is_end(s: @ps) -> bool {
-    match s.s.last_token() { pp::END => true, _ => false }
-}
-
-pub fn is_bol(s: @ps) -> bool {
-    return s.s.last_token().is_eof() || s.s.last_token().is_hardbreak_tok();
-}
-
-pub fn in_cbox(s: @ps) -> bool {
-    let boxes = &*s.boxes;
-    let len = boxes.len();
-    if len == 0u { return false; }
-    return boxes[len - 1u] == pp::consistent;
-}
-
-pub fn hardbreak_if_not_bol(s: @ps) { if !is_bol(s) { hardbreak(s.s); } }
-pub fn space_if_not_bol(s: @ps) { if !is_bol(s) { space(s.s); } }
-pub fn break_offset_if_not_bol(s: @ps, n: uint, off: int) {
-    if !is_bol(s) {
-        break_offset(s.s, n, off);
-    } else {
-        if off != 0 && s.s.last_token().is_hardbreak_tok() {
-            // We do something pretty sketchy here: tuck the nonzero
-            // offset-adjustment we were going to deposit along with the
-            // break into the previous hardbreak.
-            s.s.replace_last_token(pp::hardbreak_tok_offset(off));
-        }
-    }
-}
-
-// Synthesizes a comment that was not textually present in the original source
-// file.
-pub fn synth_comment(s: @ps, text: ~str) {
-    word(s.s, "/*");
-    space(s.s);
-    word(s.s, text);
-    space(s.s);
-    word(s.s, "*/");
-}
-
-pub fn commasep<T>(s: @ps, b: breaks, elts: &[T], op: &fn(@ps, &T)) {
-    box(s, 0u, b);
-    let mut first = true;
-    for elt in elts.iter() {
-        if first { first = false; } else { word_space(s, ","); }
-        op(s, elt);
-    }
-    end(s);
-}
-
-
-pub fn commasep_cmnt<T>(s: @ps, b: breaks, elts: &[T], op: &fn(@ps, &T),
-                               get_span: &fn(&T) -> codemap::Span) {
-    box(s, 0u, b);
-    let len = elts.len();
-    let mut i = 0u;
-    for elt in elts.iter() {
-        maybe_print_comment(s, get_span(elt).hi);
-        op(s, elt);
-        i += 1u;
-        if i < len {
-            word(s.s, ",");
-            maybe_print_trailing_comment(s, get_span(elt),
-                                         Some(get_span(&elts[i]).hi));
-            space_if_not_bol(s);
-        }
-    }
-    end(s);
-}
-
-pub fn commasep_exprs(s: @ps, b: breaks, exprs: &[@ast::Expr]) {
-    commasep_cmnt(s, b, exprs, |p, &e| print_expr(p, e), |e| e.span);
-}
-
-pub fn print_mod(s: @ps, _mod: &ast::_mod, attrs: &[ast::Attribute]) {
-    print_inner_attributes(s, attrs);
-    for vitem in _mod.view_items.iter() {
-        print_view_item(s, vitem);
-    }
-    for item in _mod.items.iter() { print_item(s, *item); }
-}
-
-pub fn print_foreign_mod(s: @ps, nmod: &ast::foreign_mod,
-                         attrs: &[ast::Attribute]) {
-    print_inner_attributes(s, attrs);
-    for vitem in nmod.view_items.iter() {
-        print_view_item(s, vitem);
-    }
-    for item in nmod.items.iter() { print_foreign_item(s, *item); }
-}
-
-pub fn print_opt_lifetime(s: @ps, lifetime: &Option<ast::Lifetime>) {
-    for l in lifetime.iter() {
-        print_lifetime(s, l);
-        nbsp(s);
-    }
-}
-
-pub fn print_type(s: @ps, ty: &ast::Ty) {
-    maybe_print_comment(s, ty.span.lo);
-    ibox(s, 0u);
-    match ty.node {
-      ast::ty_nil => word(s.s, "()"),
-      ast::ty_bot => word(s.s, "!"),
-      ast::ty_box(ref mt) => { word(s.s, "@"); print_mt(s, mt); }
-      ast::ty_uniq(ref mt) => { word(s.s, "~"); print_mt(s, mt); }
-      ast::ty_vec(ref mt) => {
-        word(s.s, "[");
-        match mt.mutbl {
-          ast::MutMutable => word_space(s, "mut"),
-          ast::MutImmutable => ()
-        }
-        print_type(s, mt.ty);
-        word(s.s, "]");
-      }
-      ast::ty_ptr(ref mt) => { word(s.s, "*"); print_mt(s, mt); }
-      ast::ty_rptr(ref lifetime, ref mt) => {
-          word(s.s, "&");
-          print_opt_lifetime(s, lifetime);
-          print_mt(s, mt);
-      }
-      ast::ty_tup(ref elts) => {
-        popen(s);
-        commasep(s, inconsistent, *elts, print_type);
-        if elts.len() == 1 {
-            word(s.s, ",");
-        }
-        pclose(s);
-      }
-      ast::ty_bare_fn(f) => {
-          let generics = ast::Generics {
-            lifetimes: f.lifetimes.clone(),
-            ty_params: opt_vec::Empty
-          };
-          print_ty_fn(s, Some(f.abis), None, &None,
-                      f.purity, ast::Many, &f.decl, None, &None,
-                      Some(&generics), None);
-      }
-      ast::ty_closure(f) => {
-          let generics = ast::Generics {
-            lifetimes: f.lifetimes.clone(),
-            ty_params: opt_vec::Empty
-          };
-          print_ty_fn(s, None, Some(f.sigil), &f.region,
-                      f.purity, f.onceness, &f.decl, None, &f.bounds,
-                      Some(&generics), None);
-      }
-      ast::ty_path(ref path, ref bounds, _) => print_bounded_path(s, path, bounds),
-      ast::ty_fixed_length_vec(ref mt, v) => {
-        word(s.s, "[");
-        match mt.mutbl {
-            ast::MutMutable => word_space(s, "mut"),
-            ast::MutImmutable => ()
-        }
-        print_type(s, mt.ty);
-        word(s.s, ", ..");
-        print_expr(s, v);
-        word(s.s, "]");
-      }
-      ast::ty_typeof(e) => {
-          word(s.s, "typeof(");
-          print_expr(s, e);
-          word(s.s, ")");
-      }
-      ast::ty_mac(_) => {
-          fail!("print_type doesn't know how to print a ty_mac");
-      }
-      ast::ty_infer => {
-          fail!("print_type shouldn't see a ty_infer");
-      }
-
-    }
-    end(s);
-}
-
-pub fn print_foreign_item(s: @ps, item: &ast::foreign_item) {
-    hardbreak_if_not_bol(s);
-    maybe_print_comment(s, item.span.lo);
-    print_outer_attributes(s, item.attrs);
-    match item.node {
-      ast::foreign_item_fn(ref decl, ref generics) => {
-        print_fn(s, decl, None, AbiSet::Rust(), item.ident, generics, None,
-                 item.vis);
-        end(s); // end head-ibox
-        word(s.s, ";");
-        end(s); // end the outer fn box
-      }
-      ast::foreign_item_static(ref t, m) => {
-        head(s, visibility_qualified(item.vis, "static"));
-        if m {
-            word_space(s, "mut");
-        }
-        print_ident(s, item.ident);
-        word_space(s, ":");
-        print_type(s, t);
-        word(s.s, ";");
-        end(s); // end the head-ibox
-        end(s); // end the outer cbox
-      }
-    }
-}
-
-pub fn print_item(s: @ps, item: &ast::item) {
-    hardbreak_if_not_bol(s);
-    maybe_print_comment(s, item.span.lo);
-    print_outer_attributes(s, item.attrs);
-    let ann_node = node_item(s, item);
-    (s.ann.pre)(ann_node);
-    match item.node {
-      ast::item_static(ref ty, m, expr) => {
-        head(s, visibility_qualified(item.vis, "static"));
-        if m == ast::MutMutable {
-            word_space(s, "mut");
-        }
-        print_ident(s, item.ident);
-        word_space(s, ":");
-        print_type(s, ty);
-        space(s.s);
-        end(s); // end the head-ibox
-
-        word_space(s, "=");
-        print_expr(s, expr);
-        word(s.s, ";");
-        end(s); // end the outer cbox
-
-      }
-      ast::item_fn(ref decl, purity, abi, ref typarams, ref body) => {
-        print_fn(
-            s,
-            decl,
-            Some(purity),
-            abi,
-            item.ident,
-            typarams,
-            None,
-            item.vis
-        );
-        word(s.s, " ");
-        print_block_with_attrs(s, body, item.attrs);
-      }
-      ast::item_mod(ref _mod) => {
-        head(s, visibility_qualified(item.vis, "mod"));
-        print_ident(s, item.ident);
-        nbsp(s);
-        bopen(s);
-        print_mod(s, _mod, item.attrs);
-        bclose(s, item.span);
-      }
-      ast::item_foreign_mod(ref nmod) => {
-        head(s, "extern");
-        word_nbsp(s, nmod.abis.to_str());
-        match nmod.sort {
-            ast::named => {
-                word_nbsp(s, "mod");
-                print_ident(s, item.ident);
-                nbsp(s);
-            }
-            ast::anonymous => {}
-        }
-        bopen(s);
-        print_foreign_mod(s, nmod, item.attrs);
-        bclose(s, item.span);
-      }
-      ast::item_ty(ref ty, ref params) => {
-        ibox(s, indent_unit);
-        ibox(s, 0u);
-        word_nbsp(s, visibility_qualified(item.vis, "type"));
-        print_ident(s, item.ident);
-        print_generics(s, params);
-        end(s); // end the inner ibox
-
-        space(s.s);
-        word_space(s, "=");
-        print_type(s, ty);
-        word(s.s, ";");
-        end(s); // end the outer ibox
-      }
-      ast::item_enum(ref enum_definition, ref params) => {
-        print_enum_def(
-            s,
-            enum_definition,
-            params,
-            item.ident,
-            item.span,
-            item.vis
-        );
-      }
-      ast::item_struct(struct_def, ref generics) => {
-          head(s, visibility_qualified(item.vis, "struct"));
-          print_struct(s, struct_def, generics, item.ident, item.span);
-      }
-
-      ast::item_impl(ref generics, ref opt_trait, ref ty, ref methods) => {
-        head(s, visibility_qualified(item.vis, "impl"));
-        if generics.is_parameterized() {
-            print_generics(s, generics);
-            space(s.s);
-        }
-
-        match opt_trait {
-            &Some(ref t) => {
-                print_trait_ref(s, t);
-                space(s.s);
-                word_space(s, "for");
-            }
-            &None => ()
-        };
-
-        print_type(s, ty);
-
-        if methods.len() == 0 {
-            word(s.s, ";");
-            end(s); // end the head-ibox
-            end(s); // end the outer cbox
-        } else {
-            space(s.s);
-            bopen(s);
-            for meth in methods.iter() {
-               print_method(s, *meth);
-            }
-            bclose(s, item.span);
-        }
-      }
-      ast::item_trait(ref generics, ref traits, ref methods) => {
-        head(s, visibility_qualified(item.vis, "trait"));
-        print_ident(s, item.ident);
-        print_generics(s, generics);
-        if traits.len() != 0u {
-            word(s.s, ":");
-            for (i, trait_) in traits.iter().enumerate() {
-                nbsp(s);
-                if i != 0 {
-                    word_space(s, "+");
-                }
-                print_path(s, &trait_.path, false);
-            }
-        }
-        word(s.s, " ");
-        bopen(s);
-        for meth in methods.iter() {
-            print_trait_method(s, meth);
-        }
-        bclose(s, item.span);
-      }
-      // I think it's reasonable to hide the context here:
-      ast::item_mac(codemap::Spanned { node: ast::mac_invoc_tt(ref pth, ref tts, _),
-                                   _}) => {
-        print_visibility(s, item.vis);
-        print_path(s, pth, false);
-        word(s.s, "! ");
-        print_ident(s, item.ident);
-        cbox(s, indent_unit);
-        popen(s);
-        print_tts(s, &(tts.as_slice()));
-        pclose(s);
-        end(s);
-      }
-    }
-    (s.ann.post)(ann_node);
-}
-
-fn print_trait_ref(s: @ps, t: &ast::trait_ref) {
-    print_path(s, &t.path, false);
-}
-
-pub fn print_enum_def(s: @ps, enum_definition: &ast::enum_def,
-                      generics: &ast::Generics, ident: ast::Ident,
-                      span: codemap::Span, visibility: ast::visibility) {
-    head(s, visibility_qualified(visibility, "enum"));
-    print_ident(s, ident);
-    print_generics(s, generics);
-    space(s.s);
-    print_variants(s, enum_definition.variants, span);
-}
-
-pub fn print_variants(s: @ps,
-                      variants: &[ast::variant],
-                      span: codemap::Span) {
-    bopen(s);
-    for v in variants.iter() {
-        space_if_not_bol(s);
-        maybe_print_comment(s, v.span.lo);
-        print_outer_attributes(s, v.node.attrs);
-        ibox(s, indent_unit);
-        print_variant(s, v);
-        word(s.s, ",");
-        end(s);
-        maybe_print_trailing_comment(s, v.span, None);
-    }
-    bclose(s, span);
-}
-
-pub fn visibility_to_str(vis: ast::visibility) -> ~str {
+pub fn visibility_qualified(vis: ast::Visibility, s: &str) -> String {
     match vis {
-        ast::private => ~"priv",
-        ast::public => ~"pub",
-        ast::inherited => ~""
+        ast::Public => format!("pub {}", s),
+        ast::Inherited => s.to_string()
     }
 }
 
-pub fn visibility_qualified(vis: ast::visibility, s: &str) -> ~str {
-    match vis {
-        ast::private | ast::public => visibility_to_str(vis) + " " + s,
-        ast::inherited => s.to_owned()
-    }
-}
-
-pub fn print_visibility(s: @ps, vis: ast::visibility) {
-    match vis {
-        ast::private | ast::public =>
-        word_nbsp(s, visibility_to_str(vis)),
-        ast::inherited => ()
-    }
-}
-
-pub fn print_struct(s: @ps,
-                    struct_def: &ast::struct_def,
-                    generics: &ast::Generics,
-                    ident: ast::Ident,
-                    span: codemap::Span) {
-    print_ident(s, ident);
-    print_generics(s, generics);
-    if ast_util::struct_def_is_tuple_like(struct_def) {
-        if !struct_def.fields.is_empty() {
-            popen(s);
-            do commasep(s, inconsistent, struct_def.fields) |s, field| {
-                match field.node.kind {
-                    ast::named_field(*) => fail!("unexpected named field"),
-                    ast::unnamed_field => {
-                        maybe_print_comment(s, field.span.lo);
-                        print_type(s, &field.node.ty);
-                    }
-                }
-            }
-            pclose(s);
-        }
-        word(s.s, ";");
-        end(s);
-        end(s); // close the outer-box
-    } else {
-        nbsp(s);
-        bopen(s);
-        hardbreak_if_not_bol(s);
-
-        for field in struct_def.fields.iter() {
-            match field.node.kind {
-                ast::unnamed_field => fail!("unexpected unnamed field"),
-                ast::named_field(ident, visibility) => {
-                    hardbreak_if_not_bol(s);
-                    maybe_print_comment(s, field.span.lo);
-                    print_outer_attributes(s, field.node.attrs);
-                    print_visibility(s, visibility);
-                    print_ident(s, ident);
-                    word_nbsp(s, ":");
-                    print_type(s, &field.node.ty);
-                    word(s.s, ",");
-                }
-            }
-        }
-
-        bclose(s, span);
-    }
-}
-
-/// This doesn't deserve to be called "pretty" printing, but it should be
-/// meaning-preserving. A quick hack that might help would be to look at the
-/// spans embedded in the TTs to decide where to put spaces and newlines.
-/// But it'd be better to parse these according to the grammar of the
-/// appropriate macro, transcribe back into the grammar we just parsed from,
-/// and then pretty-print the resulting AST nodes (so, e.g., we print
-/// expression arguments as expressions). It can be done! I think.
-pub fn print_tt(s: @ps, tt: &ast::token_tree) {
-    match *tt {
-      ast::tt_delim(ref tts) => print_tts(s, &(tts.as_slice())),
-      ast::tt_tok(_, ref tk) => {
-          word(s.s, parse::token::to_str(s.intr, tk));
-      }
-      ast::tt_seq(_, ref tts, ref sep, zerok) => {
-        word(s.s, "$(");
-        for tt_elt in (*tts).iter() { print_tt(s, tt_elt); }
-        word(s.s, ")");
-        match (*sep) {
-          Some(ref tk) => word(s.s, parse::token::to_str(s.intr, tk)),
-          None => ()
-        }
-        word(s.s, if zerok { "*" } else { "+" });
-      }
-      ast::tt_nonterminal(_, name) => {
-        word(s.s, "$");
-        print_ident(s, name);
-      }
-    }
-}
-
-pub fn print_tts(s: @ps, tts: & &[ast::token_tree]) {
-    ibox(s, 0);
-    for (i, tt) in tts.iter().enumerate() {
-        if i != 0 {
-            space(s.s);
-        }
-        print_tt(s, tt);
-    }
-    end(s);
-}
-
-pub fn print_variant(s: @ps, v: &ast::variant) {
-    print_visibility(s, v.node.vis);
-    match v.node.kind {
-        ast::tuple_variant_kind(ref args) => {
-            print_ident(s, v.node.name);
-            if !args.is_empty() {
-                popen(s);
-                fn print_variant_arg(s: @ps, arg: &ast::variant_arg) {
-                    print_type(s, &arg.ty);
-                }
-                commasep(s, consistent, *args, print_variant_arg);
-                pclose(s);
-            }
-        }
-        ast::struct_variant_kind(struct_def) => {
-            head(s, "");
-            let generics = ast_util::empty_generics();
-            print_struct(s, struct_def, &generics, v.node.name, v.span);
-        }
-    }
-    match v.node.disr_expr {
-      Some(d) => {
-        space(s.s);
-        word_space(s, "=");
-        print_expr(s, d);
-      }
-      _ => ()
-    }
-}
-
-pub fn print_ty_method(s: @ps, m: &ast::TypeMethod) {
-    hardbreak_if_not_bol(s);
-    maybe_print_comment(s, m.span.lo);
-    print_outer_attributes(s, m.attrs);
-    print_ty_fn(s,
-                None,
-                None,
-                &None,
-                m.purity,
-                ast::Many,
-                &m.decl,
-                Some(m.ident),
-                &None,
-                Some(&m.generics),
-                Some(m.explicit_self.node));
-    word(s.s, ";");
-}
-
-pub fn print_trait_method(s: @ps, m: &ast::trait_method) {
-    match *m {
-        required(ref ty_m) => print_ty_method(s, ty_m),
-        provided(m) => print_method(s, m)
-    }
-}
-
-pub fn print_method(s: @ps, meth: &ast::method) {
-    hardbreak_if_not_bol(s);
-    maybe_print_comment(s, meth.span.lo);
-    print_outer_attributes(s, meth.attrs);
-    print_fn(s, &meth.decl, Some(meth.purity), AbiSet::Rust(),
-             meth.ident, &meth.generics, Some(meth.explicit_self.node),
-             meth.vis);
-    word(s.s, " ");
-    print_block_with_attrs(s, &meth.body, meth.attrs);
-}
-
-pub fn print_outer_attributes(s: @ps, attrs: &[ast::Attribute]) {
-    let mut count = 0;
-    for attr in attrs.iter() {
-        match attr.node.style {
-          ast::AttrOuter => { print_attribute(s, attr); count += 1; }
-          _ => {/* fallthrough */ }
-        }
-    }
-    if count > 0 { hardbreak_if_not_bol(s); }
-}
-
-pub fn print_inner_attributes(s: @ps, attrs: &[ast::Attribute]) {
-    let mut count = 0;
-    for attr in attrs.iter() {
-        match attr.node.style {
-          ast::AttrInner => {
-            print_attribute(s, attr);
-            if !attr.node.is_sugared_doc {
-                word(s.s, ";");
-            }
-            count += 1;
-          }
-          _ => {/* fallthrough */ }
-        }
-    }
-    if count > 0 { hardbreak_if_not_bol(s); }
-}
-
-pub fn print_attribute(s: @ps, attr: &ast::Attribute) {
-    hardbreak_if_not_bol(s);
-    maybe_print_comment(s, attr.span.lo);
-    if attr.node.is_sugared_doc {
-        let comment = attr.value_str().unwrap();
-        word(s.s, comment);
-    } else {
-        word(s.s, "#[");
-        print_meta_item(s, attr.meta());
-        word(s.s, "]");
-    }
-}
-
-
-pub fn print_stmt(s: @ps, st: &ast::Stmt) {
-    maybe_print_comment(s, st.span.lo);
-    match st.node {
-      ast::StmtDecl(decl, _) => {
-        print_decl(s, decl);
-      }
-      ast::StmtExpr(expr, _) => {
-        space_if_not_bol(s);
-        print_expr(s, expr);
-      }
-      ast::StmtSemi(expr, _) => {
-        space_if_not_bol(s);
-        print_expr(s, expr);
-        word(s.s, ";");
-      }
-      ast::StmtMac(ref mac, semi) => {
-        space_if_not_bol(s);
-        print_mac(s, mac);
-        if semi { word(s.s, ";"); }
-      }
-    }
-    if parse::classify::stmt_ends_with_semi(st) { word(s.s, ";"); }
-    maybe_print_trailing_comment(s, st.span, None);
-}
-
-pub fn print_block(s: @ps, blk: &ast::Block) {
-    print_possibly_embedded_block(s, blk, block_normal, indent_unit);
-}
-
-pub fn print_block_unclosed(s: @ps, blk: &ast::Block) {
-    print_possibly_embedded_block_(s, blk, block_normal, indent_unit, &[],
-                                 false);
-}
-
-pub fn print_block_unclosed_indent(s: @ps, blk: &ast::Block, indented: uint) {
-    print_possibly_embedded_block_(s, blk, block_normal, indented, &[],
-                                   false);
-}
-
-pub fn print_block_with_attrs(s: @ps,
-                              blk: &ast::Block,
-                              attrs: &[ast::Attribute]) {
-    print_possibly_embedded_block_(s, blk, block_normal, indent_unit, attrs,
-                                  true);
-}
-
-pub enum embed_type { block_block_fn, block_normal, }
-
-pub fn print_possibly_embedded_block(s: @ps,
-                                     blk: &ast::Block,
-                                     embedded: embed_type,
-                                     indented: uint) {
-    print_possibly_embedded_block_(
-        s, blk, embedded, indented, &[], true);
-}
-
-pub fn print_possibly_embedded_block_(s: @ps,
-                                      blk: &ast::Block,
-                                      embedded: embed_type,
-                                      indented: uint,
-                                      attrs: &[ast::Attribute],
-                                      close_box: bool) {
-    match blk.rules {
-      ast::UnsafeBlock(*) => word_space(s, "unsafe"),
-      ast::DefaultBlock => ()
-    }
-    maybe_print_comment(s, blk.span.lo);
-    let ann_node = node_block(s, blk);
-    (s.ann.pre)(ann_node);
-    match embedded {
-      block_block_fn => end(s),
-      block_normal => bopen(s)
-    }
-
-    print_inner_attributes(s, attrs);
-
-    for vi in blk.view_items.iter() { print_view_item(s, vi); }
-    for st in blk.stmts.iter() {
-        print_stmt(s, *st);
-    }
-    match blk.expr {
-      Some(expr) => {
-        space_if_not_bol(s);
-        print_expr(s, expr);
-        maybe_print_trailing_comment(s, expr.span, Some(blk.span.hi));
-      }
-      _ => ()
-    }
-    bclose_maybe_open(s, blk.span, indented, close_box);
-    (s.ann.post)(ann_node);
-}
-
-pub fn print_if(s: @ps, test: &ast::Expr, blk: &ast::Block,
-                elseopt: Option<@ast::Expr>, chk: bool) {
-    head(s, "if");
-    if chk { word_nbsp(s, "check"); }
-    print_expr(s, test);
-    space(s.s);
-    print_block(s, blk);
-    fn do_else(s: @ps, els: Option<@ast::Expr>) {
-        match els {
-          Some(_else) => {
-            match _else.node {
-              // "another else-if"
-              ast::ExprIf(i, ref t, e) => {
-                cbox(s, indent_unit - 1u);
-                ibox(s, 0u);
-                word(s.s, " else if ");
-                print_expr(s, i);
-                space(s.s);
-                print_block(s, t);
-                do_else(s, e);
-              }
-              // "final else"
-              ast::ExprBlock(ref b) => {
-                cbox(s, indent_unit - 1u);
-                ibox(s, 0u);
-                word(s.s, " else ");
-                print_block(s, b);
-              }
-              // BLEAH, constraints would be great here
-              _ => {
-                  fail!("print_if saw if with weird alternative");
-              }
-            }
-          }
-          _ => {/* fall through */ }
-        }
-    }
-    do_else(s, elseopt);
-}
-
-pub fn print_mac(s: @ps, m: &ast::mac) {
-    match m.node {
-      // I think it's reasonable to hide the ctxt here:
-      ast::mac_invoc_tt(ref pth, ref tts, _) => {
-        print_path(s, pth, false);
-        word(s.s, "!");
-        popen(s);
-        print_tts(s, &tts.as_slice());
-        pclose(s);
-      }
-    }
-}
-
-pub fn print_vstore(s: @ps, t: ast::Vstore) {
-    match t {
-        ast::VstoreFixed(Some(i)) => word(s.s, fmt!("%u", i)),
-        ast::VstoreFixed(None) => word(s.s, "_"),
-        ast::VstoreUniq => word(s.s, "~"),
-        ast::VstoreBox => word(s.s, "@"),
-        ast::VstoreSlice(ref r) => {
-            word(s.s, "&");
-            print_opt_lifetime(s, r);
-        }
-    }
-}
-
-pub fn print_expr_vstore(s: @ps, t: ast::ExprVstore) {
-    match t {
-      ast::ExprVstoreUniq => word(s.s, "~"),
-      ast::ExprVstoreBox => word(s.s, "@"),
-      ast::ExprVstoreMutBox => {
-        word(s.s, "@");
-        word(s.s, "mut");
-      }
-      ast::ExprVstoreSlice => word(s.s, "&"),
-      ast::ExprVstoreMutSlice => {
-        word(s.s, "&");
-        word(s.s, "mut");
-      }
-    }
-}
-
-pub fn print_call_pre(s: @ps,
-                      sugar: ast::CallSugar,
-                      base_args: &mut ~[@ast::Expr])
-                   -> Option<@ast::Expr> {
-    match sugar {
-        ast::DoSugar => {
-            head(s, "do");
-            Some(base_args.pop())
-        }
-        ast::ForSugar => {
-            head(s, "for");
-            Some(base_args.pop())
-        }
-        ast::NoSugar => None
-    }
-}
-
-pub fn print_call_post(s: @ps,
-                       sugar: ast::CallSugar,
-                       blk: &Option<@ast::Expr>,
-                       base_args: &mut ~[@ast::Expr]) {
-    if sugar == ast::NoSugar || !base_args.is_empty() {
-        popen(s);
-        commasep_exprs(s, inconsistent, *base_args);
-        pclose(s);
-    }
-    if sugar != ast::NoSugar {
-        nbsp(s);
-        match blk.unwrap().node {
-          // need to handle closures specifically
-          ast::ExprDoBody(e) => {
-            end(s); // we close our head box; closure
-                    // will create it's own.
-            print_expr(s, e);
-            end(s); // close outer box, as closures don't
-          }
-          _ => {
-            // not sure if this can happen.
-            print_expr(s, blk.unwrap());
-          }
-        }
-    }
-}
-
-pub fn print_expr(s: @ps, expr: &ast::Expr) {
-    fn print_field(s: @ps, field: &ast::Field) {
-        ibox(s, indent_unit);
-        print_ident(s, field.ident);
-        word_space(s, ":");
-        print_expr(s, field.expr);
-        end(s);
-    }
-    fn get_span(field: &ast::Field) -> codemap::Span { return field.span; }
-
-    maybe_print_comment(s, expr.span.lo);
-    ibox(s, indent_unit);
-    let ann_node = node_expr(s, expr);
-    (s.ann.pre)(ann_node);
+fn needs_parentheses(expr: &ast::Expr) -> bool {
     match expr.node {
-        ast::ExprVstore(e, v) => {
-            print_expr_vstore(s, v);
-            print_expr(s, e);
-        },
-      ast::ExprVec(ref exprs, mutbl) => {
-        ibox(s, indent_unit);
-        word(s.s, "[");
-        if mutbl == ast::MutMutable {
-            word(s.s, "mut");
-            if exprs.len() > 0u { nbsp(s); }
-        }
-        commasep_exprs(s, inconsistent, *exprs);
-        word(s.s, "]");
-        end(s);
-      }
+        ast::ExprAssign(..) | ast::ExprBinary(..) |
+        ast::ExprClosure(..) |
+        ast::ExprAssignOp(..) | ast::ExprCast(..) => true,
+        _ => false,
+    }
+}
 
-      ast::ExprRepeat(element, count, mutbl) => {
-        ibox(s, indent_unit);
-        word(s.s, "[");
-        if mutbl == ast::MutMutable {
-            word(s.s, "mut");
-            nbsp(s);
-        }
-        print_expr(s, element);
-        word(s.s, ",");
-        word(s.s, "..");
-        print_expr(s, count);
-        word(s.s, "]");
-        end(s);
-      }
+impl<'a> State<'a> {
+    pub fn ibox(&mut self, u: usize) -> io::Result<()> {
+        self.boxes.push(pp::Breaks::Inconsistent);
+        pp::ibox(&mut self.s, u)
+    }
 
-      ast::ExprStruct(ref path, ref fields, wth) => {
-        print_path(s, path, true);
-        word(s.s, "{");
-        commasep_cmnt(s, consistent, (*fields), print_field, get_span);
-        match wth {
-            Some(expr) => {
-                ibox(s, indent_unit);
-                word(s.s, ",");
-                space(s.s);
-                word(s.s, "..");
-                print_expr(s, expr);
-                end(s);
-            }
-            _ => (word(s.s, ","))
-        }
-        word(s.s, "}");
-      }
-      ast::ExprTup(ref exprs) => {
-        popen(s);
-        commasep_exprs(s, inconsistent, *exprs);
-        if exprs.len() == 1 {
-            word(s.s, ",");
-        }
-        pclose(s);
-      }
-      ast::ExprCall(func, ref args, sugar) => {
-        let mut base_args = (*args).clone();
-        let blk = print_call_pre(s, sugar, &mut base_args);
-        print_expr(s, func);
-        print_call_post(s, sugar, &blk, &mut base_args);
-      }
-      ast::ExprMethodCall(_, func, ident, ref tys, ref args, sugar) => {
-        let mut base_args = (*args).clone();
-        let blk = print_call_pre(s, sugar, &mut base_args);
-        print_expr(s, func);
-        word(s.s, ".");
-        print_ident(s, ident);
-        if tys.len() > 0u {
-            word(s.s, "::<");
-            commasep(s, inconsistent, *tys, print_type);
-            word(s.s, ">");
-        }
-        print_call_post(s, sugar, &blk, &mut base_args);
-      }
-      ast::ExprBinary(_, op, lhs, rhs) => {
-        print_expr(s, lhs);
-        space(s.s);
-        word_space(s, ast_util::binop_to_str(op));
-        print_expr(s, rhs);
-      }
-      ast::ExprUnary(_, op, expr) => {
-        word(s.s, ast_util::unop_to_str(op));
-        print_expr(s, expr);
-      }
-      ast::ExprAddrOf(m, expr) => {
-        word(s.s, "&");
-        print_mutability(s, m);
-        // Avoid `& &e` => `&&e`.
-        match (m, &expr.node) {
-            (ast::MutImmutable, &ast::ExprAddrOf(*)) => space(s.s),
-            _ => { }
-        }
-        print_expr(s, expr);
-      }
-      ast::ExprLit(lit) => print_literal(s, lit),
-      ast::ExprCast(expr, ref ty) => {
-        print_expr(s, expr);
-        space(s.s);
-        word_space(s, "as");
-        print_type(s, ty);
-      }
-      ast::ExprIf(test, ref blk, elseopt) => {
-        print_if(s, test, blk, elseopt, false);
-      }
-      ast::ExprWhile(test, ref blk) => {
-        head(s, "while");
-        print_expr(s, test);
-        space(s.s);
-        print_block(s, blk);
-      }
-      ast::ExprForLoop(pat, iter, ref blk, opt_ident) => {
-        for ident in opt_ident.iter() {
-            word(s.s, "'");
-            print_ident(s, *ident);
-            word_space(s, ":");
-        }
-        head(s, "for");
-        print_pat(s, pat);
-        space(s.s);
-        word_space(s, "in");
-        print_expr(s, iter);
-        space(s.s);
-        print_block(s, blk);
-      }
-      ast::ExprLoop(ref blk, opt_ident) => {
-        for ident in opt_ident.iter() {
-            word(s.s, "'");
-            print_ident(s, *ident);
-            word_space(s, ":");
-        }
-        head(s, "loop");
-        space(s.s);
-        print_block(s, blk);
-      }
-      ast::ExprMatch(expr, ref arms) => {
-        cbox(s, indent_unit);
-        ibox(s, 4);
-        word_nbsp(s, "match");
-        print_expr(s, expr);
-        space(s.s);
-        bopen(s);
-        let len = arms.len();
-        for (i, arm) in arms.iter().enumerate() {
-            space(s.s);
-            cbox(s, indent_unit);
-            ibox(s, 0u);
-            let mut first = true;
-            for p in arm.pats.iter() {
-                if first {
-                    first = false;
-                } else { space(s.s); word_space(s, "|"); }
-                print_pat(s, *p);
-            }
-            space(s.s);
-            match arm.guard {
-              Some(e) => {
-                word_space(s, "if");
-                print_expr(s, e);
-                space(s.s);
-              }
-              None => ()
-            }
-            word_space(s, "=>");
+    pub fn end(&mut self) -> io::Result<()> {
+        self.boxes.pop().unwrap();
+        pp::end(&mut self.s)
+    }
 
-            // Extract the expression from the extra block the parser adds
-            // in the case of foo => expr
-            if arm.body.view_items.is_empty() &&
-                arm.body.stmts.is_empty() &&
-                arm.body.rules == ast::DefaultBlock &&
-                arm.body.expr.is_some()
-            {
-                match arm.body.expr {
-                    Some(expr) => {
-                        match expr.node {
-                            ast::ExprBlock(ref blk) => {
-                                // the block will close the pattern's ibox
-                                print_block_unclosed_indent(
-                                    s, blk, indent_unit);
-                            }
-                            _ => {
-                                end(s); // close the ibox for the pattern
-                                print_expr(s, expr);
-                            }
-                        }
-                        if !expr_is_simple_block(expr)
-                            && i < len - 1 {
-                            word(s.s, ",");
-                        }
-                        end(s); // close enclosing cbox
-                    }
-                    None => fail!()
-                }
-            } else {
-                // the block will close the pattern's ibox
-                print_block_unclosed_indent(s, &arm.body, indent_unit);
-            }
+    pub fn cbox(&mut self, u: usize) -> io::Result<()> {
+        self.boxes.push(pp::Breaks::Consistent);
+        pp::cbox(&mut self.s, u)
+    }
+
+    // "raw box"
+    pub fn rbox(&mut self, u: usize, b: pp::Breaks) -> io::Result<()> {
+        self.boxes.push(b);
+        pp::rbox(&mut self.s, u, b)
+    }
+
+    pub fn nbsp(&mut self) -> io::Result<()> { word(&mut self.s, " ") }
+
+    pub fn word_nbsp(&mut self, w: &str) -> io::Result<()> {
+        try!(word(&mut self.s, w));
+        self.nbsp()
+    }
+
+    pub fn word_space(&mut self, w: &str) -> io::Result<()> {
+        try!(word(&mut self.s, w));
+        space(&mut self.s)
+    }
+
+    pub fn popen(&mut self) -> io::Result<()> { word(&mut self.s, "(") }
+
+    pub fn pclose(&mut self) -> io::Result<()> { word(&mut self.s, ")") }
+
+    pub fn head(&mut self, w: &str) -> io::Result<()> {
+        // outer-box is consistent
+        try!(self.cbox(indent_unit));
+        // head-box is inconsistent
+        try!(self.ibox(w.len() + 1));
+        // keyword that starts the head
+        if !w.is_empty() {
+            try!(self.word_nbsp(w));
         }
-        bclose_(s, expr.span, indent_unit);
-      }
-      ast::ExprFnBlock(ref decl, ref body) => {
-        // in do/for blocks we don't want to show an empty
-        // argument list, but at this point we don't know which
-        // we are inside.
-        //
-        // if !decl.inputs.is_empty() {
-        print_fn_block_args(s, decl);
-        space(s.s);
-        // }
-        assert!(body.stmts.is_empty());
-        assert!(body.expr.is_some());
-        // we extract the block, so as not to create another set of boxes
-        match body.expr.unwrap().node {
-            ast::ExprBlock(ref blk) => {
-                print_block_unclosed(s, blk);
-            }
-            _ => {
-                // this is a bare expression
-                print_expr(s, body.expr.unwrap());
-                end(s); // need to close a box
-            }
+        Ok(())
+    }
+
+    pub fn bopen(&mut self) -> io::Result<()> {
+        try!(word(&mut self.s, "{"));
+        self.end() // close the head-box
+    }
+
+    pub fn bclose_(&mut self, span: codemap::Span,
+                   indented: usize) -> io::Result<()> {
+        self.bclose_maybe_open(span, indented, true)
+    }
+    pub fn bclose_maybe_open (&mut self, span: codemap::Span,
+                              indented: usize, close_box: bool) -> io::Result<()> {
+        try!(self.maybe_print_comment(span.hi));
+        try!(self.break_offset_if_not_bol(1, -(indented as isize)));
+        try!(word(&mut self.s, "}"));
+        if close_box {
+            try!(self.end()); // close the outer-box
         }
-        // a box will be closed by print_expr, but we didn't want an overall
-        // wrapper so we closed the corresponding opening. so create an
-        // empty box to satisfy the close.
-        ibox(s, 0);
-      }
-      ast::ExprDoBody(body) => {
-        print_expr(s, body);
-      }
-      ast::ExprBlock(ref blk) => {
-        // containing cbox, will be closed by print-block at }
-        cbox(s, indent_unit);
-        // head-box, will be closed by print-block after {
-        ibox(s, 0u);
-        print_block(s, blk);
-      }
-      ast::ExprAssign(lhs, rhs) => {
-        print_expr(s, lhs);
-        space(s.s);
-        word_space(s, "=");
-        print_expr(s, rhs);
-      }
-      ast::ExprAssignOp(_, op, lhs, rhs) => {
-        print_expr(s, lhs);
-        space(s.s);
-        word(s.s, ast_util::binop_to_str(op));
-        word_space(s, "=");
-        print_expr(s, rhs);
-      }
-      ast::ExprField(expr, id, ref tys) => {
-        print_expr(s, expr);
-        word(s.s, ".");
-        print_ident(s, id);
-        if tys.len() > 0u {
-            word(s.s, "::<");
-            commasep(s, inconsistent, *tys, print_type);
-            word(s.s, ">");
+        Ok(())
+    }
+    pub fn bclose(&mut self, span: codemap::Span) -> io::Result<()> {
+        self.bclose_(span, indent_unit)
+    }
+
+    pub fn is_begin(&mut self) -> bool {
+        match self.s.last_token() {
+            pp::Token::Begin(_) => true,
+            _ => false,
         }
-      }
-      ast::ExprIndex(_, expr, index) => {
-        print_expr(s, expr);
-        word(s.s, "[");
-        print_expr(s, index);
-        word(s.s, "]");
-      }
-      ast::ExprPath(ref path) => print_path(s, path, true),
-      ast::ExprSelf => word(s.s, "self"),
-      ast::ExprBreak(opt_ident) => {
-        word(s.s, "break");
-        space(s.s);
-        for ident in opt_ident.iter() {
-            word(s.s, "'");
-            print_name(s, *ident);
-            space(s.s);
+    }
+
+    pub fn is_end(&mut self) -> bool {
+        match self.s.last_token() {
+            pp::Token::End => true,
+            _ => false,
         }
-      }
-      ast::ExprAgain(opt_ident) => {
-        word(s.s, "loop");
-        space(s.s);
-        for ident in opt_ident.iter() {
-            word(s.s, "'");
-            print_name(s, *ident);
-            space(s.s)
+    }
+
+    // is this the beginning of a line?
+    pub fn is_bol(&mut self) -> bool {
+        self.s.last_token().is_eof() || self.s.last_token().is_hardbreak_tok()
+    }
+
+    pub fn in_cbox(&self) -> bool {
+        match self.boxes.last() {
+            Some(&last_box) => last_box == pp::Breaks::Consistent,
+            None => false
         }
-      }
-      ast::ExprRet(result) => {
-        word(s.s, "return");
-        match result {
-          Some(expr) => { word(s.s, " "); print_expr(s, expr); }
-          _ => ()
+    }
+
+    pub fn hardbreak_if_not_bol(&mut self) -> io::Result<()> {
+        if !self.is_bol() {
+            try!(hardbreak(&mut self.s))
         }
-      }
-      ast::ExprLogLevel => {
-        word(s.s, "__log_level");
-        popen(s);
-        pclose(s);
-      }
-      ast::ExprInlineAsm(ref a) => {
-        if a.volatile {
-            word(s.s, "__volatile__ asm!");
+        Ok(())
+    }
+    pub fn space_if_not_bol(&mut self) -> io::Result<()> {
+        if !self.is_bol() { try!(space(&mut self.s)); }
+        Ok(())
+    }
+    pub fn break_offset_if_not_bol(&mut self, n: usize,
+                                   off: isize) -> io::Result<()> {
+        if !self.is_bol() {
+            break_offset(&mut self.s, n, off)
         } else {
-            word(s.s, "asm!");
-        }
-        popen(s);
-        print_string(s, a.asm);
-        word_space(s, ":");
-        for &(co, o) in a.outputs.iter() {
-            print_string(s, co);
-            popen(s);
-            print_expr(s, o);
-            pclose(s);
-            word_space(s, ",");
-        }
-        word_space(s, ":");
-        for &(co, o) in a.inputs.iter() {
-            print_string(s, co);
-            popen(s);
-            print_expr(s, o);
-            pclose(s);
-            word_space(s, ",");
-        }
-        word_space(s, ":");
-        print_string(s, a.clobbers);
-        pclose(s);
-      }
-      ast::ExprMac(ref m) => print_mac(s, m),
-      ast::ExprParen(e) => {
-          popen(s);
-          print_expr(s, e);
-          pclose(s);
-      }
-    }
-    (s.ann.post)(ann_node);
-    end(s);
-}
-
-pub fn print_local_decl(s: @ps, loc: &ast::Local) {
-    print_pat(s, loc.pat);
-    match loc.ty.node {
-      ast::ty_infer => (),
-      _ => { word_space(s, ":"); print_type(s, &loc.ty); }
-    }
-}
-
-pub fn print_decl(s: @ps, decl: &ast::Decl) {
-    maybe_print_comment(s, decl.span.lo);
-    match decl.node {
-      ast::DeclLocal(ref loc) => {
-        space_if_not_bol(s);
-        ibox(s, indent_unit);
-        word_nbsp(s, "let");
-
-        if loc.is_mutbl {
-            word_nbsp(s, "mut");
-        }
-
-        fn print_local(s: @ps, loc: &ast::Local) {
-            ibox(s, indent_unit);
-            print_local_decl(s, loc);
-            end(s);
-            match loc.init {
-              Some(init) => {
-                nbsp(s);
-                word_space(s, "=");
-                print_expr(s, init);
-              }
-              _ => ()
+            if off != 0 && self.s.last_token().is_hardbreak_tok() {
+                // We do something pretty sketchy here: tuck the nonzero
+                // offset-adjustment we were going to deposit along with the
+                // break into the previous hardbreak.
+                self.s.replace_last_token(pp::hardbreak_tok_offset(off));
             }
-        }
-
-        print_local(s, *loc);
-        end(s);
-      }
-      ast::DeclItem(item) => print_item(s, item)
-    }
-}
-
-pub fn print_ident(s: @ps, ident: ast::Ident) {
-    word(s.s, ident_to_str(&ident));
-}
-
-pub fn print_name(s: @ps, name: ast::Name) {
-    word(s.s, interner_get(name));
-}
-
-pub fn print_for_decl(s: @ps, loc: &ast::Local, coll: &ast::Expr) {
-    print_local_decl(s, loc);
-    space(s.s);
-    word_space(s, "in");
-    print_expr(s, coll);
-}
-
-fn print_path_(s: @ps,
-               path: &ast::Path,
-               colons_before_params: bool,
-               opt_bounds: &Option<OptVec<ast::TyParamBound>>) {
-    maybe_print_comment(s, path.span.lo);
-    if path.global {
-        word(s.s, "::");
-    }
-
-    let mut first = true;
-    for (i, segment) in path.segments.iter().enumerate() {
-        if first {
-            first = false
-        } else {
-            word(s.s, "::")
-        }
-
-        print_ident(s, segment.identifier);
-
-        if segment.lifetime.is_some() || !segment.types.is_empty() {
-            // If this is the last segment, print the bounds.
-            if i == path.segments.len() - 1 {
-                match *opt_bounds {
-                    None => {}
-                    Some(ref bounds) => print_bounds(s, bounds, true),
-                }
-            }
-
-            if colons_before_params {
-                word(s.s, "::")
-            }
-            word(s.s, "<");
-
-            for lifetime in segment.lifetime.iter() {
-                print_lifetime(s, lifetime);
-                if !segment.types.is_empty() {
-                    word_space(s, ",")
-                }
-            }
-
-            commasep(s,
-                     inconsistent,
-                     segment.types.map_to_vec(|t| (*t).clone()),
-                     print_type);
-
-            word(s.s, ">")
-        }
-    }
-}
-
-pub fn print_path(s: @ps, path: &ast::Path, colons_before_params: bool) {
-    print_path_(s, path, colons_before_params, &None)
-}
-
-pub fn print_bounded_path(s: @ps, path: &ast::Path,
-                          bounds: &Option<OptVec<ast::TyParamBound>>) {
-    print_path_(s, path, false, bounds)
-}
-
-pub fn print_pat(s: @ps, pat: &ast::Pat) {
-    maybe_print_comment(s, pat.span.lo);
-    let ann_node = node_pat(s, pat);
-    (s.ann.pre)(ann_node);
-    /* Pat isn't normalized, but the beauty of it
-     is that it doesn't matter */
-    match pat.node {
-      ast::PatWild => word(s.s, "_"),
-      ast::PatIdent(binding_mode, ref path, sub) => {
-          match binding_mode {
-              ast::BindByRef(mutbl) => {
-                  word_nbsp(s, "ref");
-                  print_mutability(s, mutbl);
-              }
-              ast::BindInfer => {}
-          }
-          print_path(s, path, true);
-          match sub {
-              Some(p) => {
-                  word(s.s, "@");
-                  print_pat(s, p);
-              }
-              None => ()
-          }
-      }
-      ast::PatEnum(ref path, ref args_) => {
-        print_path(s, path, true);
-        match *args_ {
-          None => word(s.s, "(*)"),
-          Some(ref args) => {
-            if !args.is_empty() {
-              popen(s);
-              commasep(s, inconsistent, *args,
-                       |s, &p| print_pat(s, p));
-              pclose(s);
-            } else { }
-          }
-        }
-      }
-      ast::PatStruct(ref path, ref fields, etc) => {
-        print_path(s, path, true);
-        word(s.s, "{");
-        fn print_field(s: @ps, f: &ast::FieldPat) {
-            cbox(s, indent_unit);
-            print_ident(s, f.ident);
-            word_space(s, ":");
-            print_pat(s, f.pat);
-            end(s);
-        }
-        fn get_span(f: &ast::FieldPat) -> codemap::Span { return f.pat.span; }
-        commasep_cmnt(s, consistent, *fields,
-                      |s, f| print_field(s,f),
-                      get_span);
-        if etc {
-            if fields.len() != 0u { word_space(s, ","); }
-            word(s.s, "_");
-        }
-        word(s.s, "}");
-      }
-      ast::PatTup(ref elts) => {
-        popen(s);
-        commasep(s, inconsistent, *elts, |s, &p| print_pat(s, p));
-        if elts.len() == 1 {
-            word(s.s, ",");
-        }
-        pclose(s);
-      }
-      ast::PatBox(inner) => {
-          word(s.s, "@");
-          print_pat(s, inner);
-      }
-      ast::PatUniq(inner) => {
-          word(s.s, "~");
-          print_pat(s, inner);
-      }
-      ast::PatRegion(inner) => {
-          word(s.s, "&");
-          print_pat(s, inner);
-      }
-      ast::PatLit(e) => print_expr(s, e),
-      ast::PatRange(begin, end) => {
-        print_expr(s, begin);
-        space(s.s);
-        word(s.s, "..");
-        print_expr(s, end);
-      }
-      ast::PatVec(ref before, slice, ref after) => {
-        word(s.s, "[");
-        do commasep(s, inconsistent, *before) |s, &p| {
-            print_pat(s, p);
-        }
-        for &p in slice.iter() {
-            if !before.is_empty() { word_space(s, ","); }
-            word(s.s, "..");
-            print_pat(s, p);
-            if !after.is_empty() { word_space(s, ","); }
-        }
-        do commasep(s, inconsistent, *after) |s, &p| {
-            print_pat(s, p);
-        }
-        word(s.s, "]");
-      }
-    }
-    (s.ann.post)(ann_node);
-}
-
-pub fn explicit_self_to_str(explicit_self: &ast::explicit_self_, intr: @ident_interner) -> ~str {
-    to_str(explicit_self, |a, &b| { print_explicit_self(a, b); () }, intr)
-}
-
-// Returns whether it printed anything
-pub fn print_explicit_self(s: @ps, explicit_self: ast::explicit_self_) -> bool {
-    match explicit_self {
-        ast::sty_static => { return false; }
-        ast::sty_value => { word(s.s, "self"); }
-        ast::sty_uniq => { word(s.s, "~self"); }
-        ast::sty_region(ref lt, m) => {
-            word(s.s, "&");
-            print_opt_lifetime(s, lt);
-            print_mutability(s, m);
-            word(s.s, "self");
-        }
-        ast::sty_box(m) => {
-            word(s.s, "@"); print_mutability(s, m); word(s.s, "self");
-        }
-    }
-    return true;
-}
-
-pub fn print_fn(s: @ps,
-                decl: &ast::fn_decl,
-                purity: Option<ast::purity>,
-                abis: AbiSet,
-                name: ast::Ident,
-                generics: &ast::Generics,
-                opt_explicit_self: Option<ast::explicit_self_>,
-                vis: ast::visibility) {
-    head(s, "");
-    print_fn_header_info(s, opt_explicit_self, purity, abis, ast::Many, None, vis);
-    nbsp(s);
-    print_ident(s, name);
-    print_generics(s, generics);
-    print_fn_args_and_ret(s, decl, opt_explicit_self);
-}
-
-pub fn print_fn_args(s: @ps, decl: &ast::fn_decl,
-                 opt_explicit_self: Option<ast::explicit_self_>) {
-    // It is unfortunate to duplicate the commasep logic, but we want the
-    // self type and the args all in the same box.
-    box(s, 0u, inconsistent);
-    let mut first = true;
-    for explicit_self in opt_explicit_self.iter() {
-        first = !print_explicit_self(s, *explicit_self);
-    }
-
-    for arg in decl.inputs.iter() {
-        if first { first = false; } else { word_space(s, ","); }
-        print_arg(s, arg);
-    }
-
-    end(s);
-}
-
-pub fn print_fn_args_and_ret(s: @ps, decl: &ast::fn_decl,
-                             opt_explicit_self: Option<ast::explicit_self_>) {
-    popen(s);
-    print_fn_args(s, decl, opt_explicit_self);
-    pclose(s);
-
-    maybe_print_comment(s, decl.output.span.lo);
-    match decl.output.node {
-        ast::ty_nil => {}
-        _ => {
-            space_if_not_bol(s);
-            word_space(s, "->");
-            print_type(s, &decl.output);
-        }
-    }
-}
-
-pub fn print_fn_block_args(s: @ps, decl: &ast::fn_decl) {
-    word(s.s, "|");
-    print_fn_args(s, decl, None);
-    word(s.s, "|");
-
-    match decl.output.node {
-        ast::ty_infer => {}
-        _ => {
-            space_if_not_bol(s);
-            word_space(s, "->");
-            print_type(s, &decl.output);
+            Ok(())
         }
     }
 
-    maybe_print_comment(s, decl.output.span.lo);
-}
+    // Synthesizes a comment that was not textually present in the original source
+    // file.
+    pub fn synth_comment(&mut self, text: String) -> io::Result<()> {
+        try!(word(&mut self.s, "/*"));
+        try!(space(&mut self.s));
+        try!(word(&mut self.s, &text[..]));
+        try!(space(&mut self.s));
+        word(&mut self.s, "*/")
+    }
 
-pub fn print_bounds(s: @ps, bounds: &OptVec<ast::TyParamBound>,
-                    print_colon_anyway: bool) {
-    if !bounds.is_empty() {
-        word(s.s, ":");
+    pub fn commasep<T, F>(&mut self, b: Breaks, elts: &[T], mut op: F) -> io::Result<()> where
+        F: FnMut(&mut State, &T) -> io::Result<()>,
+    {
+        try!(self.rbox(0, b));
         let mut first = true;
-        for bound in bounds.iter() {
-            nbsp(s);
+        for elt in elts {
+            if first { first = false; } else { try!(self.word_space(",")); }
+            try!(op(self, elt));
+        }
+        self.end()
+    }
+
+
+    pub fn commasep_cmnt<T, F, G>(&mut self,
+                                  b: Breaks,
+                                  elts: &[T],
+                                  mut op: F,
+                                  mut get_span: G) -> io::Result<()> where
+        F: FnMut(&mut State, &T) -> io::Result<()>,
+        G: FnMut(&T) -> codemap::Span,
+    {
+        try!(self.rbox(0, b));
+        let len = elts.len();
+        let mut i = 0;
+        for elt in elts {
+            try!(self.maybe_print_comment(get_span(elt).hi));
+            try!(op(self, elt));
+            i += 1;
+            if i < len {
+                try!(word(&mut self.s, ","));
+                try!(self.maybe_print_trailing_comment(get_span(elt),
+                                                    Some(get_span(&elts[i]).hi)));
+                try!(self.space_if_not_bol());
+            }
+        }
+        self.end()
+    }
+
+    pub fn commasep_exprs(&mut self, b: Breaks,
+                          exprs: &[P<ast::Expr>]) -> io::Result<()> {
+        self.commasep_cmnt(b, exprs, |s, e| s.print_expr(&**e), |e| e.span)
+    }
+
+    pub fn print_mod(&mut self, _mod: &ast::Mod,
+                     attrs: &[ast::Attribute]) -> io::Result<()> {
+        try!(self.print_inner_attributes(attrs));
+        for item in &_mod.items {
+            try!(self.print_item(&**item));
+        }
+        Ok(())
+    }
+
+    pub fn print_foreign_mod(&mut self, nmod: &ast::ForeignMod,
+                             attrs: &[ast::Attribute]) -> io::Result<()> {
+        try!(self.print_inner_attributes(attrs));
+        for item in &nmod.items {
+            try!(self.print_foreign_item(&**item));
+        }
+        Ok(())
+    }
+
+    pub fn print_opt_lifetime(&mut self,
+                              lifetime: &Option<ast::Lifetime>) -> io::Result<()> {
+        if let Some(l) = *lifetime {
+            try!(self.print_lifetime(&l));
+            try!(self.nbsp());
+        }
+        Ok(())
+    }
+
+    pub fn print_type(&mut self, ty: &ast::Ty) -> io::Result<()> {
+        try!(self.maybe_print_comment(ty.span.lo));
+        try!(self.ibox(0));
+        match ty.node {
+            ast::TyVec(ref ty) => {
+                try!(word(&mut self.s, "["));
+                try!(self.print_type(&**ty));
+                try!(word(&mut self.s, "]"));
+            }
+            ast::TyPtr(ref mt) => {
+                try!(word(&mut self.s, "*"));
+                match mt.mutbl {
+                    ast::MutMutable => try!(self.word_nbsp("mut")),
+                    ast::MutImmutable => try!(self.word_nbsp("const")),
+                }
+                try!(self.print_type(&*mt.ty));
+            }
+            ast::TyRptr(ref lifetime, ref mt) => {
+                try!(word(&mut self.s, "&"));
+                try!(self.print_opt_lifetime(lifetime));
+                try!(self.print_mt(mt));
+            }
+            ast::TyTup(ref elts) => {
+                try!(self.popen());
+                try!(self.commasep(Inconsistent, &elts[..],
+                                   |s, ty| s.print_type(&**ty)));
+                if elts.len() == 1 {
+                    try!(word(&mut self.s, ","));
+                }
+                try!(self.pclose());
+            }
+            ast::TyParen(ref typ) => {
+                try!(self.popen());
+                try!(self.print_type(&**typ));
+                try!(self.pclose());
+            }
+            ast::TyBareFn(ref f) => {
+                let generics = ast::Generics {
+                    lifetimes: f.lifetimes.clone(),
+                    ty_params: OwnedSlice::empty(),
+                    where_clause: ast::WhereClause {
+                        id: ast::DUMMY_NODE_ID,
+                        predicates: Vec::new(),
+                    },
+                };
+                try!(self.print_ty_fn(f.abi,
+                                      f.unsafety,
+                                      &*f.decl,
+                                      None,
+                                      &generics,
+                                      None));
+            }
+            ast::TyPath(None, ref path) => {
+                try!(self.print_path(path, false, 0));
+            }
+            ast::TyPath(Some(ref qself), ref path) => {
+                try!(self.print_qpath(path, qself, false))
+            }
+            ast::TyObjectSum(ref ty, ref bounds) => {
+                try!(self.print_type(&**ty));
+                try!(self.print_bounds("+", &bounds[..]));
+            }
+            ast::TyPolyTraitRef(ref bounds) => {
+                try!(self.print_bounds("", &bounds[..]));
+            }
+            ast::TyFixedLengthVec(ref ty, ref v) => {
+                try!(word(&mut self.s, "["));
+                try!(self.print_type(&**ty));
+                try!(word(&mut self.s, "; "));
+                try!(self.print_expr(&**v));
+                try!(word(&mut self.s, "]"));
+            }
+            ast::TyTypeof(ref e) => {
+                try!(word(&mut self.s, "typeof("));
+                try!(self.print_expr(&**e));
+                try!(word(&mut self.s, ")"));
+            }
+            ast::TyInfer => {
+                try!(word(&mut self.s, "_"));
+            }
+        }
+        self.end()
+    }
+
+    pub fn print_foreign_item(&mut self,
+                              item: &ast::ForeignItem) -> io::Result<()> {
+        try!(self.hardbreak_if_not_bol());
+        try!(self.maybe_print_comment(item.span.lo));
+        try!(self.print_outer_attributes(&item.attrs));
+        match item.node {
+            ast::ForeignItemFn(ref decl, ref generics) => {
+                try!(self.print_fn(&**decl, None, abi::Rust, item.ident, generics,
+                                   None, item.vis));
+                try!(self.end()); // end head-ibox
+                try!(word(&mut self.s, ";"));
+                self.end() // end the outer fn box
+            }
+            ast::ForeignItemStatic(ref t, m) => {
+                try!(self.head(&visibility_qualified(item.vis,
+                                                    "static")));
+                if m {
+                    try!(self.word_space("mut"));
+                }
+                try!(self.print_ident(item.ident));
+                try!(self.word_space(":"));
+                try!(self.print_type(&**t));
+                try!(word(&mut self.s, ";"));
+                try!(self.end()); // end the head-ibox
+                self.end() // end the outer cbox
+            }
+        }
+    }
+
+    fn print_associated_type(&mut self, typedef: &ast::AssociatedType)
+                             -> io::Result<()>
+    {
+        try!(self.print_outer_attributes(&typedef.attrs));
+        try!(self.word_space("type"));
+        try!(self.print_ty_param(&typedef.ty_param));
+        word(&mut self.s, ";")
+    }
+
+    fn print_typedef(&mut self, typedef: &ast::Typedef) -> io::Result<()> {
+        try!(self.word_space("type"));
+        try!(self.print_ident(typedef.ident));
+        try!(space(&mut self.s));
+        try!(self.word_space("="));
+        try!(self.print_type(&*typedef.typ));
+        word(&mut self.s, ";")
+    }
+
+    /// Pretty-print an item
+    pub fn print_item(&mut self, item: &ast::Item) -> io::Result<()> {
+        try!(self.hardbreak_if_not_bol());
+        try!(self.maybe_print_comment(item.span.lo));
+        try!(self.print_outer_attributes(&item.attrs));
+        try!(self.ann.pre(self, NodeItem(item)));
+        match item.node {
+            ast::ItemExternCrate(ref optional_path) => {
+                try!(self.head(&visibility_qualified(item.vis,
+                                                     "extern crate")));
+                if let Some((ref p, style)) = *optional_path {
+                    try!(self.print_string(p, style));
+                    try!(space(&mut self.s));
+                    try!(word(&mut self.s, "as"));
+                    try!(space(&mut self.s));
+                }
+                try!(self.print_ident(item.ident));
+                try!(word(&mut self.s, ";"));
+                try!(self.end()); // end inner head-block
+                try!(self.end()); // end outer head-block
+            }
+            ast::ItemUse(ref vp) => {
+                try!(self.head(&visibility_qualified(item.vis,
+                                                     "use")));
+                try!(self.print_view_path(&**vp));
+                try!(word(&mut self.s, ";"));
+                try!(self.end()); // end inner head-block
+                try!(self.end()); // end outer head-block
+            }
+            ast::ItemStatic(ref ty, m, ref expr) => {
+                try!(self.head(&visibility_qualified(item.vis,
+                                                    "static")));
+                if m == ast::MutMutable {
+                    try!(self.word_space("mut"));
+                }
+                try!(self.print_ident(item.ident));
+                try!(self.word_space(":"));
+                try!(self.print_type(&**ty));
+                try!(space(&mut self.s));
+                try!(self.end()); // end the head-ibox
+
+                try!(self.word_space("="));
+                try!(self.print_expr(&**expr));
+                try!(word(&mut self.s, ";"));
+                try!(self.end()); // end the outer cbox
+            }
+            ast::ItemConst(ref ty, ref expr) => {
+                try!(self.head(&visibility_qualified(item.vis,
+                                                    "const")));
+                try!(self.print_ident(item.ident));
+                try!(self.word_space(":"));
+                try!(self.print_type(&**ty));
+                try!(space(&mut self.s));
+                try!(self.end()); // end the head-ibox
+
+                try!(self.word_space("="));
+                try!(self.print_expr(&**expr));
+                try!(word(&mut self.s, ";"));
+                try!(self.end()); // end the outer cbox
+            }
+            ast::ItemFn(ref decl, unsafety, abi, ref typarams, ref body) => {
+                try!(self.print_fn(
+                    &**decl,
+                    Some(unsafety),
+                    abi,
+                    item.ident,
+                    typarams,
+                    None,
+                    item.vis
+                ));
+                try!(word(&mut self.s, " "));
+                try!(self.print_block_with_attrs(&**body, &item.attrs));
+            }
+            ast::ItemMod(ref _mod) => {
+                try!(self.head(&visibility_qualified(item.vis,
+                                                    "mod")));
+                try!(self.print_ident(item.ident));
+                try!(self.nbsp());
+                try!(self.bopen());
+                try!(self.print_mod(_mod, &item.attrs));
+                try!(self.bclose(item.span));
+            }
+            ast::ItemForeignMod(ref nmod) => {
+                try!(self.head("extern"));
+                try!(self.word_nbsp(&nmod.abi.to_string()));
+                try!(self.bopen());
+                try!(self.print_foreign_mod(nmod, &item.attrs));
+                try!(self.bclose(item.span));
+            }
+            ast::ItemTy(ref ty, ref params) => {
+                try!(self.ibox(indent_unit));
+                try!(self.ibox(0));
+                try!(self.word_nbsp(&visibility_qualified(item.vis, "type")));
+                try!(self.print_ident(item.ident));
+                try!(self.print_generics(params));
+                try!(self.end()); // end the inner ibox
+
+                try!(space(&mut self.s));
+                try!(self.word_space("="));
+                try!(self.print_type(&**ty));
+                try!(self.print_where_clause(params));
+                try!(word(&mut self.s, ";"));
+                try!(self.end()); // end the outer ibox
+            }
+            ast::ItemEnum(ref enum_definition, ref params) => {
+                try!(self.print_enum_def(
+                    enum_definition,
+                    params,
+                    item.ident,
+                    item.span,
+                    item.vis
+                ));
+            }
+            ast::ItemStruct(ref struct_def, ref generics) => {
+                try!(self.head(&visibility_qualified(item.vis,"struct")));
+                try!(self.print_struct(&**struct_def, generics, item.ident, item.span));
+            }
+
+            ast::ItemDefaultImpl(unsafety, ref trait_ref) => {
+                try!(self.head(""));
+                try!(self.print_visibility(item.vis));
+                try!(self.print_unsafety(unsafety));
+                try!(self.word_nbsp("impl"));
+                try!(self.print_trait_ref(trait_ref));
+                try!(space(&mut self.s));
+                try!(self.word_space("for"));
+                try!(self.word_space(".."));
+                try!(self.bopen());
+                try!(self.bclose(item.span));
+            }
+            ast::ItemImpl(unsafety,
+                          polarity,
+                          ref generics,
+                          ref opt_trait,
+                          ref ty,
+                          ref impl_items) => {
+                try!(self.head(""));
+                try!(self.print_visibility(item.vis));
+                try!(self.print_unsafety(unsafety));
+                try!(self.word_nbsp("impl"));
+
+                if generics.is_parameterized() {
+                    try!(self.print_generics(generics));
+                    try!(space(&mut self.s));
+                }
+
+                match polarity {
+                    ast::ImplPolarity::Negative => {
+                        try!(word(&mut self.s, "!"));
+                    },
+                    _ => {}
+                }
+
+                match opt_trait {
+                    &Some(ref t) => {
+                        try!(self.print_trait_ref(t));
+                        try!(space(&mut self.s));
+                        try!(self.word_space("for"));
+                    }
+                    &None => {}
+                }
+
+                try!(self.print_type(&**ty));
+                try!(self.print_where_clause(generics));
+
+                try!(space(&mut self.s));
+                try!(self.bopen());
+                try!(self.print_inner_attributes(&item.attrs));
+                for impl_item in impl_items {
+                    match *impl_item {
+                        ast::MethodImplItem(ref meth) => {
+                            try!(self.print_method(&**meth));
+                        }
+                        ast::TypeImplItem(ref typ) => {
+                            try!(self.print_typedef(&**typ));
+                        }
+                    }
+                }
+                try!(self.bclose(item.span));
+            }
+            ast::ItemTrait(unsafety, ref generics, ref bounds, ref methods) => {
+                try!(self.head(""));
+                try!(self.print_visibility(item.vis));
+                try!(self.print_unsafety(unsafety));
+                try!(self.word_nbsp("trait"));
+                try!(self.print_ident(item.ident));
+                try!(self.print_generics(generics));
+                let mut real_bounds = Vec::with_capacity(bounds.len());
+                for b in bounds.iter() {
+                    if let TraitTyParamBound(ref ptr, ast::TraitBoundModifier::Maybe) = *b {
+                        try!(space(&mut self.s));
+                        try!(self.word_space("for ?"));
+                        try!(self.print_trait_ref(&ptr.trait_ref));
+                    } else {
+                        real_bounds.push(b.clone());
+                    }
+                }
+                try!(self.print_bounds(":", &real_bounds[..]));
+                try!(self.print_where_clause(generics));
+                try!(word(&mut self.s, " "));
+                try!(self.bopen());
+                for meth in methods {
+                    try!(self.print_trait_method(meth));
+                }
+                try!(self.bclose(item.span));
+            }
+            // I think it's reasonable to hide the context here:
+            ast::ItemMac(codemap::Spanned { node: ast::MacInvocTT(ref pth, ref tts, _),
+                                            ..}) => {
+                try!(self.print_visibility(item.vis));
+                try!(self.print_path(pth, false, 0));
+                try!(word(&mut self.s, "! "));
+                try!(self.print_ident(item.ident));
+                try!(self.cbox(indent_unit));
+                try!(self.popen());
+                try!(self.print_tts(&tts[..]));
+                try!(self.pclose());
+                try!(word(&mut self.s, ";"));
+                try!(self.end());
+            }
+        }
+        self.ann.post(self, NodeItem(item))
+    }
+
+    fn print_trait_ref(&mut self, t: &ast::TraitRef) -> io::Result<()> {
+        self.print_path(&t.path, false, 0)
+    }
+
+    fn print_formal_lifetime_list(&mut self, lifetimes: &[ast::LifetimeDef]) -> io::Result<()> {
+        if !lifetimes.is_empty() {
+            try!(word(&mut self.s, "for<"));
+            let mut comma = false;
+            for lifetime_def in lifetimes {
+                if comma {
+                    try!(self.word_space(","))
+                }
+                try!(self.print_lifetime_def(lifetime_def));
+                comma = true;
+            }
+            try!(word(&mut self.s, ">"));
+        }
+        Ok(())
+    }
+
+    fn print_poly_trait_ref(&mut self, t: &ast::PolyTraitRef) -> io::Result<()> {
+        try!(self.print_formal_lifetime_list(&t.bound_lifetimes));
+        self.print_trait_ref(&t.trait_ref)
+    }
+
+    pub fn print_enum_def(&mut self, enum_definition: &ast::EnumDef,
+                          generics: &ast::Generics, ident: ast::Ident,
+                          span: codemap::Span,
+                          visibility: ast::Visibility) -> io::Result<()> {
+        try!(self.head(&visibility_qualified(visibility, "enum")));
+        try!(self.print_ident(ident));
+        try!(self.print_generics(generics));
+        try!(self.print_where_clause(generics));
+        try!(space(&mut self.s));
+        self.print_variants(&enum_definition.variants, span)
+    }
+
+    pub fn print_variants(&mut self,
+                          variants: &[P<ast::Variant>],
+                          span: codemap::Span) -> io::Result<()> {
+        try!(self.bopen());
+        for v in variants {
+            try!(self.space_if_not_bol());
+            try!(self.maybe_print_comment(v.span.lo));
+            try!(self.print_outer_attributes(&v.node.attrs));
+            try!(self.ibox(indent_unit));
+            try!(self.print_variant(&**v));
+            try!(word(&mut self.s, ","));
+            try!(self.end());
+            try!(self.maybe_print_trailing_comment(v.span, None));
+        }
+        self.bclose(span)
+    }
+
+    pub fn print_visibility(&mut self, vis: ast::Visibility) -> io::Result<()> {
+        match vis {
+            ast::Public => self.word_nbsp("pub"),
+            ast::Inherited => Ok(())
+        }
+    }
+
+    pub fn print_struct(&mut self,
+                        struct_def: &ast::StructDef,
+                        generics: &ast::Generics,
+                        ident: ast::Ident,
+                        span: codemap::Span) -> io::Result<()> {
+        try!(self.print_ident(ident));
+        try!(self.print_generics(generics));
+        if ast_util::struct_def_is_tuple_like(struct_def) {
+            if !struct_def.fields.is_empty() {
+                try!(self.popen());
+                try!(self.commasep(
+                    Inconsistent, &struct_def.fields,
+                    |s, field| {
+                        match field.node.kind {
+                            ast::NamedField(..) => panic!("unexpected named field"),
+                            ast::UnnamedField(vis) => {
+                                try!(s.print_visibility(vis));
+                                try!(s.maybe_print_comment(field.span.lo));
+                                s.print_type(&*field.node.ty)
+                            }
+                        }
+                    }
+                ));
+                try!(self.pclose());
+            }
+            try!(self.print_where_clause(generics));
+            try!(word(&mut self.s, ";"));
+            try!(self.end());
+            self.end() // close the outer-box
+        } else {
+            try!(self.print_where_clause(generics));
+            try!(self.nbsp());
+            try!(self.bopen());
+            try!(self.hardbreak_if_not_bol());
+
+            for field in &struct_def.fields {
+                match field.node.kind {
+                    ast::UnnamedField(..) => panic!("unexpected unnamed field"),
+                    ast::NamedField(ident, visibility) => {
+                        try!(self.hardbreak_if_not_bol());
+                        try!(self.maybe_print_comment(field.span.lo));
+                        try!(self.print_outer_attributes(&field.node.attrs));
+                        try!(self.print_visibility(visibility));
+                        try!(self.print_ident(ident));
+                        try!(self.word_nbsp(":"));
+                        try!(self.print_type(&*field.node.ty));
+                        try!(word(&mut self.s, ","));
+                    }
+                }
+            }
+
+            self.bclose(span)
+        }
+    }
+
+    /// This doesn't deserve to be called "pretty" printing, but it should be
+    /// meaning-preserving. A quick hack that might help would be to look at the
+    /// spans embedded in the TTs to decide where to put spaces and newlines.
+    /// But it'd be better to parse these according to the grammar of the
+    /// appropriate macro, transcribe back into the grammar we just parsed from,
+    /// and then pretty-print the resulting AST nodes (so, e.g., we print
+    /// expression arguments as expressions). It can be done! I think.
+    pub fn print_tt(&mut self, tt: &ast::TokenTree) -> io::Result<()> {
+        match *tt {
+            ast::TtToken(_, ref tk) => {
+                try!(word(&mut self.s, &token_to_string(tk)));
+                match *tk {
+                    parse::token::DocComment(..) => {
+                        hardbreak(&mut self.s)
+                    }
+                    _ => Ok(())
+                }
+            }
+            ast::TtDelimited(_, ref delimed) => {
+                try!(word(&mut self.s, &token_to_string(&delimed.open_token())));
+                try!(space(&mut self.s));
+                try!(self.print_tts(&delimed.tts));
+                try!(space(&mut self.s));
+                word(&mut self.s, &token_to_string(&delimed.close_token()))
+            },
+            ast::TtSequence(_, ref seq) => {
+                try!(word(&mut self.s, "$("));
+                for tt_elt in &seq.tts {
+                    try!(self.print_tt(tt_elt));
+                }
+                try!(word(&mut self.s, ")"));
+                match seq.separator {
+                    Some(ref tk) => {
+                        try!(word(&mut self.s, &token_to_string(tk)));
+                    }
+                    None => {},
+                }
+                match seq.op {
+                    ast::ZeroOrMore => word(&mut self.s, "*"),
+                    ast::OneOrMore => word(&mut self.s, "+"),
+                }
+            }
+        }
+    }
+
+    pub fn print_tts(&mut self, tts: &[ast::TokenTree]) -> io::Result<()> {
+        try!(self.ibox(0));
+        let mut suppress_space = false;
+        for (i, tt) in tts.iter().enumerate() {
+            if i != 0 && !suppress_space {
+                try!(space(&mut self.s));
+            }
+            try!(self.print_tt(tt));
+            // There should be no space between the module name and the following `::` in paths,
+            // otherwise imported macros get re-parsed from crate metadata incorrectly (#20701)
+            suppress_space = match tt {
+                &ast::TtToken(_, token::Ident(_, token::ModName)) |
+                &ast::TtToken(_, token::MatchNt(_, _, _, token::ModName)) |
+                &ast::TtToken(_, token::SubstNt(_, token::ModName)) => true,
+                _ => false
+            }
+        }
+        self.end()
+    }
+
+    pub fn print_variant(&mut self, v: &ast::Variant) -> io::Result<()> {
+        try!(self.print_visibility(v.node.vis));
+        match v.node.kind {
+            ast::TupleVariantKind(ref args) => {
+                try!(self.print_ident(v.node.name));
+                if !args.is_empty() {
+                    try!(self.popen());
+                    try!(self.commasep(Consistent,
+                                       &args[..],
+                                       |s, arg| s.print_type(&*arg.ty)));
+                    try!(self.pclose());
+                }
+            }
+            ast::StructVariantKind(ref struct_def) => {
+                try!(self.head(""));
+                let generics = ast_util::empty_generics();
+                try!(self.print_struct(&**struct_def, &generics, v.node.name, v.span));
+            }
+        }
+        match v.node.disr_expr {
+            Some(ref d) => {
+                try!(space(&mut self.s));
+                try!(self.word_space("="));
+                self.print_expr(&**d)
+            }
+            _ => Ok(())
+        }
+    }
+
+    pub fn print_ty_method(&mut self, m: &ast::TypeMethod) -> io::Result<()> {
+        try!(self.hardbreak_if_not_bol());
+        try!(self.maybe_print_comment(m.span.lo));
+        try!(self.print_outer_attributes(&m.attrs));
+        try!(self.print_ty_fn(m.abi,
+                              m.unsafety,
+                              &*m.decl,
+                              Some(m.ident),
+                              &m.generics,
+                              Some(&m.explicit_self.node)));
+        word(&mut self.s, ";")
+    }
+
+    pub fn print_trait_method(&mut self,
+                              m: &ast::TraitItem) -> io::Result<()> {
+        match *m {
+            RequiredMethod(ref ty_m) => self.print_ty_method(ty_m),
+            ProvidedMethod(ref m) => self.print_method(&**m),
+            TypeTraitItem(ref t) => self.print_associated_type(&**t),
+        }
+    }
+
+    pub fn print_impl_item(&mut self, ii: &ast::ImplItem) -> io::Result<()> {
+        match *ii {
+            MethodImplItem(ref m) => self.print_method(&**m),
+            TypeImplItem(ref td) => self.print_typedef(&**td),
+        }
+    }
+
+    pub fn print_method(&mut self, meth: &ast::Method) -> io::Result<()> {
+        try!(self.hardbreak_if_not_bol());
+        try!(self.maybe_print_comment(meth.span.lo));
+        try!(self.print_outer_attributes(&meth.attrs));
+        match meth.node {
+            ast::MethDecl(ident,
+                          ref generics,
+                          abi,
+                          ref explicit_self,
+                          unsafety,
+                          ref decl,
+                          ref body,
+                          vis) => {
+                try!(self.print_fn(&**decl,
+                                   Some(unsafety),
+                                   abi,
+                                   ident,
+                                   generics,
+                                   Some(&explicit_self.node),
+                                   vis));
+                try!(word(&mut self.s, " "));
+                self.print_block_with_attrs(&**body, &meth.attrs)
+            },
+            ast::MethMac(codemap::Spanned { node: ast::MacInvocTT(ref pth, ref tts, _),
+                                            ..}) => {
+                // code copied from ItemMac:
+                try!(self.print_path(pth, false, 0));
+                try!(word(&mut self.s, "! "));
+                try!(self.cbox(indent_unit));
+                try!(self.popen());
+                try!(self.print_tts(&tts[..]));
+                try!(self.pclose());
+                try!(word(&mut self.s, ";"));
+                self.end()
+            }
+        }
+    }
+
+    pub fn print_outer_attributes(&mut self,
+                                  attrs: &[ast::Attribute]) -> io::Result<()> {
+        let mut count = 0;
+        for attr in attrs {
+            match attr.node.style {
+                ast::AttrOuter => {
+                    try!(self.print_attribute(attr));
+                    count += 1;
+                }
+                _ => {/* fallthrough */ }
+            }
+        }
+        if count > 0 {
+            try!(self.hardbreak_if_not_bol());
+        }
+        Ok(())
+    }
+
+    pub fn print_inner_attributes(&mut self,
+                                  attrs: &[ast::Attribute]) -> io::Result<()> {
+        let mut count = 0;
+        for attr in attrs {
+            match attr.node.style {
+                ast::AttrInner => {
+                    try!(self.print_attribute(attr));
+                    count += 1;
+                }
+                _ => {/* fallthrough */ }
+            }
+        }
+        if count > 0 {
+            try!(self.hardbreak_if_not_bol());
+        }
+        Ok(())
+    }
+
+    pub fn print_attribute(&mut self, attr: &ast::Attribute) -> io::Result<()> {
+        try!(self.hardbreak_if_not_bol());
+        try!(self.maybe_print_comment(attr.span.lo));
+        if attr.node.is_sugared_doc {
+            word(&mut self.s, &attr.value_str().unwrap())
+        } else {
+            match attr.node.style {
+                ast::AttrInner => try!(word(&mut self.s, "#![")),
+                ast::AttrOuter => try!(word(&mut self.s, "#[")),
+            }
+            try!(self.print_meta_item(&*attr.meta()));
+            word(&mut self.s, "]")
+        }
+    }
+
+
+    pub fn print_stmt(&mut self, st: &ast::Stmt) -> io::Result<()> {
+        try!(self.maybe_print_comment(st.span.lo));
+        match st.node {
+            ast::StmtDecl(ref decl, _) => {
+                try!(self.print_decl(&**decl));
+            }
+            ast::StmtExpr(ref expr, _) => {
+                try!(self.space_if_not_bol());
+                try!(self.print_expr(&**expr));
+            }
+            ast::StmtSemi(ref expr, _) => {
+                try!(self.space_if_not_bol());
+                try!(self.print_expr(&**expr));
+                try!(word(&mut self.s, ";"));
+            }
+            ast::StmtMac(ref mac, style) => {
+                try!(self.space_if_not_bol());
+                let delim = match style {
+                    ast::MacStmtWithBraces => token::Brace,
+                    _ => token::Paren
+                };
+                try!(self.print_mac(&**mac, delim));
+                match style {
+                    ast::MacStmtWithBraces => {}
+                    _ => try!(word(&mut self.s, ";")),
+                }
+            }
+        }
+        if parse::classify::stmt_ends_with_semi(&st.node) {
+            try!(word(&mut self.s, ";"));
+        }
+        self.maybe_print_trailing_comment(st.span, None)
+    }
+
+    pub fn print_block(&mut self, blk: &ast::Block) -> io::Result<()> {
+        self.print_block_with_attrs(blk, &[])
+    }
+
+    pub fn print_block_unclosed(&mut self, blk: &ast::Block) -> io::Result<()> {
+        self.print_block_unclosed_indent(blk, indent_unit)
+    }
+
+    pub fn print_block_unclosed_indent(&mut self, blk: &ast::Block,
+                                       indented: usize) -> io::Result<()> {
+        self.print_block_maybe_unclosed(blk, indented, &[], false)
+    }
+
+    pub fn print_block_with_attrs(&mut self,
+                                  blk: &ast::Block,
+                                  attrs: &[ast::Attribute]) -> io::Result<()> {
+        self.print_block_maybe_unclosed(blk, indent_unit, attrs, true)
+    }
+
+    pub fn print_block_maybe_unclosed(&mut self,
+                                      blk: &ast::Block,
+                                      indented: usize,
+                                      attrs: &[ast::Attribute],
+                                      close_box: bool) -> io::Result<()> {
+        match blk.rules {
+            ast::UnsafeBlock(..) => try!(self.word_space("unsafe")),
+            ast::DefaultBlock => ()
+        }
+        try!(self.maybe_print_comment(blk.span.lo));
+        try!(self.ann.pre(self, NodeBlock(blk)));
+        try!(self.bopen());
+
+        try!(self.print_inner_attributes(attrs));
+
+        for st in &blk.stmts {
+            try!(self.print_stmt(&**st));
+        }
+        match blk.expr {
+            Some(ref expr) => {
+                try!(self.space_if_not_bol());
+                try!(self.print_expr(&**expr));
+                try!(self.maybe_print_trailing_comment(expr.span, Some(blk.span.hi)));
+            }
+            _ => ()
+        }
+        try!(self.bclose_maybe_open(blk.span, indented, close_box));
+        self.ann.post(self, NodeBlock(blk))
+    }
+
+    fn print_else(&mut self, els: Option<&ast::Expr>) -> io::Result<()> {
+        match els {
+            Some(_else) => {
+                match _else.node {
+                    // "another else-if"
+                    ast::ExprIf(ref i, ref then, ref e) => {
+                        try!(self.cbox(indent_unit - 1));
+                        try!(self.ibox(0));
+                        try!(word(&mut self.s, " else if "));
+                        try!(self.print_expr(&**i));
+                        try!(space(&mut self.s));
+                        try!(self.print_block(&**then));
+                        self.print_else(e.as_ref().map(|e| &**e))
+                    }
+                    // "another else-if-let"
+                    ast::ExprIfLet(ref pat, ref expr, ref then, ref e) => {
+                        try!(self.cbox(indent_unit - 1));
+                        try!(self.ibox(0));
+                        try!(word(&mut self.s, " else if let "));
+                        try!(self.print_pat(&**pat));
+                        try!(space(&mut self.s));
+                        try!(self.word_space("="));
+                        try!(self.print_expr(&**expr));
+                        try!(space(&mut self.s));
+                        try!(self.print_block(&**then));
+                        self.print_else(e.as_ref().map(|e| &**e))
+                    }
+                    // "final else"
+                    ast::ExprBlock(ref b) => {
+                        try!(self.cbox(indent_unit - 1));
+                        try!(self.ibox(0));
+                        try!(word(&mut self.s, " else "));
+                        self.print_block(&**b)
+                    }
+                    // BLEAH, constraints would be great here
+                    _ => {
+                        panic!("print_if saw if with weird alternative");
+                    }
+                }
+            }
+            _ => Ok(())
+        }
+    }
+
+    pub fn print_if(&mut self, test: &ast::Expr, blk: &ast::Block,
+                    elseopt: Option<&ast::Expr>) -> io::Result<()> {
+        try!(self.head("if"));
+        try!(self.print_expr(test));
+        try!(space(&mut self.s));
+        try!(self.print_block(blk));
+        self.print_else(elseopt)
+    }
+
+    pub fn print_if_let(&mut self, pat: &ast::Pat, expr: &ast::Expr, blk: &ast::Block,
+                        elseopt: Option<&ast::Expr>) -> io::Result<()> {
+        try!(self.head("if let"));
+        try!(self.print_pat(pat));
+        try!(space(&mut self.s));
+        try!(self.word_space("="));
+        try!(self.print_expr(expr));
+        try!(space(&mut self.s));
+        try!(self.print_block(blk));
+        self.print_else(elseopt)
+    }
+
+    pub fn print_mac(&mut self, m: &ast::Mac, delim: token::DelimToken)
+                     -> io::Result<()> {
+        match m.node {
+            // I think it's reasonable to hide the ctxt here:
+            ast::MacInvocTT(ref pth, ref tts, _) => {
+                try!(self.print_path(pth, false, 0));
+                try!(word(&mut self.s, "!"));
+                match delim {
+                    token::Paren => try!(self.popen()),
+                    token::Bracket => try!(word(&mut self.s, "[")),
+                    token::Brace => try!(self.bopen()),
+                }
+                try!(self.print_tts(tts));
+                match delim {
+                    token::Paren => self.pclose(),
+                    token::Bracket => word(&mut self.s, "]"),
+                    token::Brace => self.bclose(m.span),
+                }
+            }
+        }
+    }
+
+
+    fn print_call_post(&mut self, args: &[P<ast::Expr>]) -> io::Result<()> {
+        try!(self.popen());
+        try!(self.commasep_exprs(Inconsistent, args));
+        self.pclose()
+    }
+
+    pub fn print_expr_maybe_paren(&mut self, expr: &ast::Expr) -> io::Result<()> {
+        let needs_par = needs_parentheses(expr);
+        if needs_par {
+            try!(self.popen());
+        }
+        try!(self.print_expr(expr));
+        if needs_par {
+            try!(self.pclose());
+        }
+        Ok(())
+    }
+
+    fn print_expr_box(&mut self,
+                      place: &Option<P<ast::Expr>>,
+                      expr: &ast::Expr) -> io::Result<()> {
+        try!(word(&mut self.s, "box"));
+        try!(word(&mut self.s, "("));
+        try!(place.as_ref().map_or(Ok(()), |e|self.print_expr(&**e)));
+        try!(self.word_space(")"));
+        self.print_expr(expr)
+    }
+
+    fn print_expr_vec(&mut self, exprs: &[P<ast::Expr>]) -> io::Result<()> {
+        try!(self.ibox(indent_unit));
+        try!(word(&mut self.s, "["));
+        try!(self.commasep_exprs(Inconsistent, &exprs[..]));
+        try!(word(&mut self.s, "]"));
+        self.end()
+    }
+
+    fn print_expr_repeat(&mut self,
+                         element: &ast::Expr,
+                         count: &ast::Expr) -> io::Result<()> {
+        try!(self.ibox(indent_unit));
+        try!(word(&mut self.s, "["));
+        try!(self.print_expr(element));
+        try!(self.word_space(";"));
+        try!(self.print_expr(count));
+        try!(word(&mut self.s, "]"));
+        self.end()
+    }
+
+    fn print_expr_struct(&mut self,
+                         path: &ast::Path,
+                         fields: &[ast::Field],
+                         wth: &Option<P<ast::Expr>>) -> io::Result<()> {
+        try!(self.print_path(path, true, 0));
+        if !(fields.is_empty() && wth.is_none()) {
+            try!(word(&mut self.s, "{"));
+            try!(self.commasep_cmnt(
+                Consistent,
+                &fields[..],
+                |s, field| {
+                    try!(s.ibox(indent_unit));
+                    try!(s.print_ident(field.ident.node));
+                    try!(s.word_space(":"));
+                    try!(s.print_expr(&*field.expr));
+                    s.end()
+                },
+                |f| f.span));
+            match *wth {
+                Some(ref expr) => {
+                    try!(self.ibox(indent_unit));
+                    if !fields.is_empty() {
+                        try!(word(&mut self.s, ","));
+                        try!(space(&mut self.s));
+                    }
+                    try!(word(&mut self.s, ".."));
+                    try!(self.print_expr(&**expr));
+                    try!(self.end());
+                }
+                _ => try!(word(&mut self.s, ",")),
+            }
+            try!(word(&mut self.s, "}"));
+        }
+        Ok(())
+    }
+
+    fn print_expr_tup(&mut self, exprs: &[P<ast::Expr>]) -> io::Result<()> {
+        try!(self.popen());
+        try!(self.commasep_exprs(Inconsistent, &exprs[..]));
+        if exprs.len() == 1 {
+            try!(word(&mut self.s, ","));
+        }
+        self.pclose()
+    }
+
+    fn print_expr_call(&mut self,
+                       func: &ast::Expr,
+                       args: &[P<ast::Expr>]) -> io::Result<()> {
+        try!(self.print_expr_maybe_paren(func));
+        self.print_call_post(args)
+    }
+
+    fn print_expr_method_call(&mut self,
+                              ident: ast::SpannedIdent,
+                              tys: &[P<ast::Ty>],
+                              args: &[P<ast::Expr>]) -> io::Result<()> {
+        let base_args = &args[1..];
+        try!(self.print_expr(&*args[0]));
+        try!(word(&mut self.s, "."));
+        try!(self.print_ident(ident.node));
+        if tys.len() > 0 {
+            try!(word(&mut self.s, "::<"));
+            try!(self.commasep(Inconsistent, tys,
+                               |s, ty| s.print_type(&**ty)));
+            try!(word(&mut self.s, ">"));
+        }
+        self.print_call_post(base_args)
+    }
+
+    fn print_expr_binary(&mut self,
+                         op: ast::BinOp,
+                         lhs: &ast::Expr,
+                         rhs: &ast::Expr) -> io::Result<()> {
+        try!(self.print_expr(lhs));
+        try!(space(&mut self.s));
+        try!(self.word_space(ast_util::binop_to_string(op.node)));
+        self.print_expr(rhs)
+    }
+
+    fn print_expr_unary(&mut self,
+                        op: ast::UnOp,
+                        expr: &ast::Expr) -> io::Result<()> {
+        try!(word(&mut self.s, ast_util::unop_to_string(op)));
+        self.print_expr_maybe_paren(expr)
+    }
+
+    fn print_expr_addr_of(&mut self,
+                          mutability: ast::Mutability,
+                          expr: &ast::Expr) -> io::Result<()> {
+        try!(word(&mut self.s, "&"));
+        try!(self.print_mutability(mutability));
+        self.print_expr_maybe_paren(expr)
+    }
+
+    pub fn print_expr(&mut self, expr: &ast::Expr) -> io::Result<()> {
+        try!(self.maybe_print_comment(expr.span.lo));
+        try!(self.ibox(indent_unit));
+        try!(self.ann.pre(self, NodeExpr(expr)));
+        match expr.node {
+            ast::ExprBox(ref place, ref expr) => {
+                try!(self.print_expr_box(place, &**expr));
+            }
+            ast::ExprVec(ref exprs) => {
+                try!(self.print_expr_vec(&exprs[..]));
+            }
+            ast::ExprRepeat(ref element, ref count) => {
+                try!(self.print_expr_repeat(&**element, &**count));
+            }
+            ast::ExprStruct(ref path, ref fields, ref wth) => {
+                try!(self.print_expr_struct(path, &fields[..], wth));
+            }
+            ast::ExprTup(ref exprs) => {
+                try!(self.print_expr_tup(&exprs[..]));
+            }
+            ast::ExprCall(ref func, ref args) => {
+                try!(self.print_expr_call(&**func, &args[..]));
+            }
+            ast::ExprMethodCall(ident, ref tys, ref args) => {
+                try!(self.print_expr_method_call(ident, &tys[..], &args[..]));
+            }
+            ast::ExprBinary(op, ref lhs, ref rhs) => {
+                try!(self.print_expr_binary(op, &**lhs, &**rhs));
+            }
+            ast::ExprUnary(op, ref expr) => {
+                try!(self.print_expr_unary(op, &**expr));
+            }
+            ast::ExprAddrOf(m, ref expr) => {
+                try!(self.print_expr_addr_of(m, &**expr));
+            }
+            ast::ExprLit(ref lit) => {
+                try!(self.print_literal(&**lit));
+            }
+            ast::ExprCast(ref expr, ref ty) => {
+                try!(self.print_expr(&**expr));
+                try!(space(&mut self.s));
+                try!(self.word_space("as"));
+                try!(self.print_type(&**ty));
+            }
+            ast::ExprIf(ref test, ref blk, ref elseopt) => {
+                try!(self.print_if(&**test, &**blk, elseopt.as_ref().map(|e| &**e)));
+            }
+            ast::ExprIfLet(ref pat, ref expr, ref blk, ref elseopt) => {
+                try!(self.print_if_let(&**pat, &**expr, &** blk, elseopt.as_ref().map(|e| &**e)));
+            }
+            ast::ExprWhile(ref test, ref blk, opt_ident) => {
+                if let Some(ident) = opt_ident {
+                    try!(self.print_ident(ident));
+                    try!(self.word_space(":"));
+                }
+                try!(self.head("while"));
+                try!(self.print_expr(&**test));
+                try!(space(&mut self.s));
+                try!(self.print_block(&**blk));
+            }
+            ast::ExprWhileLet(ref pat, ref expr, ref blk, opt_ident) => {
+                if let Some(ident) = opt_ident {
+                    try!(self.print_ident(ident));
+                    try!(self.word_space(":"));
+                }
+                try!(self.head("while let"));
+                try!(self.print_pat(&**pat));
+                try!(space(&mut self.s));
+                try!(self.word_space("="));
+                try!(self.print_expr(&**expr));
+                try!(space(&mut self.s));
+                try!(self.print_block(&**blk));
+            }
+            ast::ExprForLoop(ref pat, ref iter, ref blk, opt_ident) => {
+                if let Some(ident) = opt_ident {
+                    try!(self.print_ident(ident));
+                    try!(self.word_space(":"));
+                }
+                try!(self.head("for"));
+                try!(self.print_pat(&**pat));
+                try!(space(&mut self.s));
+                try!(self.word_space("in"));
+                try!(self.print_expr(&**iter));
+                try!(space(&mut self.s));
+                try!(self.print_block(&**blk));
+            }
+            ast::ExprLoop(ref blk, opt_ident) => {
+                if let Some(ident) = opt_ident {
+                    try!(self.print_ident(ident));
+                    try!(self.word_space(":"));
+                }
+                try!(self.head("loop"));
+                try!(space(&mut self.s));
+                try!(self.print_block(&**blk));
+            }
+            ast::ExprMatch(ref expr, ref arms, _) => {
+                try!(self.cbox(indent_unit));
+                try!(self.ibox(4));
+                try!(self.word_nbsp("match"));
+                try!(self.print_expr(&**expr));
+                try!(space(&mut self.s));
+                try!(self.bopen());
+                for arm in arms {
+                    try!(self.print_arm(arm));
+                }
+                try!(self.bclose_(expr.span, indent_unit));
+            }
+            ast::ExprClosure(capture_clause, ref decl, ref body) => {
+                try!(self.print_capture_clause(capture_clause));
+
+                try!(self.print_fn_block_args(&**decl));
+                try!(space(&mut self.s));
+
+                if !body.stmts.is_empty() || !body.expr.is_some() {
+                    try!(self.print_block_unclosed(&**body));
+                } else {
+                    // we extract the block, so as not to create another set of boxes
+                    match body.expr.as_ref().unwrap().node {
+                        ast::ExprBlock(ref blk) => {
+                            try!(self.print_block_unclosed(&**blk));
+                        }
+                        _ => {
+                            // this is a bare expression
+                            try!(self.print_expr(body.expr.as_ref().map(|e| &**e).unwrap()));
+                            try!(self.end()); // need to close a box
+                        }
+                    }
+                }
+                // a box will be closed by print_expr, but we didn't want an overall
+                // wrapper so we closed the corresponding opening. so create an
+                // empty box to satisfy the close.
+                try!(self.ibox(0));
+            }
+            ast::ExprBlock(ref blk) => {
+                // containing cbox, will be closed by print-block at }
+                try!(self.cbox(indent_unit));
+                // head-box, will be closed by print-block after {
+                try!(self.ibox(0));
+                try!(self.print_block(&**blk));
+            }
+            ast::ExprAssign(ref lhs, ref rhs) => {
+                try!(self.print_expr(&**lhs));
+                try!(space(&mut self.s));
+                try!(self.word_space("="));
+                try!(self.print_expr(&**rhs));
+            }
+            ast::ExprAssignOp(op, ref lhs, ref rhs) => {
+                try!(self.print_expr(&**lhs));
+                try!(space(&mut self.s));
+                try!(word(&mut self.s, ast_util::binop_to_string(op.node)));
+                try!(self.word_space("="));
+                try!(self.print_expr(&**rhs));
+            }
+            ast::ExprField(ref expr, id) => {
+                try!(self.print_expr(&**expr));
+                try!(word(&mut self.s, "."));
+                try!(self.print_ident(id.node));
+            }
+            ast::ExprTupField(ref expr, id) => {
+                try!(self.print_expr(&**expr));
+                try!(word(&mut self.s, "."));
+                try!(self.print_usize(id.node));
+            }
+            ast::ExprIndex(ref expr, ref index) => {
+                try!(self.print_expr(&**expr));
+                try!(word(&mut self.s, "["));
+                try!(self.print_expr(&**index));
+                try!(word(&mut self.s, "]"));
+            }
+            ast::ExprRange(ref start, ref end) => {
+                if let &Some(ref e) = start {
+                    try!(self.print_expr(&**e));
+                }
+                try!(word(&mut self.s, ".."));
+                if let &Some(ref e) = end {
+                    try!(self.print_expr(&**e));
+                }
+            }
+            ast::ExprPath(None, ref path) => {
+                try!(self.print_path(path, true, 0))
+            }
+            ast::ExprPath(Some(ref qself), ref path) => {
+                try!(self.print_qpath(path, qself, true))
+            }
+            ast::ExprBreak(opt_ident) => {
+                try!(word(&mut self.s, "break"));
+                try!(space(&mut self.s));
+                if let Some(ident) = opt_ident {
+                    try!(self.print_ident(ident));
+                    try!(space(&mut self.s));
+                }
+            }
+            ast::ExprAgain(opt_ident) => {
+                try!(word(&mut self.s, "continue"));
+                try!(space(&mut self.s));
+                if let Some(ident) = opt_ident {
+                    try!(self.print_ident(ident));
+                    try!(space(&mut self.s))
+                }
+            }
+            ast::ExprRet(ref result) => {
+                try!(word(&mut self.s, "return"));
+                match *result {
+                    Some(ref expr) => {
+                        try!(word(&mut self.s, " "));
+                        try!(self.print_expr(&**expr));
+                    }
+                    _ => ()
+                }
+            }
+            ast::ExprInlineAsm(ref a) => {
+                try!(word(&mut self.s, "asm!"));
+                try!(self.popen());
+                try!(self.print_string(&a.asm, a.asm_str_style));
+                try!(self.word_space(":"));
+
+                try!(self.commasep(Inconsistent, &a.outputs,
+                                   |s, &(ref co, ref o, is_rw)| {
+                    match co.slice_shift_char() {
+                        Some(('=', operand)) if is_rw => {
+                            try!(s.print_string(&format!("+{}", operand),
+                                                ast::CookedStr))
+                        }
+                        _ => try!(s.print_string(&co, ast::CookedStr))
+                    }
+                    try!(s.popen());
+                    try!(s.print_expr(&**o));
+                    try!(s.pclose());
+                    Ok(())
+                }));
+                try!(space(&mut self.s));
+                try!(self.word_space(":"));
+
+                try!(self.commasep(Inconsistent, &a.inputs,
+                                   |s, &(ref co, ref o)| {
+                    try!(s.print_string(&co, ast::CookedStr));
+                    try!(s.popen());
+                    try!(s.print_expr(&**o));
+                    try!(s.pclose());
+                    Ok(())
+                }));
+                try!(space(&mut self.s));
+                try!(self.word_space(":"));
+
+                try!(self.commasep(Inconsistent, &a.clobbers,
+                                   |s, co| {
+                    try!(s.print_string(&co, ast::CookedStr));
+                    Ok(())
+                }));
+
+                let mut options = vec!();
+                if a.volatile {
+                    options.push("volatile");
+                }
+                if a.alignstack {
+                    options.push("alignstack");
+                }
+                if a.dialect == ast::AsmDialect::AsmIntel {
+                    options.push("intel");
+                }
+
+                if options.len() > 0 {
+                    try!(space(&mut self.s));
+                    try!(self.word_space(":"));
+                    try!(self.commasep(Inconsistent, &*options,
+                                       |s, &co| {
+                        try!(s.print_string(co, ast::CookedStr));
+                        Ok(())
+                    }));
+                }
+
+                try!(self.pclose());
+            }
+            ast::ExprMac(ref m) => try!(self.print_mac(m, token::Paren)),
+            ast::ExprParen(ref e) => {
+                try!(self.popen());
+                try!(self.print_expr(&**e));
+                try!(self.pclose());
+            }
+        }
+        try!(self.ann.post(self, NodeExpr(expr)));
+        self.end()
+    }
+
+    pub fn print_local_decl(&mut self, loc: &ast::Local) -> io::Result<()> {
+        try!(self.print_pat(&*loc.pat));
+        if let Some(ref ty) = loc.ty {
+            try!(self.word_space(":"));
+            try!(self.print_type(&**ty));
+        }
+        Ok(())
+    }
+
+    pub fn print_decl(&mut self, decl: &ast::Decl) -> io::Result<()> {
+        try!(self.maybe_print_comment(decl.span.lo));
+        match decl.node {
+            ast::DeclLocal(ref loc) => {
+                try!(self.space_if_not_bol());
+                try!(self.ibox(indent_unit));
+                try!(self.word_nbsp("let"));
+
+                try!(self.ibox(indent_unit));
+                try!(self.print_local_decl(&**loc));
+                try!(self.end());
+                if let Some(ref init) = loc.init {
+                    try!(self.nbsp());
+                    try!(self.word_space("="));
+                    try!(self.print_expr(&**init));
+                }
+                self.end()
+            }
+            ast::DeclItem(ref item) => self.print_item(&**item)
+        }
+    }
+
+    pub fn print_ident(&mut self, ident: ast::Ident) -> io::Result<()> {
+        if self.encode_idents_with_hygiene {
+            let encoded = ident.encode_with_hygiene();
+            try!(word(&mut self.s, &encoded[..]))
+        } else {
+            try!(word(&mut self.s, &token::get_ident(ident)))
+        }
+        self.ann.post(self, NodeIdent(&ident))
+    }
+
+    pub fn print_usize(&mut self, i: usize) -> io::Result<()> {
+        word(&mut self.s, &i.to_string())
+    }
+
+    pub fn print_name(&mut self, name: ast::Name) -> io::Result<()> {
+        try!(word(&mut self.s, &token::get_name(name)));
+        self.ann.post(self, NodeName(&name))
+    }
+
+    pub fn print_for_decl(&mut self, loc: &ast::Local,
+                          coll: &ast::Expr) -> io::Result<()> {
+        try!(self.print_local_decl(loc));
+        try!(space(&mut self.s));
+        try!(self.word_space("in"));
+        self.print_expr(coll)
+    }
+
+    fn print_path(&mut self,
+                  path: &ast::Path,
+                  colons_before_params: bool,
+                  depth: usize)
+                  -> io::Result<()>
+    {
+        try!(self.maybe_print_comment(path.span.lo));
+
+        let mut first = !path.global;
+        for segment in &path.segments[..path.segments.len()-depth] {
+            if first {
+                first = false
+            } else {
+                try!(word(&mut self.s, "::"))
+            }
+
+            try!(self.print_ident(segment.identifier));
+
+            try!(self.print_path_parameters(&segment.parameters, colons_before_params));
+        }
+
+        Ok(())
+    }
+
+    fn print_qpath(&mut self,
+                   path: &ast::Path,
+                   qself: &ast::QSelf,
+                   colons_before_params: bool)
+                   -> io::Result<()>
+    {
+        try!(word(&mut self.s, "<"));
+        try!(self.print_type(&qself.ty));
+        if qself.position > 0 {
+            try!(space(&mut self.s));
+            try!(self.word_space("as"));
+            let depth = path.segments.len() - qself.position;
+            try!(self.print_path(&path, false, depth));
+        }
+        try!(word(&mut self.s, ">"));
+        try!(word(&mut self.s, "::"));
+        let item_segment = path.segments.last().unwrap();
+        try!(self.print_ident(item_segment.identifier));
+        self.print_path_parameters(&item_segment.parameters, colons_before_params)
+    }
+
+    fn print_path_parameters(&mut self,
+                             parameters: &ast::PathParameters,
+                             colons_before_params: bool)
+                             -> io::Result<()>
+    {
+        if parameters.is_empty() {
+            return Ok(());
+        }
+
+        if colons_before_params {
+            try!(word(&mut self.s, "::"))
+        }
+
+        match *parameters {
+            ast::AngleBracketedParameters(ref data) => {
+                try!(word(&mut self.s, "<"));
+
+                let mut comma = false;
+                for lifetime in &data.lifetimes {
+                    if comma {
+                        try!(self.word_space(","))
+                    }
+                    try!(self.print_lifetime(lifetime));
+                    comma = true;
+                }
+
+                if !data.types.is_empty() {
+                    if comma {
+                        try!(self.word_space(","))
+                    }
+                    try!(self.commasep(
+                        Inconsistent,
+                        &data.types,
+                        |s, ty| s.print_type(&**ty)));
+                        comma = true;
+                }
+
+                for binding in &*data.bindings {
+                    if comma {
+                        try!(self.word_space(","))
+                    }
+                    try!(self.print_ident(binding.ident));
+                    try!(space(&mut self.s));
+                    try!(self.word_space("="));
+                    try!(self.print_type(&*binding.ty));
+                    comma = true;
+                }
+
+                try!(word(&mut self.s, ">"))
+            }
+
+            ast::ParenthesizedParameters(ref data) => {
+                try!(word(&mut self.s, "("));
+                try!(self.commasep(
+                    Inconsistent,
+                    &data.inputs,
+                    |s, ty| s.print_type(&**ty)));
+                try!(word(&mut self.s, ")"));
+
+                match data.output {
+                    None => { }
+                    Some(ref ty) => {
+                        try!(self.space_if_not_bol());
+                        try!(self.word_space("->"));
+                        try!(self.print_type(&**ty));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn print_pat(&mut self, pat: &ast::Pat) -> io::Result<()> {
+        try!(self.maybe_print_comment(pat.span.lo));
+        try!(self.ann.pre(self, NodePat(pat)));
+        /* Pat isn't normalized, but the beauty of it
+         is that it doesn't matter */
+        match pat.node {
+            ast::PatWild(ast::PatWildSingle) => try!(word(&mut self.s, "_")),
+            ast::PatWild(ast::PatWildMulti) => try!(word(&mut self.s, "..")),
+            ast::PatIdent(binding_mode, ref path1, ref sub) => {
+                match binding_mode {
+                    ast::BindByRef(mutbl) => {
+                        try!(self.word_nbsp("ref"));
+                        try!(self.print_mutability(mutbl));
+                    }
+                    ast::BindByValue(ast::MutImmutable) => {}
+                    ast::BindByValue(ast::MutMutable) => {
+                        try!(self.word_nbsp("mut"));
+                    }
+                }
+                try!(self.print_ident(path1.node));
+                match *sub {
+                    Some(ref p) => {
+                        try!(word(&mut self.s, "@"));
+                        try!(self.print_pat(&**p));
+                    }
+                    None => ()
+                }
+            }
+            ast::PatEnum(ref path, ref args_) => {
+                try!(self.print_path(path, true, 0));
+                match *args_ {
+                    None => try!(word(&mut self.s, "(..)")),
+                    Some(ref args) => {
+                        if !args.is_empty() {
+                            try!(self.popen());
+                            try!(self.commasep(Inconsistent, &args[..],
+                                              |s, p| s.print_pat(&**p)));
+                            try!(self.pclose());
+                        }
+                    }
+                }
+            }
+            ast::PatStruct(ref path, ref fields, etc) => {
+                try!(self.print_path(path, true, 0));
+                try!(self.nbsp());
+                try!(self.word_space("{"));
+                try!(self.commasep_cmnt(
+                    Consistent, &fields[..],
+                    |s, f| {
+                        try!(s.cbox(indent_unit));
+                        if !f.node.is_shorthand {
+                            try!(s.print_ident(f.node.ident));
+                            try!(s.word_nbsp(":"));
+                        }
+                        try!(s.print_pat(&*f.node.pat));
+                        s.end()
+                    },
+                    |f| f.node.pat.span));
+                if etc {
+                    if fields.len() != 0 { try!(self.word_space(",")); }
+                    try!(word(&mut self.s, ".."));
+                }
+                try!(space(&mut self.s));
+                try!(word(&mut self.s, "}"));
+            }
+            ast::PatTup(ref elts) => {
+                try!(self.popen());
+                try!(self.commasep(Inconsistent,
+                                   &elts[..],
+                                   |s, p| s.print_pat(&**p)));
+                if elts.len() == 1 {
+                    try!(word(&mut self.s, ","));
+                }
+                try!(self.pclose());
+            }
+            ast::PatBox(ref inner) => {
+                try!(word(&mut self.s, "box "));
+                try!(self.print_pat(&**inner));
+            }
+            ast::PatRegion(ref inner, mutbl) => {
+                try!(word(&mut self.s, "&"));
+                if mutbl == ast::MutMutable {
+                    try!(word(&mut self.s, "mut "));
+                }
+                try!(self.print_pat(&**inner));
+            }
+            ast::PatLit(ref e) => try!(self.print_expr(&**e)),
+            ast::PatRange(ref begin, ref end) => {
+                try!(self.print_expr(&**begin));
+                try!(space(&mut self.s));
+                try!(word(&mut self.s, "..."));
+                try!(self.print_expr(&**end));
+            }
+            ast::PatVec(ref before, ref slice, ref after) => {
+                try!(word(&mut self.s, "["));
+                try!(self.commasep(Inconsistent,
+                                   &before[..],
+                                   |s, p| s.print_pat(&**p)));
+                if let Some(ref p) = *slice {
+                    if !before.is_empty() { try!(self.word_space(",")); }
+                    try!(self.print_pat(&**p));
+                    match **p {
+                        ast::Pat { node: ast::PatWild(ast::PatWildMulti), .. } => {
+                            // this case is handled by print_pat
+                        }
+                        _ => try!(word(&mut self.s, "..")),
+                    }
+                    if !after.is_empty() { try!(self.word_space(",")); }
+                }
+                try!(self.commasep(Inconsistent,
+                                   &after[..],
+                                   |s, p| s.print_pat(&**p)));
+                try!(word(&mut self.s, "]"));
+            }
+            ast::PatMac(ref m) => try!(self.print_mac(m, token::Paren)),
+        }
+        self.ann.post(self, NodePat(pat))
+    }
+
+    fn print_arm(&mut self, arm: &ast::Arm) -> io::Result<()> {
+        // I have no idea why this check is necessary, but here it
+        // is :(
+        if arm.attrs.is_empty() {
+            try!(space(&mut self.s));
+        }
+        try!(self.cbox(indent_unit));
+        try!(self.ibox(0));
+        try!(self.print_outer_attributes(&arm.attrs));
+        let mut first = true;
+        for p in &arm.pats {
             if first {
                 first = false;
             } else {
-                word_space(s, "+");
+                try!(space(&mut self.s));
+                try!(self.word_space("|"));
             }
+            try!(self.print_pat(&**p));
+        }
+        try!(space(&mut self.s));
+        if let Some(ref e) = arm.guard {
+            try!(self.word_space("if"));
+            try!(self.print_expr(&**e));
+            try!(space(&mut self.s));
+        }
+        try!(self.word_space("=>"));
 
-            match *bound {
-                TraitTyParamBound(ref tref) => print_trait_ref(s, tref),
-                RegionTyParamBound => word(s.s, "'static"),
+        match arm.body.node {
+            ast::ExprBlock(ref blk) => {
+                // the block will close the pattern's ibox
+                try!(self.print_block_unclosed_indent(&**blk, indent_unit));
+
+                // If it is a user-provided unsafe block, print a comma after it
+                if let ast::UnsafeBlock(ast::UserProvided) = blk.rules {
+                    try!(word(&mut self.s, ","));
+                }
+            }
+            _ => {
+                try!(self.end()); // close the ibox for the pattern
+                try!(self.print_expr(&*arm.body));
+                try!(word(&mut self.s, ","));
             }
         }
-    } else if print_colon_anyway {
-        word(s.s, ":");
+        self.end() // close enclosing cbox
     }
-}
 
-pub fn print_lifetime(s: @ps, lifetime: &ast::Lifetime) {
-    word(s.s, "'");
-    print_ident(s, lifetime.ident);
-}
-
-pub fn print_generics(s: @ps, generics: &ast::Generics) {
-    let total = generics.lifetimes.len() + generics.ty_params.len();
-    if total > 0 {
-        word(s.s, "<");
-        fn print_item(s: @ps, generics: &ast::Generics, idx: uint) {
-            if idx < generics.lifetimes.len() {
-                let lifetime = generics.lifetimes.get(idx);
-                print_lifetime(s, lifetime);
-            } else {
-                let idx = idx - generics.lifetimes.len();
-                let param = generics.ty_params.get(idx);
-                print_ident(s, param.ident);
-                print_bounds(s, &param.bounds, false);
+    // Returns whether it printed anything
+    fn print_explicit_self(&mut self,
+                           explicit_self: &ast::ExplicitSelf_,
+                           mutbl: ast::Mutability) -> io::Result<bool> {
+        try!(self.print_mutability(mutbl));
+        match *explicit_self {
+            ast::SelfStatic => { return Ok(false); }
+            ast::SelfValue(_) => {
+                try!(word(&mut self.s, "self"));
+            }
+            ast::SelfRegion(ref lt, m, _) => {
+                try!(word(&mut self.s, "&"));
+                try!(self.print_opt_lifetime(lt));
+                try!(self.print_mutability(m));
+                try!(word(&mut self.s, "self"));
+            }
+            ast::SelfExplicit(ref typ, _) => {
+                try!(word(&mut self.s, "self"));
+                try!(self.word_space(":"));
+                try!(self.print_type(&**typ));
             }
         }
+        return Ok(true);
+    }
 
-        let mut ints = ~[];
-        for i in range(0u, total) {
+    pub fn print_fn(&mut self,
+                    decl: &ast::FnDecl,
+                    unsafety: Option<ast::Unsafety>,
+                    abi: abi::Abi,
+                    name: ast::Ident,
+                    generics: &ast::Generics,
+                    opt_explicit_self: Option<&ast::ExplicitSelf_>,
+                    vis: ast::Visibility) -> io::Result<()> {
+        try!(self.head(""));
+        try!(self.print_fn_header_info(unsafety, abi, vis));
+        try!(self.nbsp());
+        try!(self.print_ident(name));
+        try!(self.print_generics(generics));
+        try!(self.print_fn_args_and_ret(decl, opt_explicit_self));
+        self.print_where_clause(generics)
+    }
+
+    pub fn print_fn_args(&mut self, decl: &ast::FnDecl,
+                         opt_explicit_self: Option<&ast::ExplicitSelf_>)
+        -> io::Result<()> {
+        // It is unfortunate to duplicate the commasep logic, but we want the
+        // self type and the args all in the same box.
+        try!(self.rbox(0, Inconsistent));
+        let mut first = true;
+        if let Some(explicit_self) = opt_explicit_self {
+            let m = match explicit_self {
+                &ast::SelfStatic => ast::MutImmutable,
+                _ => match decl.inputs[0].pat.node {
+                    ast::PatIdent(ast::BindByValue(m), _, _) => m,
+                    _ => ast::MutImmutable
+                }
+            };
+            first = !try!(self.print_explicit_self(explicit_self, m));
+        }
+
+        // HACK(eddyb) ignore the separately printed self argument.
+        let args = if first {
+            &decl.inputs[..]
+        } else {
+            &decl.inputs[1..]
+        };
+
+        for arg in args {
+            if first { first = false; } else { try!(self.word_space(",")); }
+            try!(self.print_arg(arg));
+        }
+
+        self.end()
+    }
+
+    pub fn print_fn_args_and_ret(&mut self, decl: &ast::FnDecl,
+                                 opt_explicit_self: Option<&ast::ExplicitSelf_>)
+        -> io::Result<()> {
+        try!(self.popen());
+        try!(self.print_fn_args(decl, opt_explicit_self));
+        if decl.variadic {
+            try!(word(&mut self.s, ", ..."));
+        }
+        try!(self.pclose());
+
+        self.print_fn_output(decl)
+    }
+
+    pub fn print_fn_block_args(
+            &mut self,
+            decl: &ast::FnDecl)
+            -> io::Result<()> {
+        try!(word(&mut self.s, "|"));
+        try!(self.print_fn_args(decl, None));
+        try!(word(&mut self.s, "|"));
+
+        if let ast::DefaultReturn(..) = decl.output {
+            return Ok(());
+        }
+
+        try!(self.space_if_not_bol());
+        try!(self.word_space("->"));
+        match decl.output {
+            ast::Return(ref ty) => {
+                try!(self.print_type(&**ty));
+                self.maybe_print_comment(ty.span.lo)
+            }
+            ast::DefaultReturn(..) => unreachable!(),
+            ast::NoReturn(span) => {
+                try!(self.word_nbsp("!"));
+                self.maybe_print_comment(span.lo)
+            }
+        }
+    }
+
+    pub fn print_capture_clause(&mut self, capture_clause: ast::CaptureClause)
+                                -> io::Result<()> {
+        match capture_clause {
+            ast::CaptureByValue => self.word_space("move"),
+            ast::CaptureByRef => Ok(()),
+        }
+    }
+
+    pub fn print_bounds(&mut self,
+                        prefix: &str,
+                        bounds: &[ast::TyParamBound])
+                        -> io::Result<()> {
+        if !bounds.is_empty() {
+            try!(word(&mut self.s, prefix));
+            let mut first = true;
+            for bound in bounds {
+                try!(self.nbsp());
+                if first {
+                    first = false;
+                } else {
+                    try!(self.word_space("+"));
+                }
+
+                try!(match *bound {
+                    TraitTyParamBound(ref tref, TraitBoundModifier::None) => {
+                        self.print_poly_trait_ref(tref)
+                    }
+                    TraitTyParamBound(ref tref, TraitBoundModifier::Maybe) => {
+                        try!(word(&mut self.s, "?"));
+                        self.print_poly_trait_ref(tref)
+                    }
+                    RegionTyParamBound(ref lt) => {
+                        self.print_lifetime(lt)
+                    }
+                })
+            }
+            Ok(())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn print_lifetime(&mut self,
+                          lifetime: &ast::Lifetime)
+                          -> io::Result<()>
+    {
+        self.print_name(lifetime.name)
+    }
+
+    pub fn print_lifetime_def(&mut self,
+                              lifetime: &ast::LifetimeDef)
+                              -> io::Result<()>
+    {
+        try!(self.print_lifetime(&lifetime.lifetime));
+        let mut sep = ":";
+        for v in &lifetime.bounds {
+            try!(word(&mut self.s, sep));
+            try!(self.print_lifetime(v));
+            sep = "+";
+        }
+        Ok(())
+    }
+
+    pub fn print_generics(&mut self,
+                          generics: &ast::Generics)
+                          -> io::Result<()>
+    {
+        let total = generics.lifetimes.len() + generics.ty_params.len();
+        if total == 0 {
+            return Ok(());
+        }
+
+        try!(word(&mut self.s, "<"));
+
+        let mut ints = Vec::new();
+        for i in 0..total {
             ints.push(i);
         }
 
-        commasep(s, inconsistent, ints,
-                 |s, &i| print_item(s, generics, i));
-        word(s.s, ">");
-    }
-}
-
-pub fn print_meta_item(s: @ps, item: &ast::MetaItem) {
-    ibox(s, indent_unit);
-    match item.node {
-      ast::MetaWord(name) => word(s.s, name),
-      ast::MetaNameValue(name, value) => {
-        word_space(s, name);
-        word_space(s, "=");
-        print_literal(s, @value);
-      }
-      ast::MetaList(name, ref items) => {
-        word(s.s, name);
-        popen(s);
-        commasep(s,
-                 consistent,
-                 items.as_slice(),
-                 |p, &i| print_meta_item(p, i));
-        pclose(s);
-      }
-    }
-    end(s);
-}
-
-pub fn print_view_path(s: @ps, vp: &ast::view_path) {
-    match vp.node {
-      ast::view_path_simple(ident, ref path, _) => {
-        if path.segments.last().identifier != ident {
-            print_ident(s, ident);
-            space(s.s);
-            word_space(s, "=");
-        }
-        print_path(s, path, false);
-      }
-
-      ast::view_path_glob(ref path, _) => {
-        print_path(s, path, false);
-        word(s.s, "::*");
-      }
-
-      ast::view_path_list(ref path, ref idents, _) => {
-        print_path(s, path, false);
-        word(s.s, "::{");
-        do commasep(s, inconsistent, (*idents)) |s, w| {
-            print_ident(s, w.node.name);
-        }
-        word(s.s, "}");
-      }
-    }
-}
-
-pub fn print_view_paths(s: @ps, vps: &[@ast::view_path]) {
-    commasep(s, inconsistent, vps, |p, &vp| print_view_path(p, vp));
-}
-
-pub fn print_view_item(s: @ps, item: &ast::view_item) {
-    hardbreak_if_not_bol(s);
-    maybe_print_comment(s, item.span.lo);
-    print_outer_attributes(s, item.attrs);
-    print_visibility(s, item.vis);
-    match item.node {
-        ast::view_item_extern_mod(id, ref optional_path, ref mta, _) => {
-            head(s, "extern mod");
-            print_ident(s, id);
-            for p in optional_path.iter() {
-                word(s.s, "=");
-                print_string(s, *p);
+        try!(self.commasep(Inconsistent, &ints[..], |s, &idx| {
+            if idx < generics.lifetimes.len() {
+                let lifetime = &generics.lifetimes[idx];
+                s.print_lifetime_def(lifetime)
+            } else {
+                let idx = idx - generics.lifetimes.len();
+                let param = &generics.ty_params[idx];
+                s.print_ty_param(param)
             }
-            if !mta.is_empty() {
-                popen(s);
-                commasep(s, consistent, *mta, |p, &i| print_meta_item(p, i));
-                pclose(s);
+        }));
+
+        try!(word(&mut self.s, ">"));
+        Ok(())
+    }
+
+    pub fn print_ty_param(&mut self, param: &ast::TyParam) -> io::Result<()> {
+        try!(self.print_ident(param.ident));
+        try!(self.print_bounds(":", &param.bounds));
+        match param.default {
+            Some(ref default) => {
+                try!(space(&mut self.s));
+                try!(self.word_space("="));
+                self.print_type(&**default)
+            }
+            _ => Ok(())
+        }
+    }
+
+    pub fn print_where_clause(&mut self, generics: &ast::Generics)
+                              -> io::Result<()> {
+        if generics.where_clause.predicates.len() == 0 {
+            return Ok(())
+        }
+
+        try!(space(&mut self.s));
+        try!(self.word_space("where"));
+
+        for (i, predicate) in generics.where_clause
+                                      .predicates
+                                      .iter()
+                                      .enumerate() {
+            if i != 0 {
+                try!(self.word_space(","));
+            }
+
+            match predicate {
+                &ast::WherePredicate::BoundPredicate(ast::WhereBoundPredicate{ref bound_lifetimes,
+                                                                              ref bounded_ty,
+                                                                              ref bounds,
+                                                                              ..}) => {
+                    try!(self.print_formal_lifetime_list(bound_lifetimes));
+                    try!(self.print_type(&**bounded_ty));
+                    try!(self.print_bounds(":", bounds));
+                }
+                &ast::WherePredicate::RegionPredicate(ast::WhereRegionPredicate{ref lifetime,
+                                                                                ref bounds,
+                                                                                ..}) => {
+                    try!(self.print_lifetime(lifetime));
+                    try!(word(&mut self.s, ":"));
+
+                    for (i, bound) in bounds.iter().enumerate() {
+                        try!(self.print_lifetime(bound));
+
+                        if i != 0 {
+                            try!(word(&mut self.s, ":"));
+                        }
+                    }
+                }
+                &ast::WherePredicate::EqPredicate(ast::WhereEqPredicate{ref path, ref ty, ..}) => {
+                    try!(self.print_path(path, false, 0));
+                    try!(space(&mut self.s));
+                    try!(self.word_space("="));
+                    try!(self.print_type(&**ty));
+                }
             }
         }
 
-        ast::view_item_use(ref vps) => {
-            head(s, "use");
-            print_view_paths(s, *vps);
+        Ok(())
+    }
+
+    pub fn print_meta_item(&mut self, item: &ast::MetaItem) -> io::Result<()> {
+        try!(self.ibox(indent_unit));
+        match item.node {
+            ast::MetaWord(ref name) => {
+                try!(word(&mut self.s, &name));
+            }
+            ast::MetaNameValue(ref name, ref value) => {
+                try!(self.word_space(&name[..]));
+                try!(self.word_space("="));
+                try!(self.print_literal(value));
+            }
+            ast::MetaList(ref name, ref items) => {
+                try!(word(&mut self.s, &name));
+                try!(self.popen());
+                try!(self.commasep(Consistent,
+                                   &items[..],
+                                   |s, i| s.print_meta_item(&**i)));
+                try!(self.pclose());
+            }
+        }
+        self.end()
+    }
+
+    pub fn print_view_path(&mut self, vp: &ast::ViewPath) -> io::Result<()> {
+        match vp.node {
+            ast::ViewPathSimple(ident, ref path) => {
+                try!(self.print_path(path, false, 0));
+
+                // FIXME(#6993) can't compare identifiers directly here
+                if path.segments.last().unwrap().identifier.name !=
+                        ident.name {
+                    try!(space(&mut self.s));
+                    try!(self.word_space("as"));
+                    try!(self.print_ident(ident));
+                }
+
+                Ok(())
+            }
+
+            ast::ViewPathGlob(ref path) => {
+                try!(self.print_path(path, false, 0));
+                word(&mut self.s, "::*")
+            }
+
+            ast::ViewPathList(ref path, ref idents) => {
+                if path.segments.is_empty() {
+                    try!(word(&mut self.s, "{"));
+                } else {
+                    try!(self.print_path(path, false, 0));
+                    try!(word(&mut self.s, "::{"));
+                }
+                try!(self.commasep(Inconsistent, &idents[..], |s, w| {
+                    match w.node {
+                        ast::PathListIdent { name, .. } => {
+                            s.print_ident(name)
+                        },
+                        ast::PathListMod { .. } => {
+                            word(&mut s.s, "self")
+                        }
+                    }
+                }));
+                word(&mut self.s, "}")
+            }
         }
     }
-    word(s.s, ";");
-    end(s); // end inner head-block
-    end(s); // end outer head-block
-}
 
-pub fn print_mutability(s: @ps, mutbl: ast::Mutability) {
-    match mutbl {
-      ast::MutMutable => word_nbsp(s, "mut"),
-      ast::MutImmutable => {/* nothing */ }
+    pub fn print_mutability(&mut self,
+                            mutbl: ast::Mutability) -> io::Result<()> {
+        match mutbl {
+            ast::MutMutable => self.word_nbsp("mut"),
+            ast::MutImmutable => Ok(()),
+        }
     }
-}
 
-pub fn print_mt(s: @ps, mt: &ast::mt) {
-    print_mutability(s, mt.mutbl);
-    print_type(s, mt.ty);
-}
-
-pub fn print_arg(s: @ps, input: &ast::arg) {
-    ibox(s, indent_unit);
-    if input.is_mutbl {
-        word_space(s, "mut");
+    pub fn print_mt(&mut self, mt: &ast::MutTy) -> io::Result<()> {
+        try!(self.print_mutability(mt.mutbl));
+        self.print_type(&*mt.ty)
     }
-    match input.ty.node {
-      ast::ty_infer => print_pat(s, input.pat),
-      _ => {
-        match input.pat.node {
-            ast::PatIdent(_, ref path, _) if
-                path.segments.len() == 1 &&
-                path.segments[0].identifier.name ==
-                    parse::token::special_idents::invalid.name => {
-                // Do nothing.
-            }
+
+    pub fn print_arg(&mut self, input: &ast::Arg) -> io::Result<()> {
+        try!(self.ibox(indent_unit));
+        match input.ty.node {
+            ast::TyInfer => try!(self.print_pat(&*input.pat)),
             _ => {
-                print_pat(s, input.pat);
-                word(s.s, ":");
-                space(s.s);
+                match input.pat.node {
+                    ast::PatIdent(_, ref path1, _) if
+                        path1.node.name ==
+                            parse::token::special_idents::invalid.name => {
+                        // Do nothing.
+                    }
+                    _ => {
+                        try!(self.print_pat(&*input.pat));
+                        try!(word(&mut self.s, ":"));
+                        try!(space(&mut self.s));
+                    }
+                }
+                try!(self.print_type(&*input.ty));
             }
         }
-        print_type(s, &input.ty);
-      }
+        self.end()
     }
-    end(s);
-}
 
-pub fn print_ty_fn(s: @ps,
-                   opt_abis: Option<AbiSet>,
-                   opt_sigil: Option<ast::Sigil>,
-                   opt_region: &Option<ast::Lifetime>,
-                   purity: ast::purity,
-                   onceness: ast::Onceness,
-                   decl: &ast::fn_decl,
-                   id: Option<ast::Ident>,
-                   opt_bounds: &Option<OptVec<ast::TyParamBound>>,
-                   generics: Option<&ast::Generics>,
-                   opt_explicit_self: Option<ast::explicit_self_>) {
-    ibox(s, indent_unit);
+    pub fn print_fn_output(&mut self, decl: &ast::FnDecl) -> io::Result<()> {
+        if let ast::DefaultReturn(..) = decl.output {
+            return Ok(());
+        }
 
-    // Duplicates the logic in `print_fn_header_info()`.  This is because that
-    // function prints the sigil in the wrong place.  That should be fixed.
-    print_extern_opt_abis(s, opt_abis);
-    print_opt_sigil(s, opt_sigil);
-    print_opt_lifetime(s, opt_region);
-    print_purity(s, purity);
-    print_onceness(s, onceness);
-    word(s.s, "fn");
-    match id { Some(id) => { word(s.s, " "); print_ident(s, id); } _ => () }
-    do opt_bounds.map |bounds| { print_bounds(s, bounds, true); };
-    match generics { Some(g) => print_generics(s, g), _ => () }
-    zerobreak(s.s);
+        try!(self.space_if_not_bol());
+        try!(self.ibox(indent_unit));
+        try!(self.word_space("->"));
+        match decl.output {
+            ast::NoReturn(_) =>
+                try!(self.word_nbsp("!")),
+            ast::DefaultReturn(..) => unreachable!(),
+            ast::Return(ref ty) =>
+                try!(self.print_type(&**ty))
+        }
+        try!(self.end());
 
-    popen(s);
-    // It is unfortunate to duplicate the commasep logic, but we want the
-    // self type and the args all in the same box.
-    box(s, 0u, inconsistent);
-    let mut first = true;
-    for explicit_self in opt_explicit_self.iter() {
-        first = !print_explicit_self(s, *explicit_self);
-    }
-    for arg in decl.inputs.iter() {
-        if first { first = false; } else { word_space(s, ","); }
-        print_arg(s, arg);
-    }
-    end(s);
-    pclose(s);
-
-    maybe_print_comment(s, decl.output.span.lo);
-
-    match decl.output.node {
-        ast::ty_nil => {}
-        _ => {
-            space_if_not_bol(s);
-            ibox(s, indent_unit);
-            word_space(s, "->");
-            if decl.cf == ast::noreturn { word_nbsp(s, "!"); }
-            else { print_type(s, &decl.output); }
-            end(s);
+        match decl.output {
+            ast::Return(ref output) => self.maybe_print_comment(output.span.lo),
+            _ => Ok(())
         }
     }
 
-    end(s);
-}
+    pub fn print_ty_fn(&mut self,
+                       abi: abi::Abi,
+                       unsafety: ast::Unsafety,
+                       decl: &ast::FnDecl,
+                       id: Option<ast::Ident>,
+                       generics: &ast::Generics,
+                       opt_explicit_self: Option<&ast::ExplicitSelf_>)
+                       -> io::Result<()> {
+        try!(self.ibox(indent_unit));
+        try!(self.print_fn_header_info(Some(unsafety), abi, ast::Inherited));
 
-pub fn maybe_print_trailing_comment(s: @ps, span: codemap::Span,
-                                    next_pos: Option<BytePos>) {
-    let cm;
-    match s.cm { Some(ccm) => cm = ccm, _ => return }
-    match next_comment(s) {
-      Some(ref cmnt) => {
-        if (*cmnt).style != comments::trailing { return; }
-        let span_line = cm.lookup_char_pos(span.hi);
-        let comment_line = cm.lookup_char_pos((*cmnt).pos);
-        let mut next = (*cmnt).pos + BytePos(1u);
-        match next_pos { None => (), Some(p) => next = p }
-        if span.hi < (*cmnt).pos && (*cmnt).pos < next &&
-               span_line.line == comment_line.line {
-            print_comment(s, cmnt);
-            s.cur_cmnt_and_lit.cur_cmnt += 1u;
-        }
-      }
-      _ => ()
-    }
-}
-
-pub fn print_remaining_comments(s: @ps) {
-    // If there aren't any remaining comments, then we need to manually
-    // make sure there is a line break at the end.
-    if next_comment(s).is_none() { hardbreak(s.s); }
-    loop {
-        match next_comment(s) {
-          Some(ref cmnt) => {
-            print_comment(s, cmnt);
-            s.cur_cmnt_and_lit.cur_cmnt += 1u;
-          }
-          _ => break
-        }
-    }
-}
-
-pub fn print_literal(s: @ps, lit: &ast::lit) {
-    maybe_print_comment(s, lit.span.lo);
-    match next_lit(s, lit.span.lo) {
-      Some(ref ltrl) => {
-        word(s.s, (*ltrl).lit);
-        return;
-      }
-      _ => ()
-    }
-    match lit.node {
-      ast::lit_str(st) => print_string(s, st),
-      ast::lit_char(ch) => {
-          let mut res = ~"'";
-          do char::from_u32(ch).unwrap().escape_default |c| {
-              res.push_char(c);
-          }
-          res.push_char('\'');
-          word(s.s, res);
-      }
-      ast::lit_int(i, t) => {
-        if i < 0_i64 {
-            word(s.s,
-                 ~"-" + (-i as u64).to_str_radix(10u)
-                 + ast_util::int_ty_to_str(t));
-        } else {
-            word(s.s,
-                 (i as u64).to_str_radix(10u)
-                 + ast_util::int_ty_to_str(t));
-        }
-      }
-      ast::lit_uint(u, t) => {
-        word(s.s,
-             u.to_str_radix(10u)
-             + ast_util::uint_ty_to_str(t));
-      }
-      ast::lit_int_unsuffixed(i) => {
-        if i < 0_i64 {
-            word(s.s, ~"-" + (-i as u64).to_str_radix(10u));
-        } else {
-            word(s.s, (i as u64).to_str_radix(10u));
-        }
-      }
-      ast::lit_float(f, t) => {
-        word(s.s, f.to_owned() + ast_util::float_ty_to_str(t));
-      }
-      ast::lit_float_unsuffixed(f) => word(s.s, f),
-      ast::lit_nil => word(s.s, "()"),
-      ast::lit_bool(val) => {
-        if val { word(s.s, "true"); } else { word(s.s, "false"); }
-      }
-    }
-}
-
-pub fn lit_to_str(l: &ast::lit) -> ~str {
-    return to_str(l, print_literal, parse::token::mk_fake_ident_interner());
-}
-
-pub fn next_lit(s: @ps, pos: BytePos) -> Option<comments::lit> {
-    match s.literals {
-      Some(ref lits) => {
-        while s.cur_cmnt_and_lit.cur_lit < lits.len() {
-            let ltrl = (*lits)[s.cur_cmnt_and_lit.cur_lit].clone();
-            if ltrl.pos > pos { return None; }
-            s.cur_cmnt_and_lit.cur_lit += 1u;
-            if ltrl.pos == pos { return Some(ltrl); }
-        }
-        return None;
-      }
-      _ => return None
-    }
-}
-
-pub fn maybe_print_comment(s: @ps, pos: BytePos) {
-    loop {
-        match next_comment(s) {
-          Some(ref cmnt) => {
-            if (*cmnt).pos < pos {
-                print_comment(s, cmnt);
-                s.cur_cmnt_and_lit.cur_cmnt += 1u;
-            } else { break; }
-          }
-          _ => break
-        }
-    }
-}
-
-pub fn print_comment(s: @ps, cmnt: &comments::cmnt) {
-    match cmnt.style {
-      comments::mixed => {
-        assert_eq!(cmnt.lines.len(), 1u);
-        zerobreak(s.s);
-        word(s.s, cmnt.lines[0]);
-        zerobreak(s.s);
-      }
-      comments::isolated => {
-        pprust::hardbreak_if_not_bol(s);
-        for line in cmnt.lines.iter() {
-            // Don't print empty lines because they will end up as trailing
-            // whitespace
-            if !line.is_empty() { word(s.s, *line); }
-            hardbreak(s.s);
-        }
-      }
-      comments::trailing => {
-        word(s.s, " ");
-        if cmnt.lines.len() == 1u {
-            word(s.s, cmnt.lines[0]);
-            hardbreak(s.s);
-        } else {
-            ibox(s, 0u);
-            for line in cmnt.lines.iter() {
-                if !line.is_empty() { word(s.s, *line); }
-                hardbreak(s.s);
+        match id {
+            Some(id) => {
+                try!(word(&mut self.s, " "));
+                try!(self.print_ident(id));
             }
-            end(s);
+            _ => ()
         }
-      }
-      comments::blank_line => {
-        // We need to do at least one, possibly two hardbreaks.
-        let is_semi =
-            match s.s.last_token() {
-              pp::STRING(s, _) => ";" == s,
-              _ => false
-            };
-        if is_semi || is_begin(s) || is_end(s) { hardbreak(s.s); }
-        hardbreak(s.s);
-      }
+
+        try!(self.print_generics(generics));
+        try!(zerobreak(&mut self.s));
+        try!(self.print_fn_args_and_ret(decl, opt_explicit_self));
+        try!(self.print_where_clause(generics));
+        self.end()
     }
-}
 
-pub fn print_string(s: @ps, st: &str) {
-    word(s.s, "\"");
-    word(s.s, st.escape_default());
-    word(s.s, "\"");
-}
-
-pub fn to_str<T>(t: &T, f: &fn(@ps, &T), intr: @ident_interner) -> ~str {
-    do io::with_str_writer |wr| {
-        let s = rust_printer(wr, intr);
-        f(s, t);
-        eof(s.s);
-    }
-}
-
-pub fn next_comment(s: @ps) -> Option<comments::cmnt> {
-    match s.comments {
-      Some(ref cmnts) => {
-        if s.cur_cmnt_and_lit.cur_cmnt < cmnts.len() {
-            return Some(cmnts[s.cur_cmnt_and_lit.cur_cmnt].clone());
-        } else {
-            return None::<comments::cmnt>;
+    pub fn maybe_print_trailing_comment(&mut self, span: codemap::Span,
+                                        next_pos: Option<BytePos>)
+        -> io::Result<()> {
+        let cm = match self.cm {
+            Some(cm) => cm,
+            _ => return Ok(())
+        };
+        match self.next_comment() {
+            Some(ref cmnt) => {
+                if (*cmnt).style != comments::Trailing { return Ok(()) }
+                let span_line = cm.lookup_char_pos(span.hi);
+                let comment_line = cm.lookup_char_pos((*cmnt).pos);
+                let mut next = (*cmnt).pos + BytePos(1);
+                match next_pos { None => (), Some(p) => next = p }
+                if span.hi < (*cmnt).pos && (*cmnt).pos < next &&
+                    span_line.line == comment_line.line {
+                        try!(self.print_comment(cmnt));
+                        self.cur_cmnt_and_lit.cur_cmnt += 1;
+                    }
+            }
+            _ => ()
         }
-      }
-      _ => return None::<comments::cmnt>
+        Ok(())
     }
-}
 
-pub fn print_opt_purity(s: @ps, opt_purity: Option<ast::purity>) {
-    match opt_purity {
-        Some(ast::impure_fn) => { }
-        Some(purity) => {
-            word_nbsp(s, purity_to_str(purity));
+    pub fn print_remaining_comments(&mut self) -> io::Result<()> {
+        // If there aren't any remaining comments, then we need to manually
+        // make sure there is a line break at the end.
+        if self.next_comment().is_none() {
+            try!(hardbreak(&mut self.s));
         }
-        None => {}
-    }
-}
-
-pub fn print_extern_opt_abis(s: @ps, opt_abis: Option<AbiSet>) {
-    match opt_abis {
-        Some(abis) => {
-            word_nbsp(s, "extern");
-            word_nbsp(s, abis.to_str());
+        loop {
+            match self.next_comment() {
+                Some(ref cmnt) => {
+                    try!(self.print_comment(cmnt));
+                    self.cur_cmnt_and_lit.cur_cmnt += 1;
+                }
+                _ => break
+            }
         }
-        None => {}
-    };
-}
+        Ok(())
+    }
 
-pub fn print_opt_sigil(s: @ps, opt_sigil: Option<ast::Sigil>) {
-    match opt_sigil {
-        Some(ast::BorrowedSigil) => { word(s.s, "&"); }
-        Some(ast::OwnedSigil) => { word(s.s, "~"); }
-        Some(ast::ManagedSigil) => { word(s.s, "@"); }
-        None => {}
-    };
-}
-
-pub fn print_fn_header_info(s: @ps,
-                            _opt_explicit_self: Option<ast::explicit_self_>,
-                            opt_purity: Option<ast::purity>,
-                            abis: AbiSet,
-                            onceness: ast::Onceness,
-                            opt_sigil: Option<ast::Sigil>,
-                            vis: ast::visibility) {
-    word(s.s, visibility_qualified(vis, ""));
-
-    if abis != AbiSet::Rust() {
-        word_nbsp(s, "extern");
-        word_nbsp(s, abis.to_str());
-
-        if opt_purity != Some(ast::extern_fn) {
-            print_opt_purity(s, opt_purity);
+    pub fn print_literal(&mut self, lit: &ast::Lit) -> io::Result<()> {
+        try!(self.maybe_print_comment(lit.span.lo));
+        match self.next_lit(lit.span.lo) {
+            Some(ref ltrl) => {
+                return word(&mut self.s, &(*ltrl).lit);
+            }
+            _ => ()
         }
-    } else {
-        print_opt_purity(s, opt_purity);
+        match lit.node {
+            ast::LitStr(ref st, style) => self.print_string(&st, style),
+            ast::LitByte(byte) => {
+                let mut res = String::from_str("b'");
+                res.extend(ascii::escape_default(byte).map(|c| c as char));
+                res.push('\'');
+                word(&mut self.s, &res[..])
+            }
+            ast::LitChar(ch) => {
+                let mut res = String::from_str("'");
+                res.extend(ch.escape_default());
+                res.push('\'');
+                word(&mut self.s, &res[..])
+            }
+            ast::LitInt(i, t) => {
+                match t {
+                    ast::SignedIntLit(st, ast::Plus) => {
+                        word(&mut self.s,
+                             &ast_util::int_ty_to_string(st, Some(i as i64)))
+                    }
+                    ast::SignedIntLit(st, ast::Minus) => {
+                        let istr = ast_util::int_ty_to_string(st, Some(-(i as i64)));
+                        word(&mut self.s,
+                             &format!("-{}", istr))
+                    }
+                    ast::UnsignedIntLit(ut) => {
+                        word(&mut self.s, &ast_util::uint_ty_to_string(ut, Some(i)))
+                    }
+                    ast::UnsuffixedIntLit(ast::Plus) => {
+                        word(&mut self.s, &format!("{}", i))
+                    }
+                    ast::UnsuffixedIntLit(ast::Minus) => {
+                        word(&mut self.s, &format!("-{}", i))
+                    }
+                }
+            }
+            ast::LitFloat(ref f, t) => {
+                word(&mut self.s,
+                     &format!(
+                         "{}{}",
+                         &f,
+                         &ast_util::float_ty_to_string(t)))
+            }
+            ast::LitFloatUnsuffixed(ref f) => word(&mut self.s, &f[..]),
+            ast::LitBool(val) => {
+                if val { word(&mut self.s, "true") } else { word(&mut self.s, "false") }
+            }
+            ast::LitBinary(ref v) => {
+                let mut escaped: String = String::new();
+                for &ch in &**v {
+                    escaped.extend(ascii::escape_default(ch as u8)
+                                         .map(|c| c as char));
+                }
+                word(&mut self.s, &format!("b\"{}\"", escaped))
+            }
+        }
     }
 
-    print_onceness(s, onceness);
-    word(s.s, "fn");
-    print_opt_sigil(s, opt_sigil);
-}
+    pub fn next_lit(&mut self, pos: BytePos) -> Option<comments::Literal> {
+        match self.literals {
+            Some(ref lits) => {
+                while self.cur_cmnt_and_lit.cur_lit < lits.len() {
+                    let ltrl = (*lits)[self.cur_cmnt_and_lit.cur_lit].clone();
+                    if ltrl.pos > pos { return None; }
+                    self.cur_cmnt_and_lit.cur_lit += 1;
+                    if ltrl.pos == pos { return Some(ltrl); }
+                }
+                None
+            }
+            _ => None
+        }
+    }
 
-pub fn opt_sigil_to_str(opt_p: Option<ast::Sigil>) -> &'static str {
-    match opt_p {
-      None => "fn",
-      Some(p) => match p {
-          ast::BorrowedSigil => "fn&",
-          ast::OwnedSigil => "fn~",
-          ast::ManagedSigil => "fn@"
-      }
+    pub fn maybe_print_comment(&mut self, pos: BytePos) -> io::Result<()> {
+        loop {
+            match self.next_comment() {
+                Some(ref cmnt) => {
+                    if (*cmnt).pos < pos {
+                        try!(self.print_comment(cmnt));
+                        self.cur_cmnt_and_lit.cur_cmnt += 1;
+                    } else { break; }
+                }
+                _ => break
+            }
+        }
+        Ok(())
+    }
+
+    pub fn print_comment(&mut self,
+                         cmnt: &comments::Comment) -> io::Result<()> {
+        match cmnt.style {
+            comments::Mixed => {
+                assert_eq!(cmnt.lines.len(), 1);
+                try!(zerobreak(&mut self.s));
+                try!(word(&mut self.s, &cmnt.lines[0]));
+                zerobreak(&mut self.s)
+            }
+            comments::Isolated => {
+                try!(self.hardbreak_if_not_bol());
+                for line in &cmnt.lines {
+                    // Don't print empty lines because they will end up as trailing
+                    // whitespace
+                    if !line.is_empty() {
+                        try!(word(&mut self.s, &line[..]));
+                    }
+                    try!(hardbreak(&mut self.s));
+                }
+                Ok(())
+            }
+            comments::Trailing => {
+                try!(word(&mut self.s, " "));
+                if cmnt.lines.len() == 1 {
+                    try!(word(&mut self.s, &cmnt.lines[0]));
+                    hardbreak(&mut self.s)
+                } else {
+                    try!(self.ibox(0));
+                    for line in &cmnt.lines {
+                        if !line.is_empty() {
+                            try!(word(&mut self.s, &line[..]));
+                        }
+                        try!(hardbreak(&mut self.s));
+                    }
+                    self.end()
+                }
+            }
+            comments::BlankLine => {
+                // We need to do at least one, possibly two hardbreaks.
+                let is_semi = match self.s.last_token() {
+                    pp::Token::String(s, _) => ";" == s,
+                    _ => false
+                };
+                if is_semi || self.is_begin() || self.is_end() {
+                    try!(hardbreak(&mut self.s));
+                }
+                hardbreak(&mut self.s)
+            }
+        }
+    }
+
+    pub fn print_string(&mut self, st: &str,
+                        style: ast::StrStyle) -> io::Result<()> {
+        let st = match style {
+            ast::CookedStr => {
+                (format!("\"{}\"", st.escape_default()))
+            }
+            ast::RawStr(n) => {
+                (format!("r{delim}\"{string}\"{delim}",
+                         delim=repeat("#", n),
+                         string=st))
+            }
+        };
+        word(&mut self.s, &st[..])
+    }
+
+    pub fn next_comment(&mut self) -> Option<comments::Comment> {
+        match self.comments {
+            Some(ref cmnts) => {
+                if self.cur_cmnt_and_lit.cur_cmnt < cmnts.len() {
+                    Some(cmnts[self.cur_cmnt_and_lit.cur_cmnt].clone())
+                } else {
+                    None
+                }
+            }
+            _ => None
+        }
+    }
+
+    pub fn print_opt_unsafety(&mut self,
+                            opt_unsafety: Option<ast::Unsafety>) -> io::Result<()> {
+        match opt_unsafety {
+            Some(unsafety) => self.print_unsafety(unsafety),
+            None => Ok(())
+        }
+    }
+
+    pub fn print_opt_abi_and_extern_if_nondefault(&mut self,
+                                                  opt_abi: Option<abi::Abi>)
+        -> io::Result<()> {
+        match opt_abi {
+            Some(abi::Rust) => Ok(()),
+            Some(abi) => {
+                try!(self.word_nbsp("extern"));
+                self.word_nbsp(&abi.to_string())
+            }
+            None => Ok(())
+        }
+    }
+
+    pub fn print_extern_opt_abi(&mut self,
+                                opt_abi: Option<abi::Abi>) -> io::Result<()> {
+        match opt_abi {
+            Some(abi) => {
+                try!(self.word_nbsp("extern"));
+                self.word_nbsp(&abi.to_string())
+            }
+            None => Ok(())
+        }
+    }
+
+    pub fn print_fn_header_info(&mut self,
+                                opt_unsafety: Option<ast::Unsafety>,
+                                abi: abi::Abi,
+                                vis: ast::Visibility) -> io::Result<()> {
+        try!(word(&mut self.s, &visibility_qualified(vis, "")));
+        try!(self.print_opt_unsafety(opt_unsafety));
+
+        if abi != abi::Rust {
+            try!(self.word_nbsp("extern"));
+            try!(self.word_nbsp(&abi.to_string()));
+        }
+
+        word(&mut self.s, "fn")
+    }
+
+    pub fn print_unsafety(&mut self, s: ast::Unsafety) -> io::Result<()> {
+        match s {
+            ast::Unsafety::Normal => Ok(()),
+            ast::Unsafety::Unsafe => self.word_nbsp("unsafe"),
+        }
     }
 }
 
-pub fn purity_to_str(p: ast::purity) -> &'static str {
-    match p {
-      ast::impure_fn => "impure",
-      ast::unsafe_fn => "unsafe",
-      ast::extern_fn => "extern"
-    }
-}
-
-pub fn onceness_to_str(o: ast::Onceness) -> &'static str {
-    match o {
-        ast::Once => "once",
-        ast::Many => "many"
-    }
-}
-
-pub fn print_purity(s: @ps, p: ast::purity) {
-    match p {
-      ast::impure_fn => (),
-      _ => word_nbsp(s, purity_to_str(p))
-    }
-}
-
-pub fn print_onceness(s: @ps, o: ast::Onceness) {
-    match o {
-        ast::Once => { word_nbsp(s, "once"); }
-        ast::Many => {}
-    }
-}
+fn repeat(s: &str, n: usize) -> String { iter::repeat(s).take(n).collect() }
 
 #[cfg(test)]
 mod test {
@@ -2303,44 +3008,44 @@ mod test {
     use codemap;
     use parse::token;
 
-    fn string_check<T:Eq> (given : &T, expected: &T) {
-        if !(given == expected) {
-            fail!("given %?, expected %?", given, expected);
-        }
-    }
-
     #[test]
-    fn test_fun_to_str() {
+    fn test_fun_to_string() {
         let abba_ident = token::str_to_ident("abba");
 
-        let decl = ast::fn_decl {
-            inputs: ~[],
-            output: ast::Ty {id: 0,
-                              node: ast::ty_nil,
-                              span: codemap::dummy_sp()},
-            cf: ast::return_val
+        let decl = ast::FnDecl {
+            inputs: Vec::new(),
+            output: ast::DefaultReturn(codemap::DUMMY_SP),
+            variadic: false
         };
         let generics = ast_util::empty_generics();
-        assert_eq!(&fun_to_str(&decl, ast::impure_fn, abba_ident,
-                               None, &generics, token::get_ident_interner()),
-                   &~"fn abba()");
+        assert_eq!(fun_to_string(&decl, ast::Unsafety::Normal, abba_ident,
+                               None, &generics),
+                   "fn abba()");
     }
 
     #[test]
-    fn test_variant_to_str() {
+    fn test_variant_to_string() {
         let ident = token::str_to_ident("principal_skinner");
 
-        let var = codemap::respan(codemap::dummy_sp(), ast::variant_ {
+        let var = codemap::respan(codemap::DUMMY_SP, ast::Variant_ {
             name: ident,
-            attrs: ~[],
+            attrs: Vec::new(),
             // making this up as I go.... ?
-            kind: ast::tuple_variant_kind(~[]),
+            kind: ast::TupleVariantKind(Vec::new()),
             id: 0,
             disr_expr: None,
-            vis: ast::public,
+            vis: ast::Public,
         });
 
-        let varstr = variant_to_str(&var,token::get_ident_interner());
-        assert_eq!(&varstr,&~"pub principal_skinner");
+        let varstr = variant_to_string(&var);
+        assert_eq!(varstr, "pub principal_skinner");
+    }
+
+    #[test]
+    fn test_signed_int_to_string() {
+        let pos_int = ast::LitInt(42, ast::SignedIntLit(ast::TyI32, ast::Plus));
+        let neg_int = ast::LitInt((-42) as u64, ast::SignedIntLit(ast::TyI32, ast::Minus));
+        assert_eq!(format!("-{}", lit_to_string(&codemap::dummy_spanned(pos_int))),
+                   lit_to_string(&codemap::dummy_spanned(neg_int)));
     }
 }

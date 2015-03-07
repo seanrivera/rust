@@ -8,30 +8,59 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-/*!
-The compiler code necessary to implement the #[deriving] extensions.
+//! The compiler code necessary to implement the `#[derive]` extensions.
+//!
+//! FIXME (#2810): hygiene. Search for "__" strings (in other files too). We also assume "extra" is
+//! the standard library, and "std" is the core library.
 
-
-FIXME (#2810)--Hygiene. Search for "__" strings (in other files too).
-We also assume "extra" is the standard library, and "std" is the core
-library.
-
-*/
-
-use ast::{enum_def, Ident, item, Generics, struct_def};
-use ast::{MetaItem, MetaList, MetaNameValue, MetaWord};
+use ast::{Item, MetaItem, MetaList, MetaNameValue, MetaWord};
 use ext::base::ExtCtxt;
-use ext::build::AstBuilder;
 use codemap::Span;
+use ptr::P;
 
+macro_rules! pathvec {
+    ($($x:ident)::+) => (
+        vec![ $( stringify!($x) ),+ ]
+    )
+}
+
+macro_rules! path {
+    ($($x:tt)*) => (
+        ::ext::deriving::generic::ty::Path::new( pathvec!( $($x)* ) )
+    )
+}
+
+macro_rules! path_local {
+    ($x:ident) => (
+        ::ext::deriving::generic::ty::Path::new_local(stringify!($x))
+    )
+}
+
+macro_rules! pathvec_std {
+    ($cx:expr, $first:ident :: $($rest:ident)::+) => (
+        if $cx.use_std {
+            pathvec!(std :: $($rest)::+)
+        } else {
+            pathvec!($first :: $($rest)::+)
+        }
+    )
+}
+
+macro_rules! path_std {
+    ($($x:tt)*) => (
+        ::ext::deriving::generic::ty::Path::new( pathvec_std!( $($x)* ) )
+    )
+}
+
+pub mod bounds;
 pub mod clone;
-pub mod iter_bytes;
 pub mod encodable;
 pub mod decodable;
+pub mod hash;
 pub mod rand;
-pub mod to_str;
-pub mod zero;
+pub mod show;
 pub mod default;
+pub mod primitive;
 
 #[path="cmp/eq.rs"]
 pub mod eq;
@@ -45,67 +74,98 @@ pub mod totalord;
 
 pub mod generic;
 
-pub type ExpandDerivingStructDefFn<'self> = &'self fn(@ExtCtxt,
-                                                       Span,
-                                                       x: &struct_def,
-                                                       Ident,
-                                                       y: &Generics)
-                                                 -> @item;
-pub type ExpandDerivingEnumDefFn<'self> = &'self fn(@ExtCtxt,
-                                                    Span,
-                                                    x: &enum_def,
-                                                    Ident,
-                                                    y: &Generics)
-                                                 -> @item;
+pub fn expand_deprecated_deriving(cx: &mut ExtCtxt,
+                                  span: Span,
+                                  _: &MetaItem,
+                                  _: &Item,
+                                  _: &mut FnMut(P<Item>)) {
+    cx.span_err(span, "`deriving` has been renamed to `derive`");
+}
 
-pub fn expand_meta_deriving(cx: @ExtCtxt,
-                            _span: Span,
-                            mitem: @MetaItem,
-                            in_items: ~[@item])
-                         -> ~[@item] {
+pub fn expand_meta_derive(cx: &mut ExtCtxt,
+                          _span: Span,
+                          mitem: &MetaItem,
+                          item: &Item,
+                          push: &mut FnMut(P<Item>)) {
     match mitem.node {
         MetaNameValue(_, ref l) => {
-            cx.span_err(l.span, "unexpected value in `deriving`");
-            in_items
+            cx.span_err(l.span, "unexpected value in `derive`");
         }
-        MetaWord(_) | MetaList(_, []) => {
-            cx.span_warn(mitem.span, "empty trait list in `deriving`");
-            in_items
+        MetaWord(_) => {
+            cx.span_warn(mitem.span, "empty trait list in `derive`");
+        }
+        MetaList(_, ref titems) if titems.len() == 0 => {
+            cx.span_warn(mitem.span, "empty trait list in `derive`");
         }
         MetaList(_, ref titems) => {
-            do titems.rev_iter().fold(in_items) |in_items, &titem| {
+            for titem in titems.iter().rev() {
                 match titem.node {
-                    MetaNameValue(tname, _) |
-                    MetaList(tname, _) |
-                    MetaWord(tname) => {
-                        macro_rules! expand(($func:path) => ($func(cx, titem.span,
-                                                                   titem, in_items)));
-                        match tname.as_slice() {
+                    MetaNameValue(ref tname, _) |
+                    MetaList(ref tname, _) |
+                    MetaWord(ref tname) => {
+                        macro_rules! expand {
+                            ($func:path) => ($func(cx, titem.span, &**titem, item,
+                                                   |i| push(i)))
+                        }
+
+                        match &tname[..] {
                             "Clone" => expand!(clone::expand_deriving_clone),
-                            "DeepClone" => expand!(clone::expand_deriving_deep_clone),
 
-                            "IterBytes" => expand!(iter_bytes::expand_deriving_iter_bytes),
+                            "Hash" => expand!(hash::expand_deriving_hash),
 
-                            "Encodable" => expand!(encodable::expand_deriving_encodable),
-                            "Decodable" => expand!(decodable::expand_deriving_decodable),
+                            "RustcEncodable" => {
+                                expand!(encodable::expand_deriving_rustc_encodable)
+                            }
+                            "RustcDecodable" => {
+                                expand!(decodable::expand_deriving_rustc_decodable)
+                            }
+                            "Encodable" => {
+                                cx.span_warn(titem.span,
+                                             "derive(Encodable) is deprecated \
+                                              in favor of derive(RustcEncodable)");
 
-                            "Eq" => expand!(eq::expand_deriving_eq),
-                            "TotalEq" => expand!(totaleq::expand_deriving_totaleq),
-                            "Ord" => expand!(ord::expand_deriving_ord),
-                            "TotalOrd" => expand!(totalord::expand_deriving_totalord),
+                                expand!(encodable::expand_deriving_encodable)
+                            }
+                            "Decodable" => {
+                                cx.span_warn(titem.span,
+                                             "derive(Decodable) is deprecated \
+                                              in favor of derive(RustcDecodable)");
+
+                                expand!(decodable::expand_deriving_decodable)
+                            }
+
+                            "PartialEq" => expand!(eq::expand_deriving_eq),
+                            "Eq" => expand!(totaleq::expand_deriving_totaleq),
+                            "PartialOrd" => expand!(ord::expand_deriving_ord),
+                            "Ord" => expand!(totalord::expand_deriving_totalord),
 
                             "Rand" => expand!(rand::expand_deriving_rand),
 
-                            "ToStr" => expand!(to_str::expand_deriving_to_str),
-                            "Zero" => expand!(zero::expand_deriving_zero),
+                            "Show" => {
+                                cx.span_warn(titem.span,
+                                             "derive(Show) is deprecated \
+                                              in favor of derive(Debug)");
+
+                                expand!(show::expand_deriving_show)
+                            },
+
+                            "Debug" => expand!(show::expand_deriving_show),
+
                             "Default" => expand!(default::expand_deriving_default),
 
+                            "FromPrimitive" => expand!(primitive::expand_deriving_from_primitive),
+
+                            "Send" => expand!(bounds::expand_deriving_bound),
+                            "Sync" => expand!(bounds::expand_deriving_bound),
+                            "Copy" => expand!(bounds::expand_deriving_bound),
+
                             ref tname => {
-                                cx.span_err(titem.span, fmt!("unknown \
-                                    `deriving` trait: `%s`", *tname));
-                                in_items
+                                cx.span_err(titem.span,
+                                            &format!("unknown `derive` \
+                                                     trait: `{}`",
+                                                    *tname));
                             }
-                        }
+                        };
                     }
                 }
             }

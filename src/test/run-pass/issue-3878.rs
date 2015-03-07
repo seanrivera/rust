@@ -8,9 +8,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[allow(path_statement)];
+#![allow(path_statement)]
+#![allow(unknown_features)]
+#![feature(box_syntax)]
 
 pub fn main() {
-    let y = ~1;
+    let y: Box<_> = box 1;
     y;
 }

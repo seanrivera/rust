@@ -8,14 +8,14 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[deriving(Eq)]
+#[derive(PartialEq, Debug)]
 struct Foo(int);
-#[deriving(Eq)]
+#[derive(PartialEq, Debug)]
 struct Bar(int, int);
 
-fn main() {
-    let f: extern fn(int) -> Foo = Foo;
-    let g: extern fn(int, int) -> Bar = Bar;
+pub fn main() {
+    let f: fn(int) -> Foo = Foo;
+    let g: fn(int, int) -> Bar = Bar;
     assert_eq!(f(42), Foo(42));
     assert_eq!(g(4, 7), Bar(4, 7));
 }

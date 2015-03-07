@@ -8,56 +8,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! Operations and constants for `i32`
+//! Operations and constants for signed 32-bits integers (`i32` type)
 
-use num::{BitCount, CheckedAdd, CheckedSub, CheckedMul};
-use option::{Option, Some, None};
-use unstable::intrinsics;
+#![stable(feature = "rust1", since = "1.0.0")]
+#![doc(primitive = "i32")]
 
-pub use self::generated::*;
+pub use core::i32::{BITS, BYTES, MIN, MAX};
 
-int_module!(i32, 32)
-
-impl BitCount for i32 {
-    /// Counts the number of bits set. Wraps LLVM's `ctpop` intrinsic.
-    #[inline]
-    fn population_count(&self) -> i32 { unsafe { intrinsics::ctpop32(*self) } }
-
-    /// Counts the number of leading zeros. Wraps LLVM's `ctlz` intrinsic.
-    #[inline]
-    fn leading_zeros(&self) -> i32 { unsafe { intrinsics::ctlz32(*self) } }
-
-    /// Counts the number of trailing zeros. Wraps LLVM's `cttz` intrinsic.
-    #[inline]
-    fn trailing_zeros(&self) -> i32 { unsafe { intrinsics::cttz32(*self) } }
-}
-
-impl CheckedAdd for i32 {
-    #[inline]
-    fn checked_add(&self, v: &i32) -> Option<i32> {
-        unsafe {
-            let (x, y) = intrinsics::i32_add_with_overflow(*self, *v);
-            if y { None } else { Some(x) }
-        }
-    }
-}
-
-impl CheckedSub for i32 {
-    #[inline]
-    fn checked_sub(&self, v: &i32) -> Option<i32> {
-        unsafe {
-            let (x, y) = intrinsics::i32_sub_with_overflow(*self, *v);
-            if y { None } else { Some(x) }
-        }
-    }
-}
-
-impl CheckedMul for i32 {
-    #[inline]
-    fn checked_mul(&self, v: &i32) -> Option<i32> {
-        unsafe {
-            let (x, y) = intrinsics::i32_mul_with_overflow(*self, *v);
-            if y { None } else { Some(x) }
-        }
-    }
-}
+int_module! { i32 }

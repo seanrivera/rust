@@ -8,18 +8,20 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-trait A {}
+trait A {
+    fn dummy(&self) { }
+}
 struct B;
 impl A for B {}
 
-struct C<'self> {
-    foo: &'self mut A,
+struct C<'a> {
+    foo: &'a mut (A+'a),
 }
 
 fn foo(a: &mut A) {
     C{ foo: a };
 }
 
-fn main() {
+pub fn main() {
 }
 

@@ -10,13 +10,13 @@
 
 // Test a function that takes/returns a u32.
 
+#[link(name = "rust_test_helpers")]
 extern {
     pub fn rust_dbg_extern_identity_u32(v: u32) -> u32;
 }
 
-#[fixed_stack_segment] #[inline(never)]
 pub fn main() {
     unsafe {
-        assert_eq!(22_u32, rust_dbg_extern_identity_u32(22_u32));
+        assert_eq!(22, rust_dbg_extern_identity_u32(22));
     }
 }

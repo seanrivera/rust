@@ -8,23 +8,22 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::os;
-use std::uint;
+use std::env;
 
 fn main() {
-    let args = os::args();
-    let args = if os::getenv("RUST_BENCH").is_some() {
-        ~[~"", ~"10000000"]
-    } else if args.len() <= 1u {
-        ~[~"", ~"100000"]
+    let args = env::args();
+    let args = if env::var_os("RUST_BENCH").is_some() {
+        vec!("".to_string(), "10000000".to_string())
+    } else if args.len() <= 1 {
+        vec!("".to_string(), "100000".to_string())
     } else {
-        args
+        args.collect()
     };
 
-    let n = from_str::<uint>(args[1]).unwrap();
+    let n = args[1].parse().unwrap();
 
-    for i in range(0u, n) {
-        let x = i.to_str();
-        info!(x);
+    for i in 0..n {
+        let x = i.to_string();
+        println!("{}", x);
     }
 }

@@ -8,11 +8,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![allow(unknown_features)]
+#![feature(box_syntax)]
+
+use std::cell::RefCell;
+
 static S: &'static str = "str";
 
 struct list<T> {
     element: T,
-    next: Option<@mut list<T>>
+    next: Option<Box<RefCell<list<T>>>>
 }
 
 impl<T:'static> list<T> {
@@ -22,7 +27,7 @@ impl<T:'static> list<T> {
             next: None
         };
 
-        self.next = Some(@mut newList);
+        self.next = Some(box RefCell::new(newList));
     }
 }
 
@@ -31,5 +36,5 @@ pub fn main() {
         element: S,
         next: None
     };
-    println(ls.element);
+    println!("{}", ls.element);
 }

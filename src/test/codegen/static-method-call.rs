@@ -8,7 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-struct Struct {
+pub struct Struct {
     field: int
 }
 
@@ -19,6 +19,6 @@ impl Struct {
 }
 
 #[no_mangle]
-fn test(s: &Struct) -> int {
+pub fn test(s: &Struct) -> int {
     s.method()
 }

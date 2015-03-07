@@ -9,9 +9,9 @@
 // except according to those terms.
 
 mod rustrt {
-    use std::libc;
+    extern crate libc;
 
-    #[abi = "cdecl"]
+    #[link(name = "rust_test_helpers")]
     extern {
         pub fn rust_get_test_int() -> libc::intptr_t;
     }

@@ -11,9 +11,8 @@
 
 
 fn test_fn() {
-    type t = @fn() -> int;
     fn ten() -> int { return 10; }
-    let rs: t = { ten };
+    let rs = ten;
     assert!((rs() == 10));
 }
 

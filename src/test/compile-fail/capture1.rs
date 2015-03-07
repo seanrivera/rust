@@ -1,4 +1,3 @@
-// -*- rust -*-
 // Copyright 2012 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
@@ -13,6 +12,6 @@
 // error-pattern: can't capture dynamic environment in a fn item;
 
 fn main() {
-    let bar: int = 5;
-    fn foo() -> int { return bar; }
+    let bar: isize = 5;
+    fn foo() -> isize { return bar; }
 }

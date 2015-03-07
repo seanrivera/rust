@@ -8,33 +8,35 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-struct dtor {
-    x: @mut int,
+#![feature(unsafe_destructor)]
 
+use std::cell::Cell;
+
+struct dtor<'a> {
+    x: &'a Cell<int>,
 }
 
 #[unsafe_destructor]
-impl Drop for dtor {
+impl<'a> Drop for dtor<'a> {
     fn drop(&mut self) {
-        // abuse access to shared mutable state to write this code
-        *self.x -= 1;
+        self.x.set(self.x.get() - 1);
     }
 }
 
 fn unwrap<T>(o: Option<T>) -> T {
     match o {
       Some(v) => v,
-      None => fail!()
+      None => panic!()
     }
 }
 
 pub fn main() {
-    let x = @mut 1;
+    let x = &Cell::new(1);
 
     {
         let b = Some(dtor { x:x });
         let _c = unwrap(b);
     }
 
-    assert_eq!(*x, 0);
+    assert_eq!(x.get(), 0);
 }

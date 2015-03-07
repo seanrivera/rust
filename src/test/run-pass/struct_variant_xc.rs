@@ -1,4 +1,4 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2013-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,12 +8,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// xfail-fast - check-fast doesn't understand aux-build
 // aux-build:struct_variant_xc_aux.rs
-extern mod struct_variant_xc_aux;
+extern crate struct_variant_xc_aux;
 
-use struct_variant_xc_aux::Variant;
+use struct_variant_xc_aux::Enum::StructVariant;
 
-fn main() {
-    let _ = Variant { arg: 1 };
+pub fn main() {
+    let _ = StructVariant { arg: 1 };
 }

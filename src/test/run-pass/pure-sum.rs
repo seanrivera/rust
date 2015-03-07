@@ -10,44 +10,47 @@
 
 // Check that functions can modify local state.
 
-fn sums_to(v: ~[int], sum: int) -> bool {
-    let mut i = 0u;
+#![allow(unknown_features)]
+#![feature(box_syntax)]
+
+fn sums_to(v: Vec<int> , sum: int) -> bool {
+    let mut i = 0;
     let mut sum0 = 0;
     while i < v.len() {
         sum0 += v[i];
-        i += 1u;
+        i += 1;
     }
     return sum0 == sum;
 }
 
-fn sums_to_using_uniq(v: ~[int], sum: int) -> bool {
-    let mut i = 0u;
-    let mut sum0 = ~0;
+fn sums_to_using_uniq(v: Vec<int> , sum: int) -> bool {
+    let mut i = 0;
+    let mut sum0: Box<_> = box 0;
     while i < v.len() {
         *sum0 += v[i];
-        i += 1u;
+        i += 1;
     }
     return *sum0 == sum;
 }
 
-fn sums_to_using_rec(v: ~[int], sum: int) -> bool {
-    let mut i = 0u;
+fn sums_to_using_rec(v: Vec<int> , sum: int) -> bool {
+    let mut i = 0;
     let mut sum0 = F {f: 0};
     while i < v.len() {
         sum0.f += v[i];
-        i += 1u;
+        i += 1;
     }
     return sum0.f == sum;
 }
 
 struct F<T> { f: T }
 
-fn sums_to_using_uniq_rec(v: ~[int], sum: int) -> bool {
-    let mut i = 0u;
-    let mut sum0 = F {f: ~0};
+fn sums_to_using_uniq_rec(v: Vec<int> , sum: int) -> bool {
+    let mut i = 0;
+    let mut sum0 = F::<Box<_>> {f: box 0};
     while i < v.len() {
         *sum0.f += v[i];
-        i += 1u;
+        i += 1;
     }
     return *sum0.f == sum;
 }

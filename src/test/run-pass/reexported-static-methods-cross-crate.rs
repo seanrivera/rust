@@ -1,4 +1,4 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,9 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// xfail-fast
 // aux-build:reexported_static_methods.rs
-extern mod reexported_static_methods;
+extern crate reexported_static_methods;
 
 use reexported_static_methods::Foo;
 use reexported_static_methods::Baz;
@@ -21,5 +20,5 @@ pub fn main() {
     assert_eq!(42, Foo::foo());
     assert_eq!(84, Baz::bar());
     assert!(Boz::boz(1));
-    assert_eq!(~"bort()", Bort::bort());
+    assert_eq!("bort()".to_string(), Bort::bort());
 }

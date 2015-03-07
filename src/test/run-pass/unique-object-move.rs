@@ -10,7 +10,10 @@
 
 // Issue #5192
 
-pub trait EventLoop { }
+#![allow(unknown_features)]
+#![feature(box_syntax)]
+
+pub trait EventLoop { fn foo(&self) {} }
 
 pub struct UvEventLoop {
     uvio: int
@@ -19,6 +22,6 @@ pub struct UvEventLoop {
 impl EventLoop for UvEventLoop { }
 
 pub fn main() {
-    let loop_: ~EventLoop = ~UvEventLoop { uvio: 0 } as ~EventLoop;
+    let loop_: Box<EventLoop> = box UvEventLoop { uvio: 0 } as Box<EventLoop>;
     let _loop2_ = loop_;
 }

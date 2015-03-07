@@ -1,4 +1,4 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -7,57 +7,92 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
+use self::WhichLine::*;
 
-use std::io;
+use std::fs::File;
+use std::io::BufReader;
+use std::io::prelude::*;
+use std::path::Path;
 
-pub struct ExpectedError { line: uint, kind: ~str, msg: ~str }
-
-// Load any test directives embedded in the file
-pub fn load_errors(testfile: &Path) -> ~[ExpectedError] {
-    let mut error_patterns = ~[];
-    let rdr = io::file_reader(testfile).unwrap();
-    let mut line_num = 1u;
-    while !rdr.eof() {
-        let ln = rdr.read_line();
-        error_patterns.push_all_move(parse_expected(line_num, ln));
-        line_num += 1u;
-    }
-    return error_patterns;
+pub struct ExpectedError {
+    pub line: uint,
+    pub kind: String,
+    pub msg: String,
 }
 
-fn parse_expected(line_num: uint, line: ~str) -> ~[ExpectedError] {
-    let error_tag = ~"//~";
-    let mut idx;
-    match line.find_str(error_tag) {
-      None => return ~[],
-      Some(nn) => { idx = (nn as uint) + error_tag.len(); }
-    }
+#[derive(PartialEq, Debug)]
+enum WhichLine { ThisLine, FollowPrevious(uint), AdjustBackward(uint) }
 
-    // "//~^^^ kind msg" denotes a message expected
-    // three lines above current line:
-    let mut adjust_line = 0u;
-    let len = line.len();
-    while idx < len && line[idx] == ('^' as u8) {
-        adjust_line += 1u;
-        idx += 1u;
-    }
+/// Looks for either "//~| KIND MESSAGE" or "//~^^... KIND MESSAGE"
+/// The former is a "follow" that inherits its target from the preceding line;
+/// the latter is an "adjusts" that goes that many lines up.
+///
+/// Goal is to enable tests both like: //~^^^ ERROR go up three
+/// and also //~^ ERROR message one for the preceding line, and
+///          //~| ERROR message two for that same line.
+// Load any test directives embedded in the file
+pub fn load_errors(testfile: &Path) -> Vec<ExpectedError> {
+    let rdr = BufReader::new(File::open(testfile).unwrap());
 
-    // Extract kind:
-    while idx < len && line[idx] == (' ' as u8) { idx += 1u; }
-    let start_kind = idx;
-    while idx < len && line[idx] != (' ' as u8) { idx += 1u; }
+    // `last_nonfollow_error` tracks the most recently seen
+    // line with an error template that did not use the
+    // follow-syntax, "//~| ...".
+    //
+    // (pnkfelix could not find an easy way to compose Iterator::scan
+    // and Iterator::filter_map to pass along this information into
+    // `parse_expected`. So instead I am storing that state here and
+    // updating it in the map callback below.)
+    let mut last_nonfollow_error = None;
 
-    // FIXME: #4318 Instead of to_ascii and to_str_ascii, could use
-    // to_ascii_consume and to_str_consume to not do a unnecessary copy.
-    let kind = line.slice(start_kind, idx);
-    let kind = kind.to_ascii().to_lower().to_str_ascii();
+    rdr.lines().enumerate().filter_map(|(line_no, ln)| {
+        parse_expected(last_nonfollow_error,
+                       line_no + 1,
+                       &ln.unwrap())
+            .map(|(which, error)| {
+                match which {
+                    FollowPrevious(_) => {}
+                    _ => last_nonfollow_error = Some(error.line),
+                }
+                error
+            })
+    }).collect()
+}
 
-    // Extract msg:
-    while idx < len && line[idx] == (' ' as u8) { idx += 1u; }
-    let msg = line.slice(idx, len).to_owned();
+fn parse_expected(last_nonfollow_error: Option<uint>,
+                  line_num: uint,
+                  line: &str) -> Option<(WhichLine, ExpectedError)> {
+    let start = match line.find("//~") { Some(i) => i, None => return None };
+    let (follow, adjusts) = if line.char_at(start + 3) == '|' {
+        (true, 0)
+    } else {
+        (false, line[start + 3..].chars().take_while(|c| *c == '^').count())
+    };
+    let kind_start = start + 3 + adjusts + (follow as usize);
+    let letters = line[kind_start..].chars();
+    let kind = letters.skip_while(|c| c.is_whitespace())
+                      .take_while(|c| !c.is_whitespace())
+                      .map(|c| c.to_lowercase())
+                      .collect::<String>();
+    let letters = line[kind_start..].chars();
+    let msg = letters.skip_while(|c| c.is_whitespace())
+                     .skip_while(|c| !c.is_whitespace())
+                     .collect::<String>().trim().to_string();
 
-    debug!("line=%u kind=%s msg=%s", line_num - adjust_line, kind, msg);
+    let (which, line) = if follow {
+        assert!(adjusts == 0, "use either //~| or //~^, not both.");
+        let line = last_nonfollow_error.unwrap_or_else(|| {
+            panic!("encountered //~| without preceding //~^ line.")
+        });
+        (FollowPrevious(line), line)
+    } else {
+        let which =
+            if adjusts > 0 { AdjustBackward(adjusts) } else { ThisLine };
+        let line = line_num - adjusts;
+        (which, line)
+    };
 
-    return ~[ExpectedError{line: line_num - adjust_line, kind: kind,
-                           msg: msg}];
+    debug!("line={} which={:?} kind={:?} msg={:?}", line_num, which, kind, msg);
+    Some((which, ExpectedError { line: line,
+                                 kind: kind,
+                                 msg: msg, }))
 }

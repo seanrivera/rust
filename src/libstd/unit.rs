@@ -1,4 +1,4 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,53 +8,38 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-/*!
+#![doc(primitive = "unit")]
+#![stable(feature = "rust1", since = "1.0.0")]
 
-Functions for the unit type.
-
-*/
-
-#[cfg(not(test))]
-use prelude::*;
-#[cfg(not(test))]
-use num::Zero;
-
-#[cfg(not(test))]
-impl Eq for () {
-    #[inline]
-    fn eq(&self, _other: &()) -> bool { true }
-    #[inline]
-    fn ne(&self, _other: &()) -> bool { false }
-}
-
-#[cfg(not(test))]
-impl Ord for () {
-    #[inline]
-    fn lt(&self, _other: &()) -> bool { false }
-}
-
-#[cfg(not(test))]
-impl TotalOrd for () {
-    #[inline]
-    fn cmp(&self, _other: &()) -> Ordering { Equal }
-}
-
-#[cfg(not(test))]
-impl TotalEq for () {
-    #[inline]
-    fn equals(&self, _other: &()) -> bool { true }
-}
-
-#[cfg(not(test))]
-impl Default for () {
-    #[inline]
-    fn default() -> () { () }
-}
-
-#[cfg(not(test))]
-impl Zero for () {
-    #[inline]
-    fn zero() -> () { () }
-    #[inline]
-    fn is_zero(&self) -> bool { true }
-}
+//! The `()` type, sometimes called "unit" or "nil".
+//!
+//! The `()` type has exactly one value `()`, and is used when there
+//! is no other meaningful value that could be returned. `()` is most
+//! commonly seen implicitly: functions without a `-> ...` implicitly
+//! have return type `()`, that is, these are equivalent:
+//!
+//! ```rust
+//! fn long() -> () {}
+//!
+//! fn short() {}
+//! ```
+//!
+//! The semicolon `;` can be used to discard the result of an
+//! expression at the end of a block, making the expression (and thus
+//! the block) evaluate to `()`. For example,
+//!
+//! ```rust
+//! fn returns_i64() -> i64 {
+//!     1i64
+//! }
+//! fn returns_unit() {
+//!     1i64;
+//! }
+//!
+//! let is_i64 = {
+//!     returns_i64()
+//! };
+//! let is_unit = {
+//!     returns_i64();
+//! };
+//! ```

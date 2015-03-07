@@ -11,8 +11,8 @@
 // Issue #7988
 // Transmuting non-immediate type to immediate type
 
-fn main() {
+pub fn main() {
     unsafe {
-        ::std::cast::transmute::<[int,..1],int>([1])
+        ::std::mem::transmute::<[int; 1],int>([1])
     };
 }

@@ -8,9 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[link(name = "numeric",
-       vers = "0.1")];
-#[crate_type = "lib"];
+#![crate_name="numeric"]
+#![crate_type = "lib"]
 
 pub trait Trig<T> {
     fn sin(&self) -> T;

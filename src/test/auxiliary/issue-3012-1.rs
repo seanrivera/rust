@@ -8,11 +8,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[link(name="socketlib", vers="0.0")];
-#[crate_type = "lib"];
+#![crate_name="socketlib"]
+#![crate_type = "lib"]
 
 pub mod socket {
-    use std::libc;
+    extern crate libc;
 
     pub struct socket_handle {
         sockfd: libc::c_int,

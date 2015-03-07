@@ -1,4 +1,4 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -11,20 +11,16 @@
 // Test a foreign function that accepts and returns a struct
 // by value.
 
-// xfail-fast This works standalone on windows but not with check-fast.
-// possibly because there is another test that uses this extern fn but gives it
-// a different signature
-
-#[deriving(Eq)]
-struct TwoU64s {
+#[derive(Copy, PartialEq, Debug)]
+pub struct TwoU64s {
     one: u64, two: u64
 }
 
+#[link(name = "rust_test_helpers")]
 extern {
     pub fn rust_dbg_extern_identity_TwoU64s(v: TwoU64s) -> TwoU64s;
 }
 
-#[fixed_stack_segment] #[inline(never)]
 pub fn main() {
     unsafe {
         let x = TwoU64s {one: 22, two: 23};

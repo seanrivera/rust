@@ -12,10 +12,12 @@
 // Issue Name: Unused move causes a crash
 // Abstract: zero-fill to block after drop
 
-#[allow(path_statement)];
+#![allow(path_statement)]
+#![allow(unknown_features)]
+#![feature(box_syntax)]
 
 pub fn main()
 {
-    let y = ~1;
+    let y: Box<_> = box 1;
     y;
 }

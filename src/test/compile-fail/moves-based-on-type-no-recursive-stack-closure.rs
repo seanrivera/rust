@@ -12,33 +12,37 @@
 // bound must be noncopyable. For details see
 // http://smallcultfollowing.com/babysteps/blog/2013/04/30/the-case-of-the-recurring-closure/
 
-struct R<'self> {
+#![feature(unboxed_closures)]
+
+struct R<'a> {
     // This struct is needed to create the
     // otherwise infinite type of a fn that
     // accepts itself as argument:
-    c: &'self fn(&R, bool)
+    c: Box<FnMut(&mut R, bool) + 'a>
 }
 
 fn innocent_looking_victim() {
-    let mut x = Some(~"hello");
-    do conspirator |f, writer| {
+    let mut x = Some("hello".to_string());
+    conspirator(|f, writer| {
         if writer {
             x = None;
         } else {
             match x {
                 Some(ref msg) => {
                     (f.c)(f, true);
-                    printfln!(msg);
+                    //~^ ERROR: cannot borrow `*f` as mutable more than once at a time
+                    println!("{}", msg);
                 },
-                None => fail!("oops"),
+                None => panic!("oops"),
             }
         }
-    }
+    })
 }
 
-fn conspirator(f: &fn(&R, bool)) {
-    let r = R {c: f};
-    f(&r, false) //~ ERROR use of moved value
+fn conspirator<F>(mut f: F) where F: FnMut(&mut R, bool) {
+    // FIXME (#22405): Replace `Box::new` with `box` here when/if possible.
+    let mut r = R {c: Box::new(f)};
+    f(&mut r, false) //~ ERROR use of moved value
 }
 
 fn main() { innocent_looking_victim() }

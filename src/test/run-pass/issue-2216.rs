@@ -21,12 +21,12 @@ pub fn main() {
                     break 'bar;
                 }
             }
-            loop 'foo;
+            continue 'foo;
         }
         x = 42;
         break;
     }
 
-    error!("%?", x);
+    println!("{}", x);
     assert_eq!(x, 42);
 }

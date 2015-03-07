@@ -1,4 +1,4 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,61 +8,48 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use common::config;
-
-use std::io;
-use std::os::getenv;
+use std::env;
+use common::Config;
 
 /// Conversion table from triple OS name to Rust SYSNAME
-static OS_TABLE: &'static [(&'static str, &'static str)] = &[
-    ("mingw32", "win32"),
-    ("win32", "win32"),
+const OS_TABLE: &'static [(&'static str, &'static str)] = &[
+    ("mingw32", "windows"),
+    ("win32", "windows"),
+    ("windows", "windows"),
     ("darwin", "macos"),
     ("android", "android"),
     ("linux", "linux"),
     ("freebsd", "freebsd"),
+    ("dragonfly", "dragonfly"),
+    ("bitrig", "bitrig"),
+    ("openbsd", "openbsd"),
 ];
 
 pub fn get_os(triple: &str) -> &'static str {
-    for &(triple_os, os) in OS_TABLE.iter() {
+    for &(triple_os, os) in OS_TABLE {
         if triple.contains(triple_os) {
             return os
         }
     }
-    fail!("Cannot determine OS from triple");
+    panic!("Cannot determine OS from triple");
 }
 
-pub fn make_new_path(path: &str) -> ~str {
-
+pub fn make_new_path(path: &str) -> String {
+    assert!(cfg!(windows));
     // Windows just uses PATH as the library search path, so we have to
     // maintain the current value while adding our own
-    match getenv(lib_path_env_var()) {
-      Some(curr) => {
-        fmt!("%s%s%s", path, path_div(), curr)
-      }
-      None => path.to_str()
+    match env::var(lib_path_env_var()) {
+        Ok(curr) => {
+            format!("{}{}{}", path, path_div(), curr)
+        }
+        Err(..) => path.to_string()
     }
 }
 
-#[cfg(target_os = "linux")]
-#[cfg(target_os = "freebsd")]
-pub fn lib_path_env_var() -> ~str { ~"LD_LIBRARY_PATH" }
+pub fn lib_path_env_var() -> &'static str { "PATH" }
+fn path_div() -> &'static str { ";" }
 
-#[cfg(target_os = "macos")]
-pub fn lib_path_env_var() -> ~str { ~"DYLD_LIBRARY_PATH" }
-
-#[cfg(target_os = "win32")]
-pub fn lib_path_env_var() -> ~str { ~"PATH" }
-
-#[cfg(target_os = "linux")]
-#[cfg(target_os = "macos")]
-#[cfg(target_os = "freebsd")]
-pub fn path_div() -> ~str { ~":" }
-
-#[cfg(target_os = "win32")]
-pub fn path_div() -> ~str { ~";" }
-
-pub fn logv(config: &config, s: ~str) {
-    debug!("%s", s);
-    if config.verbose { io::println(s); }
+pub fn logv(config: &Config, s: String) {
+    debug!("{}", s);
+    if config.verbose { println!("{}", s); }
 }

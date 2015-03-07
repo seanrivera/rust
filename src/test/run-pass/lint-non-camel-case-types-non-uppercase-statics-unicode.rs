@@ -1,4 +1,4 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2013-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -7,9 +7,13 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
+//
+// ignore-lexer-test FIXME #15679
 
-#[forbid(non_camel_case_types)];
-#[forbid(non_uppercase_statics)];
+
+#![forbid(non_camel_case_types)]
+#![forbid(non_upper_case_globals)]
+#![feature(non_ascii_idents)]
 
 // Some scripts (e.g. hiragana) don't have a concept of
 // upper/lowercase
@@ -18,4 +22,4 @@ struct ヒ;
 
 static ラ: uint = 0;
 
-fn main() {}
+pub fn main() {}

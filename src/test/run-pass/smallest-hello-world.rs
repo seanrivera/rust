@@ -1,4 +1,4 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2013-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,35 +8,30 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// xfail-test - FIXME(#8538) some kind of problem linking induced by extern "C" fns that I do not understand
-// xfail-fast - windows doesn't like this
+// Smallest "hello world" with a libc runtime
 
-// Smallest hello world with no runtime
+#![feature(intrinsics, lang_items, start, no_std)]
+#![no_std]
 
-#[no_std];
+extern crate libc;
 
-// This is an unfortunate thing to have to do on linux :(
-#[cfg(target_os = "linux")]
-#[doc(hidden)]
-pub mod linkhack {
-    #[link_args="-lrustrt -lrt"]
-    extern {}
-}
+extern { fn puts(s: *const u8); }
+extern "rust-intrinsic" { fn transmute<T, U>(t: T) -> U; }
 
-extern {
-    fn puts(s: *u8);
-}
-
-extern "rust-intrinsic" {
-    fn transmute<T, U>(t: T) -> U;
-}
+#[lang = "stack_exhausted"] extern fn stack_exhausted() {}
+#[lang = "eh_personality"] extern fn eh_personality() {}
+#[lang = "panic_fmt"] fn panic_fmt() -> ! { loop {} }
 
 #[start]
-fn main(_: int, _: **u8, _: *u8) -> int {
+#[no_stack_check]
+fn main(_: int, _: *const *const u8) -> int {
     unsafe {
-        let (ptr, _): (*u8, uint) = transmute("Hello!");
+        let (ptr, _): (*const u8, uint) = transmute("Hello!\0");
         puts(ptr);
     }
     return 0;
 }
 
+#[cfg(target_os = "android")]
+#[link(name="gcc")]
+extern { }

@@ -11,7 +11,8 @@
 // Test library crate for cross-crate usages of traits inheriting
 // from the builtin kinds. Mostly tests metadata correctness.
 
-#[crate_type="lib"];
+#![crate_type="lib"]
 
-pub trait RequiresFreeze : Freeze { }
-pub trait RequiresRequiresFreezeAndSend : RequiresFreeze + Send { }
+pub trait RequiresShare : Sync { }
+pub trait RequiresRequiresShareAndSend : RequiresShare + Send { }
+pub trait RequiresCopy : Copy { }

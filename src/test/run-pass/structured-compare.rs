@@ -10,9 +10,10 @@
 
 
 
+#[derive(Copy, Debug)]
 enum foo { large, small, }
 
-impl Eq for foo {
+impl PartialEq for foo {
     fn eq(&self, other: &foo) -> bool {
         ((*self) as uint) == ((*other) as uint)
     }
@@ -28,9 +29,9 @@ pub fn main() {
     assert!((a <= (1, 2, 4)));
     assert!(((1, 2, 4) > a));
     assert!(((1, 2, 4) >= a));
-    let x = large;
-    let y = small;
+    let x = foo::large;
+    let y = foo::small;
     assert!((x != y));
-    assert_eq!(x, large);
-    assert!((x != small));
+    assert_eq!(x, foo::large);
+    assert!((x != foo::small));
 }

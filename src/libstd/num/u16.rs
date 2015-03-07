@@ -8,42 +8,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! Operations and constants for `u16`
+//! Operations and constants for unsigned 16-bits integers (`u16` type)
 
-use num::{CheckedAdd, CheckedSub, CheckedMul};
-use option::{Option, Some, None};
-use unstable::intrinsics;
+#![stable(feature = "rust1", since = "1.0.0")]
+#![doc(primitive = "u16")]
 
-pub use self::generated::*;
+pub use core::u16::{BITS, BYTES, MIN, MAX};
 
-uint_module!(u16, i16, 16)
-
-impl CheckedAdd for u16 {
-    #[inline]
-    fn checked_add(&self, v: &u16) -> Option<u16> {
-        unsafe {
-            let (x, y) = intrinsics::u16_add_with_overflow(*self, *v);
-            if y { None } else { Some(x) }
-        }
-    }
-}
-
-impl CheckedSub for u16 {
-    #[inline]
-    fn checked_sub(&self, v: &u16) -> Option<u16> {
-        unsafe {
-            let (x, y) = intrinsics::u16_sub_with_overflow(*self, *v);
-            if y { None } else { Some(x) }
-        }
-    }
-}
-
-impl CheckedMul for u16 {
-    #[inline]
-    fn checked_mul(&self, v: &u16) -> Option<u16> {
-        unsafe {
-            let (x, y) = intrinsics::u16_mul_with_overflow(*self, *v);
-            if y { None } else { Some(x) }
-        }
-    }
-}
+uint_module! { u16 }

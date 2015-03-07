@@ -1,6 +1,5 @@
-// xfail-fast
 
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -11,9 +10,7 @@
 // except according to those terms.
 
 mod base {
-    use std::io;
-
-    pub trait HasNew<T> {
+    pub trait HasNew {
         fn new() -> Self;
     }
 
@@ -21,9 +18,9 @@ mod base {
         dummy: (),
     }
 
-    impl ::base::HasNew<Foo> for Foo {
+    impl ::base::HasNew for Foo {
         fn new() -> Foo {
-            println("Foo");
+            println!("Foo");
             Foo { dummy: () }
         }
     }
@@ -32,15 +29,15 @@ mod base {
         dummy: (),
     }
 
-    impl ::base::HasNew<Bar> for Bar {
+    impl ::base::HasNew for Bar {
         fn new() -> Bar {
-            io::println("Bar");
+            println!("Bar");
             Bar { dummy: () }
         }
     }
 }
 
 pub fn main() {
-    let _f: base::Foo = base::HasNew::<base::Foo>::new();
-    let _b: base::Bar = base::HasNew::<base::Bar>::new();
+    let _f: base::Foo = base::HasNew::new();
+    let _b: base::Bar = base::HasNew::new();
 }

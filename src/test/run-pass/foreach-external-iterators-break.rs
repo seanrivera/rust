@@ -8,10 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-fn main() {
-    let x = [1,..100];
+pub fn main() {
+    let x = [1; 100];
     let mut y = 0;
-    for i in x.iter() {
+    for i in &x[..] {
         if y > 10 {
             break;
         }

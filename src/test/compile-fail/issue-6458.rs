@@ -8,13 +8,15 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-pub struct TypeWithState<State>;
+use std::marker;
+
+pub struct TypeWithState<State>(marker::PhantomData<State>);
 pub struct MyState;
 
 pub fn foo<State>(_: TypeWithState<State>) {}
 
 pub fn bar() {
-   foo(TypeWithState); //~ ERROR: cannot determine a type for this expression: unconstrained type
+   foo(TypeWithState(marker::PhantomData));  //~ ERROR type annotations required
 }
 
 fn main() {

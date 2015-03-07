@@ -18,15 +18,17 @@ extern fn uintret() -> uint { 22 }
 extern fn uintvoidret(_x: uint) {}
 
 extern fn uintuintuintuintret(x: uint, y: uint, z: uint) -> uint { x+y+z }
+type uintuintuintuintret = extern fn(uint,uint,uint) -> uint;
 
-fn main() {
-    assert_eq!(voidret1, voidret1);
-    assert!(voidret1 != voidret2);
+pub fn main() {
+    assert!(voidret1 as extern fn() == voidret1 as extern fn());
+    assert!(voidret1 as extern fn() != voidret2 as extern fn());
 
-    assert_eq!(uintret, uintret);
+    assert!(uintret as extern fn() -> uint == uintret as extern fn() -> uint);
 
-    assert_eq!(uintvoidret, uintvoidret);
+    assert!(uintvoidret as extern fn(uint) == uintvoidret as extern fn(uint));
 
-    assert_eq!(uintuintuintuintret, uintuintuintuintret);
+    assert!(uintuintuintuintret as uintuintuintuintret ==
+            uintuintuintuintret as uintuintuintuintret);
 }
 

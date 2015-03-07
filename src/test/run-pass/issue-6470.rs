@@ -8,18 +8,14 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// xfail-test
-
 pub mod Bar {
     pub struct Foo {
         v: int,
     }
 
     extern {
-        #[rust_stack]
-        pub fn foo(v: *Foo) -> Foo;
+        pub fn foo(v: *const Foo) -> Foo;
     }
 }
 
-fn main() { }
-
+pub fn main() { }

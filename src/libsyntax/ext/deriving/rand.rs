@@ -9,143 +9,166 @@
 // except according to those terms.
 
 use ast;
-use ast::{MetaItem, item, Expr, Ident};
+use ast::{MetaItem, Item, Expr};
 use codemap::Span;
 use ext::base::ExtCtxt;
 use ext::build::{AstBuilder};
 use ext::deriving::generic::*;
+use ext::deriving::generic::ty::*;
+use ptr::P;
 
-use std::vec;
+pub fn expand_deriving_rand<F>(cx: &mut ExtCtxt,
+                               span: Span,
+                               mitem: &MetaItem,
+                               item: &Item,
+                               push: F) where
+    F: FnOnce(P<Item>),
+{
+    cx.span_warn(span,
+                 "`#[derive(Rand)]` is deprecated in favour of `#[derive_Rand]` from \
+                  `rand_macros` on crates.io");
 
-pub fn expand_deriving_rand(cx: @ExtCtxt,
-                            span: Span,
-                            mitem: @MetaItem,
-                            in_items: ~[@item])
-    -> ~[@item] {
+    if !cx.use_std {
+        // FIXME(#21880): lift this requirement.
+        cx.span_err(span, "this trait cannot be derived with #![no_std]");
+        return;
+    }
+
     let trait_def = TraitDef {
-        path: Path::new(~["std", "rand", "Rand"]),
-        additional_bounds: ~[],
+        span: span,
+        attributes: Vec::new(),
+        path: path!(std::rand::Rand),
+        additional_bounds: Vec::new(),
         generics: LifetimeBounds::empty(),
-        methods: ~[
+        methods: vec!(
             MethodDef {
                 name: "rand",
                 generics: LifetimeBounds {
-                    lifetimes: ~[],
-                    bounds: ~[("R",
-                               ~[ Path::new(~["std", "rand", "Rng"]) ])]
+                    lifetimes: Vec::new(),
+                    bounds: vec!(("R",
+                                  vec!( path!(std::rand::Rng) ))),
                 },
                 explicit_self: None,
-                args: ~[
-                    Ptr(~Literal(Path::new_local("R")),
+                args: vec!(
+                    Ptr(box Literal(Path::new_local("R")),
                         Borrowed(None, ast::MutMutable))
-                ],
-                ret_ty: Self,
-                const_nonmatching: false,
-                combine_substructure: rand_substructure
+                ),
+                ret_ty: Self_,
+                attributes: Vec::new(),
+                combine_substructure: combine_substructure(Box::new(|a, b, c| {
+                    rand_substructure(a, b, c)
+                }))
             }
-        ]
+        ),
+        associated_types: Vec::new(),
     };
-    trait_def.expand(cx, span, mitem, in_items)
+    trait_def.expand(cx, mitem, item, push)
 }
 
-fn rand_substructure(cx: @ExtCtxt, span: Span, substr: &Substructure) -> @Expr {
+fn rand_substructure(cx: &mut ExtCtxt, trait_span: Span, substr: &Substructure) -> P<Expr> {
     let rng = match substr.nonself_args {
-        [rng] => ~[ rng ],
-        _ => cx.bug("Incorrect number of arguments to `rand` in `deriving(Rand)`")
+        [ref rng] => rng,
+        _ => cx.bug("Incorrect number of arguments to `rand` in `derive(Rand)`")
     };
-    let rand_ident = ~[
+    let rand_ident = vec!(
         cx.ident_of("std"),
         cx.ident_of("rand"),
         cx.ident_of("Rand"),
         cx.ident_of("rand")
-    ];
-    let rand_call = || {
+    );
+    let rand_call = |cx: &mut ExtCtxt, span| {
         cx.expr_call_global(span,
                             rand_ident.clone(),
-                            ~[ rng[0] ])
+                            vec!(rng.clone()))
     };
 
     return match *substr.fields {
         StaticStruct(_, ref summary) => {
-            rand_thing(cx, span, substr.type_ident, summary, rand_call)
+            let path = cx.path_ident(trait_span, substr.type_ident);
+            rand_thing(cx, trait_span, path, summary, rand_call)
         }
         StaticEnum(_, ref variants) => {
             if variants.is_empty() {
-                cx.span_fatal(span, "`Rand` cannot be derived for enums with no variants");
+                cx.span_err(trait_span, "`Rand` cannot be derived for enums with no variants");
+                // let compilation continue
+                return cx.expr_usize(trait_span, 0);
             }
 
-            let variant_count = cx.expr_uint(span, variants.len());
+            let variant_count = cx.expr_usize(trait_span, variants.len());
 
-            let rand_name = cx.path_all(span,
+            let rand_name = cx.path_all(trait_span,
                                         true,
                                         rand_ident.clone(),
-                                        None,
-                                        ~[]);
+                                        Vec::new(),
+                                        Vec::new(),
+                                        Vec::new());
             let rand_name = cx.expr_path(rand_name);
 
-            // ::std::rand::Rand::rand(rng)
-            let rv_call = cx.expr_call(span,
+            // ::rand::Rand::rand(rng)
+            let rv_call = cx.expr_call(trait_span,
                                        rand_name,
-                                       ~[ rng[0] ]);
+                                       vec!(rng.clone()));
 
-            // need to specify the uint-ness of the random number
-            let uint_ty = cx.ty_ident(span, cx.ident_of("uint"));
+            // need to specify the usize-ness of the random number
+            let usize_ty = cx.ty_ident(trait_span, cx.ident_of("usize"));
             let value_ident = cx.ident_of("__value");
-            let let_statement = cx.stmt_let_typed(span,
+            let let_statement = cx.stmt_let_typed(trait_span,
                                                   false,
                                                   value_ident,
-                                                  uint_ty,
+                                                  usize_ty,
                                                   rv_call);
 
             // rand() % variants.len()
-            let value_ref = cx.expr_ident(span, value_ident);
-            let rand_variant = cx.expr_binary(span,
+            let value_ref = cx.expr_ident(trait_span, value_ident);
+            let rand_variant = cx.expr_binary(trait_span,
                                               ast::BiRem,
                                               value_ref,
                                               variant_count);
 
-            let mut arms = do variants.iter().enumerate().map |(i, id_sum)| {
-                let i_expr = cx.expr_uint(span, i);
-                let pat = cx.pat_lit(span, i_expr);
+            let mut arms = variants.iter().enumerate().map(|(i, &(ident, v_span, ref summary))| {
+                let i_expr = cx.expr_usize(v_span, i);
+                let pat = cx.pat_lit(v_span, i_expr);
 
-                match *id_sum {
-                    (ident, ref summary) => {
-                        cx.arm(span,
-                               ~[ pat ],
-                               rand_thing(cx, span, ident, summary, || rand_call()))
-                    }
-                }
-            }.collect::<~[ast::Arm]>();
+                let path = cx.path(v_span, vec![substr.type_ident, ident]);
+                let thing = rand_thing(cx, v_span, path, summary, |cx, sp| rand_call(cx, sp));
+                cx.arm(v_span, vec!( pat ), thing)
+            }).collect::<Vec<ast::Arm> >();
 
             // _ => {} at the end. Should never occur
-            arms.push(cx.arm_unreachable(span));
+            arms.push(cx.arm_unreachable(trait_span));
 
-            let match_expr = cx.expr_match(span, rand_variant, arms);
+            let match_expr = cx.expr_match(trait_span, rand_variant, arms);
 
-            let block = cx.block(span, ~[ let_statement ], Some(match_expr));
+            let block = cx.block(trait_span, vec!( let_statement ), Some(match_expr));
             cx.expr_block(block)
         }
-        _ => cx.bug("Non-static method in `deriving(Rand)`")
+        _ => cx.bug("Non-static method in `derive(Rand)`")
     };
 
-    fn rand_thing(cx: @ExtCtxt, span: Span,
-                  ctor_ident: Ident,
-                  summary: &Either<uint, ~[Ident]>,
-                  rand_call: &fn() -> @Expr) -> @Expr {
+    fn rand_thing<F>(cx: &mut ExtCtxt,
+                     trait_span: Span,
+                     ctor_path: ast::Path,
+                     summary: &StaticFields,
+                     mut rand_call: F)
+                     -> P<Expr> where
+        F: FnMut(&mut ExtCtxt, Span) -> P<Expr>,
+    {
+        let path = cx.expr_path(ctor_path.clone());
         match *summary {
-            Left(count) => {
-                if count == 0 {
-                    cx.expr_ident(span, ctor_ident)
+            Unnamed(ref fields) => {
+                if fields.is_empty() {
+                    path
                 } else {
-                    let exprs = vec::from_fn(count, |_| rand_call());
-                    cx.expr_call_ident(span, ctor_ident, exprs)
+                    let exprs = fields.iter().map(|span| rand_call(cx, *span)).collect();
+                    cx.expr_call(trait_span, path, exprs)
                 }
             }
-            Right(ref fields) => {
-                let rand_fields = do fields.map |ident| {
-                    cx.field_imm(span, *ident, rand_call())
-                };
-                cx.expr_struct_ident(span, ctor_ident, rand_fields)
+            Named(ref fields) => {
+                let rand_fields = fields.iter().map(|&(ident, span)| {
+                    let e = rand_call(cx, span);
+                    cx.field_imm(span, ident, e)
+                }).collect();
+                cx.expr_struct(trait_span, ctor_path, rand_fields)
             }
         }
     }

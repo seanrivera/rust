@@ -8,7 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::util;
+
+use std::cell::Cell;
+use std::mem::swap;
 
 // Just a grab bag of stuff that you wouldn't want to actually write.
 
@@ -20,11 +22,13 @@ fn funny() {
 }
 
 fn what() {
-    fn the(x: @mut bool) { return while !*x { *x = true; }; }
-    let i = @mut false;
+    fn the(x: &Cell<bool>) {
+        return while !x.get() { x.set(true); };
+    }
+    let i = &Cell::new(false);
     let dont = {||the(i)};
     dont();
-    assert!((*i));
+    assert!((i.get()));
 }
 
 fn zombiejesus() {
@@ -50,28 +54,28 @@ fn zombiejesus() {
 }
 
 fn notsure() {
-    let mut _x;
+    let mut _x: int;
     let mut _y = (_x = 0) == (_x = 0);
     let mut _z = (_x = 0) < (_x = 0);
     let _a = (_x += 0) == (_x = 0);
-    let _b = util::swap(&mut _y, &mut _z) == util::swap(&mut _y, &mut _z);
+    let _b = swap(&mut _y, &mut _z) == swap(&mut _y, &mut _z);
 }
 
 fn canttouchthis() -> uint {
     fn p() -> bool { true }
     let _a = (assert!((true)) == (assert!(p())));
     let _c = (assert!((p())) == ());
-    let _b: bool = (info!("%d", 0) == (return 0u));
+    let _b: bool = (println!("{}", 0) == (return 0));
 }
 
 fn angrydome() {
     loop { if break { } }
     let mut i = 0;
-    loop { i += 1; if i == 1 { match (loop) { 1 => { }, _ => fail!("wat") } }
+    loop { i += 1; if i == 1 { match (continue) { 1 => { }, _ => panic!("wat") } }
       break; }
 }
 
-fn evil_lincoln() { let _evil = info!("lincoln"); }
+fn evil_lincoln() { let _evil = println!("lincoln"); }
 
 pub fn main() {
     strange();

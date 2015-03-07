@@ -14,12 +14,11 @@ pub type SIZE_T = u32;
 pub type LPVOID = uint;
 pub type BOOL = u8;
 
-#[cfg(target_os = "win32")]
+#[cfg(windows)]
 mod kernel32 {
     use super::{HANDLE, DWORD, SIZE_T, LPVOID, BOOL};
 
-    #[abi = "stdcall"]
-    extern "stdcall" {
+    extern "system" {
         pub fn GetProcessHeap() -> HANDLE;
         pub fn HeapAlloc(hHeap: HANDLE, dwFlags: DWORD, dwBytes: SIZE_T)
                       -> LPVOID;
@@ -28,18 +27,14 @@ mod kernel32 {
 }
 
 
-#[cfg(target_os = "win32")]
-#[fixed_stack_segment]
+#[cfg(windows)]
 pub fn main() {
     let heap = unsafe { kernel32::GetProcessHeap() };
-    let mem = unsafe { kernel32::HeapAlloc(heap, 0u32, 100u32) };
-    assert!(mem != 0u);
-    let res = unsafe { kernel32::HeapFree(heap, 0u32, mem) };
-    assert!(res != 0u8);
+    let mem = unsafe { kernel32::HeapAlloc(heap, 0, 100) };
+    assert!(mem != 0);
+    let res = unsafe { kernel32::HeapFree(heap, 0, mem) };
+    assert!(res != 0);
 }
 
-#[cfg(target_os = "macos")]
-#[cfg(target_os = "linux")]
-#[cfg(target_os = "freebsd")]
-#[cfg(target_os = "android")]
+#[cfg(not(windows))]
 pub fn main() { }

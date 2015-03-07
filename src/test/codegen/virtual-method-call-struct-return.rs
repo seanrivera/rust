@@ -8,16 +8,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-struct Stuff {
+pub struct Stuff {
   a: int,
   b: f64
 }
 
-trait Trait {
+pub trait Trait {
     fn method(&self) -> Stuff;
 }
 
 #[no_mangle]
-fn test(t: &Trait) -> int {
+pub fn test(t: &Trait) -> int {
     t.method().a
 }

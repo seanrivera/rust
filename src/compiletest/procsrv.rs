@@ -8,62 +8,89 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::os;
-use std::run;
-use std::str;
+use std::process::{ExitStatus, Command, Child, Output, Stdio};
+use std::io::prelude::*;
+use std::dynamic_lib::DynamicLibrary;
 
-#[cfg(target_os = "win32")]
-fn target_env(lib_path: &str, prog: &str) -> ~[(~str,~str)] {
-
-    let mut env = os::env();
-
-    // Make sure we include the aux directory in the path
-    assert!(prog.ends_with(".exe"));
-    let aux_path = prog.slice(0u, prog.len() - 4u).to_owned() + ".libaux";
-
-    env = do env.map() |pair| {
-        let (k,v) = (*pair).clone();
-        if k == ~"PATH" { (~"PATH", v + ";" + lib_path + ";" + aux_path) }
-        else { (k,v) }
-    };
-    if prog.ends_with("rustc.exe") {
-        env.push((~"RUST_THREADS", ~"1"));
+fn add_target_env(cmd: &mut Command, lib_path: &str, aux_path: Option<&str>) {
+    // Need to be sure to put both the lib_path and the aux path in the dylib
+    // search path for the child.
+    let mut path = DynamicLibrary::search_path();
+    match aux_path {
+        Some(p) => path.insert(0, Path::new(p)),
+        None => {}
     }
-    return env;
+    path.insert(0, Path::new(lib_path));
+
+    // Add the new dylib search path var
+    let var = DynamicLibrary::envvar();
+    let newpath = DynamicLibrary::create_path(&path);
+    let newpath = String::from_utf8(newpath).unwrap();
+    cmd.env(var, &newpath);
 }
 
-#[cfg(target_os = "linux")]
-#[cfg(target_os = "macos")]
-#[cfg(target_os = "freebsd")]
-fn target_env(_lib_path: &str, _prog: &str) -> ~[(~str,~str)] {
-    os::env()
-}
-
-pub struct Result {status: int, out: ~str, err: ~str}
+pub struct Result {pub status: ExitStatus, pub out: String, pub err: String}
 
 pub fn run(lib_path: &str,
            prog: &str,
-           args: &[~str],
-           env: ~[(~str, ~str)],
-           input: Option<~str>) -> Result {
+           aux_path: Option<&str>,
+           args: &[String],
+           env: Vec<(String, String)> ,
+           input: Option<String>) -> Option<Result> {
 
-    let env = env + target_env(lib_path, prog);
-    let mut proc = run::Process::new(prog, args, run::ProcessOptions {
-        env: Some(env),
-        dir: None,
-        in_fd: None,
-        out_fd: None,
-        err_fd: None
-    });
-
-    for input in input.iter() {
-        proc.input().write_str(*input);
+    let mut cmd = Command::new(prog);
+    cmd.args(args)
+       .stdin(Stdio::piped())
+       .stdout(Stdio::piped())
+       .stderr(Stdio::piped());
+    add_target_env(&mut cmd, lib_path, aux_path);
+    for (key, val) in env {
+        cmd.env(&key, &val);
     }
-    let output = proc.finish_with_output();
 
-    Result {
-        status: output.status,
-        out: str::from_utf8(output.output),
-        err: str::from_utf8(output.error)
+    match cmd.spawn() {
+        Ok(mut process) => {
+            if let Some(input) = input {
+                process.stdin.as_mut().unwrap().write_all(input.as_bytes()).unwrap();
+            }
+            let Output { status, stdout, stderr } =
+                process.wait_with_output().unwrap();
+
+            Some(Result {
+                status: status,
+                out: String::from_utf8(stdout).unwrap(),
+                err: String::from_utf8(stderr).unwrap()
+            })
+        },
+        Err(..) => None
+    }
+}
+
+pub fn run_background(lib_path: &str,
+           prog: &str,
+           aux_path: Option<&str>,
+           args: &[String],
+           env: Vec<(String, String)> ,
+           input: Option<String>) -> Option<Child> {
+
+    let mut cmd = Command::new(prog);
+    cmd.args(args)
+       .stdin(Stdio::piped())
+       .stdout(Stdio::piped())
+       .stderr(Stdio::piped());
+    add_target_env(&mut cmd, lib_path, aux_path);
+    for (key, val) in env {
+        cmd.env(&key, &val);
+    }
+
+    match cmd.spawn() {
+        Ok(mut process) => {
+            if let Some(input) = input {
+                process.stdin.as_mut().unwrap().write_all(input.as_bytes()).unwrap();
+            }
+
+            Some(process)
+        },
+        Err(..) => None
     }
 }

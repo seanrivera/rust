@@ -8,6 +8,13 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![allow(unknown_features)]
+#![feature(box_syntax)]
 
+use std::cell::Cell;
 
-pub fn main() { let x = @mut 5; *x = 1000; info!("%?", *x); }
+pub fn main() {
+    let x: Box<_> = box Cell::new(5);
+    x.set(1000);
+    println!("{}", x.get());
+}

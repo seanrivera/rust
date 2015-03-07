@@ -8,31 +8,26 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
+extern crate libc;
+
 mod bar {
-    #[abi = "cdecl"]
-    #[nolink]
     extern {}
 }
 
 mod zed {
-    #[abi = "cdecl"]
-    #[nolink]
     extern {}
 }
 
-mod libc {
-    use std::libc::{c_int, c_void, size_t, ssize_t};
+mod mlibc {
+    use libc::{c_int, c_void, size_t, ssize_t};
 
-    #[abi = "cdecl"]
-    #[nolink]
     extern {
-        pub fn write(fd: c_int, buf: *c_void, count: size_t) -> ssize_t;
+        pub fn write(fd: c_int, buf: *const c_void, count: size_t) -> ssize_t;
     }
 }
 
 mod baz {
-    #[abi = "cdecl"]
-    #[nolink]
     extern {}
 }
 

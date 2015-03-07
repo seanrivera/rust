@@ -9,17 +9,17 @@
 // except according to those terms.
 
 fn even(x: uint) -> bool {
-    if x < 2u {
+    if x < 2 {
         return false;
-    } else if x == 2u { return true; } else { return even(x - 2u); }
+    } else if x == 2 { return true; } else { return even(x - 2); }
 }
 
 fn foo(x: uint) {
     if even(x) {
-        info!(x);
+        println!("{}", x);
     } else {
-        fail!();
+        panic!();
     }
 }
 
-pub fn main() { foo(2u); }
+pub fn main() { foo(2); }

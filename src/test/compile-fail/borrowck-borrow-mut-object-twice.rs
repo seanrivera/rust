@@ -12,13 +12,13 @@
 // other `&mut` pointers.
 
 trait Foo {
-    fn f1<'a>(&'a mut self) -> &'a ();
+    fn f1(&mut self) -> &();
     fn f2(&mut self);
 }
 
 fn test(x: &mut Foo) {
     let _y = x.f1();
-    x.f2(); //~ ERROR cannot borrow `*x` as mutable more than once at a time
+    x.f2(); //~ ERROR cannot borrow `*x` as mutable
 }
 
 fn main() {}

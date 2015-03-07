@@ -8,19 +8,19 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[deny(ctypes)];
+#![deny(improper_ctypes)]
+#![feature(libc)]
 
-use std::libc;
+extern crate libc;
 
-#[nolink]
 extern {
-    pub fn bare_type1(size: int); //~ ERROR: found rust type
-    pub fn bare_type2(size: uint); //~ ERROR: found rust type
-    pub fn ptr_type1(size: *int); //~ ERROR: found rust type
-    pub fn ptr_type2(size: *uint); //~ ERROR: found rust type
+    pub fn bare_type1(size: isize); //~ ERROR: found rust type
+    pub fn bare_type2(size: usize); //~ ERROR: found rust type
+    pub fn ptr_type1(size: *const isize); //~ ERROR: found rust type
+    pub fn ptr_type2(size: *const usize); //~ ERROR: found rust type
 
-    pub fn good1(size: *libc::c_int);
-    pub fn good2(size: *libc::c_uint);
+    pub fn good1(size: *const libc::c_int);
+    pub fn good2(size: *const libc::c_uint);
 }
 
 fn main() {

@@ -9,7 +9,7 @@
 // except according to those terms.
 
 struct Foo {
-    x: int
+    x: isize
 }
 
 trait Bar : Drop {
@@ -18,13 +18,13 @@ trait Bar : Drop {
 
 impl Drop for Foo {
     fn drop(&mut self) {
-        println("kaboom");
+        println!("kaboom");
     }
 }
 
 impl Bar for Foo {
     fn blah(&self) {
-        self.drop();    //~ ERROR explicit call to destructor
+        self.drop();    //~ ERROR explicit use of destructor method
     }
 }
 

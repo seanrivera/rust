@@ -1,4 +1,4 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -7,14 +7,18 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
+//
+// ignore-lexer-test FIXME #15679
 
-use std::num;
+#![feature(non_ascii_idents)]
+
+use std::num::Float;
 
 pub fn main() {
-    let ε = 0.00001;
-    let Π = 3.14;
+    let ε = 0.00001f64;
+    let Π = 3.14f64;
     let लंच = Π * Π + 1.54;
-    assert!(num::abs((लंच - 1.54) - (Π * Π)) < ε);
+    assert!(((लंच - 1.54) - (Π * Π)).abs() < ε);
     assert_eq!(საჭმელად_გემრიელი_სადილი(), 0);
 }
 
@@ -26,7 +30,7 @@ fn საჭმელად_გემრიელი_სადილი() -> int
     let 午餐 = 10;
 
     let ארוחת_צהריי = 10;
-    let غداء = 10;
+    let غداء = 10_usize;
     let լանչ = 10;
     let обед = 10;
     let абед = 10;

@@ -8,18 +8,21 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-struct closure_box<'self> {
-    cl: &'self fn()
+#![feature(unboxed_closures)]
+
+struct closure_box<'a> {
+    cl: Box<FnMut() + 'a>,
 }
 
-fn box_it<'r>(x: &'r fn()) -> closure_box<'r> {
+fn box_it<'r>(x: Box<FnMut() + 'r>) -> closure_box<'r> {
     closure_box {cl: x}
 }
 
 fn main() {
-    let cl_box = {
+    let mut cl_box = {
         let mut i = 3;
-        box_it(|| i += 1) //~ ERROR cannot infer an appropriate lifetime
+        // FIXME (#22405): Replace `Box::new` with `box` here when/if possible.
+        box_it(Box::new(|| i += 1)) //~ ERROR `i` does not live long enough
     };
-    (cl_box.cl)();
+    cl_box.cl.call_mut(());
 }

@@ -8,18 +8,24 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 trait Foo {
+    fn dummy(&self) { }
 }
 
-fn a(_x: ~Foo:Send) {
+fn a(_x: Box<Foo+Send>) {
 }
 
-fn c(x: ~Foo:Freeze+Send) {
+fn c(x: Box<Foo+Sync+Send>) {
     a(x);
 }
 
-fn d(x: ~Foo:) {
-    a(x); //~ ERROR found no bounds
+fn d(x: Box<Foo>) {
+    a(x); //~  ERROR mismatched types
+          //~| expected `Box<Foo + Send>`
+          //~| found `Box<Foo>`
+          //~| expected bounds `Send`
+          //~| found no bounds
 }
 
 fn main() { }

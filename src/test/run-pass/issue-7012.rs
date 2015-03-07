@@ -15,13 +15,14 @@ The expected behaviour would be that test==test1, therefore 'true'
 would be printed, however the below prints false.
 */
 
-struct signature<'self> { pattern : &'self [u32] }
+struct signature<'a> { pattern : &'a [u32] }
 
 static test1: signature<'static> =  signature {
-  pattern: &[0x243f6a88u32,0x85a308d3u32,0x13198a2eu32,0x03707344u32,0xa4093822u32,0x299f31d0u32]
+  pattern: &[0x243f6a88,0x85a308d3,0x13198a2e,0x03707344,0xa4093822,0x299f31d0]
 };
 
-fn main() {
-  let test = &[0x243f6a88u32,0x85a308d3u32,0x13198a2eu32,0x03707344u32,0xa4093822u32,0x299f31d0u32];
-  println(fmt!("%b",test==test1.pattern));
+pub fn main() {
+  let test: &[u32] = &[0x243f6a88,0x85a308d3,0x13198a2e,
+                       0x03707344,0xa4093822,0x299f31d0];
+  println!("{}",test==test1.pattern);
 }

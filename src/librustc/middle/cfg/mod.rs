@@ -8,35 +8,43 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-/*!
-
-Module that constructs a control-flow graph representing an item.
-Uses `Graph` as the underlying representation.
-
-*/
+//! Module that constructs a control-flow graph representing an item.
+//! Uses `Graph` as the underlying representation.
 
 use middle::graph;
 use middle::ty;
-use middle::typeck;
-use std::hashmap::HashMap;
 use syntax::ast;
-use syntax::opt_vec::OptVec;
 
 mod construct;
+pub mod graphviz;
 
 pub struct CFG {
-    exit_map: HashMap<ast::NodeId, CFGIndex>,
-    graph: CFGGraph,
-    entry: CFGIndex,
-    exit: CFGIndex,
+    pub graph: CFGGraph,
+    pub entry: CFGIndex,
+    pub exit: CFGIndex,
 }
 
-pub struct CFGNodeData {
-    id: ast::NodeId
+#[derive(Copy, PartialEq)]
+pub enum CFGNodeData {
+    AST(ast::NodeId),
+    Entry,
+    Exit,
+    Dummy,
+    Unreachable,
+}
+
+impl CFGNodeData {
+    pub fn id(&self) -> ast::NodeId {
+        if let CFGNodeData::AST(id) = *self {
+            id
+        } else {
+            ast::DUMMY_NODE_ID
+        }
+    }
 }
 
 pub struct CFGEdgeData {
-    exiting_scopes: OptVec<ast::NodeId>
+    pub exiting_scopes: Vec<ast::NodeId>
 }
 
 pub type CFGIndex = graph::NodeIndex;
@@ -47,15 +55,13 @@ pub type CFGNode = graph::Node<CFGNodeData>;
 
 pub type CFGEdge = graph::Edge<CFGEdgeData>;
 
-pub struct CFGIndices {
-    entry: CFGIndex,
-    exit: CFGIndex,
-}
-
 impl CFG {
-    pub fn new(tcx: ty::ctxt,
-               method_map: typeck::method_map,
+    pub fn new(tcx: &ty::ctxt,
                blk: &ast::Block) -> CFG {
-        construct::construct(tcx, method_map, blk)
+        construct::construct(tcx, blk)
+    }
+
+    pub fn node_is_reachable(&self, id: ast::NodeId) -> bool {
+        self.graph.depth_traverse(self.entry).any(|node| node.id() == id)
     }
 }

@@ -8,11 +8,23 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-pub struct A<T>;
-pub struct B<T>;
+pub struct A<T> { pub v: T }
+pub struct B<T> { pub v: T }
 
 pub mod test {
-    pub struct A<T>;
+    pub struct A<T> { pub v: T }
+
+    impl<T> A<T> {
+        pub fn foo(&self) -> int {
+            static a: int = 5;
+            return a
+        }
+
+        pub fn bar(&self) -> int {
+            static a: int = 6;
+            return a;
+        }
+    }
 }
 
 impl<T> A<T> {
@@ -39,22 +51,10 @@ impl<T> B<T> {
     }
 }
 
-impl<T> test::A<T> {
-    pub fn foo(&self) -> int {
-        static a: int = 5;
-        return a
-    }
-
-    pub fn bar(&self) -> int {
-        static a: int = 6;
-        return a;
-    }
-}
-
 pub fn foo() -> int {
-    let a = A::<()>;
-    let b = B::<()>;
-    let c = test::A::<()>;
+    let a = A { v: () };
+    let b = B { v: () };
+    let c = test::A { v: () };
     return a.foo() + a.bar() +
            b.foo() + b.bar() +
            c.foo() + c.bar();

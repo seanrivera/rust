@@ -8,15 +8,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::comm;
-use std::task;
+use std::sync::mpsc::channel;
+use std::thread;
 
 pub fn main() {
-    let (port, chan) = comm::stream::<&'static str>();
+    let (tx, rx) = channel::<&'static str>();
 
-    do task::spawn {
-        assert_eq!(port.recv(), "hello, world");
-    }
+    let t = thread::spawn(move|| {
+        assert_eq!(rx.recv().unwrap(), "hello, world");
+    });
 
-    chan.send("hello, world");
+    tx.send("hello, world").unwrap();
+    t.join().ok().unwrap();
 }

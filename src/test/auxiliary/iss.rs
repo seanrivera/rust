@@ -8,16 +8,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[link(name="iss6919_3", vers="0.1")];
+#![crate_name="issue6919_3"]
 
 // part of issue-6919.rs
 
-struct C<'self> {
-    k: &'self fn(),
+pub struct C<K> where K: FnOnce() {
+    pub k: K,
 }
 
 fn no_op() { }
-pub static D : C<'static> = C {
-    k: no_op
+pub const D : C<fn()> = C {
+    k: no_op as fn()
 };
 

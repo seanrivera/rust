@@ -8,11 +8,18 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![feature(unboxed_closures)]
+
 fn id<T>(t: T) -> T { t }
 
-fn f<'r, T>(v: &'r T) -> &'r fn()->T { id::<&'r fn()->T>(|| *v) } //~ ERROR cannot infer an appropriate lifetime due to conflicting requirements
+fn f<'r, T>(v: &'r T) -> Box<FnMut() -> T + 'r> {
+    // FIXME (#22405): Replace `Box::new` with `box` here when/if possible.
+    id(Box::new(|| *v))
+        //~^ ERROR `v` does not live long enough
+        //~| ERROR cannot move out of borrowed content
+}
 
 fn main() {
     let v = &5;
-    printfln!("%d", f(v)());
+    println!("{}", f(v).call_mut(()));
 }

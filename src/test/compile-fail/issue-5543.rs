@@ -1,4 +1,4 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,13 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// xfail-test
-use std::io::ReaderUtil;
-use std::io::Reader;
-
-fn bar(r:@ReaderUtil) -> ~str { r.read_line() }
+trait Foo { fn foo(&self) {} }
+impl Foo for u8 {}
 
 fn main() {
-    let r : @Reader = io::stdin();
-    let _m = bar(r as @ReaderUtil);
+    // FIXME (#22405): Replace `Box::new` with `box` here when/if possible.
+    let r: Box<Foo> = Box::new(5);
+    let _m: Box<Foo> = r as Box<Foo>;
+    //~^ ERROR `core::marker::Sized` is not implemented for the type `Foo`
 }

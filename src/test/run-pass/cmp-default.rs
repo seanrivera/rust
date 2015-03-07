@@ -8,29 +8,53 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// Test default methods in Ord and Eq
+use std::cmp::Ordering;
+
+// Test default methods in PartialOrd and PartialEq
 //
 struct Fool(bool);
 
-impl Eq for Fool {
+impl PartialEq for Fool {
     fn eq(&self, other: &Fool) -> bool {
-        **self != **other
+        let Fool(this) = *self;
+        let Fool(other) = *other;
+        this != other
     }
 }
 
 struct Int(int);
 
-impl Ord for Int {
-    fn lt(&self, other: &Int) -> bool {
-        **self < **other
+impl PartialEq for Int {
+    fn eq(&self, other: &Int) -> bool {
+        let Int(this) = *self;
+        let Int(other) = *other;
+        this == other
+    }
+}
+
+impl PartialOrd for Int {
+    fn partial_cmp(&self, other: &Int) -> Option<Ordering> {
+        let Int(this) = *self;
+        let Int(other) = *other;
+        this.partial_cmp(&other)
     }
 }
 
 struct RevInt(int);
 
-impl Ord for RevInt {
-    fn lt(&self, other: &RevInt) -> bool {
-        **self > **other
+impl PartialEq for RevInt {
+    fn eq(&self, other: &RevInt) -> bool {
+        let RevInt(this) = *self;
+        let RevInt(other) = *other;
+        this == other
+    }
+}
+
+impl PartialOrd for RevInt {
+    fn partial_cmp(&self, other: &RevInt) -> Option<Ordering> {
+        let RevInt(this) = *self;
+        let RevInt(other) = *other;
+        other.partial_cmp(&this)
     }
 }
 

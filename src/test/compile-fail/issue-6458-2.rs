@@ -9,5 +9,7 @@
 // except according to those terms.
 
 fn main() {
-    fmt!("%?", None); //~ ERROR: cannot determine a type for this expression: unconstrained type
+    // Unconstrained type:
+    format!("{:?}", None);
+    //~^ ERROR type annotations required
 }

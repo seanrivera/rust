@@ -8,8 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-extern mod extra;
-
 trait SipHash {
     fn reset(&self);
 }
@@ -22,10 +20,10 @@ fn siphash(k0 : u64) -> SipHash {
     impl SipHash for SipState {
         fn reset(&self) {
            self.v0 = k0 ^ 0x736f6d6570736575; //~ ERROR can't capture dynamic environment
-           //~^ ERROR unresolved name `k0`.
+           //~^ ERROR unresolved name `k0`
         }
     }
-    fail!();
+    panic!();
 }
 
 fn main() {}

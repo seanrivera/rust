@@ -1,4 +1,4 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,21 +8,19 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// xfail-test #5744 fails on 32 bit
-
 // Test a foreign function that accepts and returns a struct
 // by value.
 
-#[deriving(Eq)]
-struct TwoU16s {
+#[derive(Copy, PartialEq, Debug)]
+pub struct TwoU16s {
     one: u16, two: u16
 }
 
+#[link(name = "rust_test_helpers")]
 extern {
     pub fn rust_dbg_extern_identity_TwoU16s(v: TwoU16s) -> TwoU16s;
 }
 
-#[fixed_stack_segment] #[inline(never)]
 pub fn main() {
     unsafe {
         let x = TwoU16s {one: 22, two: 23};

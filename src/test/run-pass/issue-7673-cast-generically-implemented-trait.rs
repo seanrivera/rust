@@ -8,23 +8,22 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// xfail-pretty #9253 pretty printer doesn't preserve the bounds on trait objects
-
 /*
 
 #7673 Polymorphically creating traits barely works
 
 */
 
-fn main() {}
+#![allow(unknown_features)]
+#![feature(box_syntax)]
 
-trait A {}
+pub fn main() {}
+
+trait A {
+    fn dummy(&self) { }
+}
+
 impl<T: 'static> A for T {}
 
-fn owned1<T: 'static>(a: T) { ~a as ~A:; } /* note `:` */
-fn owned2<T: 'static>(a: ~T) { a as ~A:; }
-fn owned3<T: 'static>(a: ~T) { ~a as ~A:; }
-
-fn managed1<T: 'static>(a: T) { @a as @A; }
-fn managed2<T: 'static>(a: @T) { a as @A; }
-fn managed3<T: 'static>(a: @T) { @a as @A; }
+fn owned2<T: 'static>(a: Box<T>) { a as Box<A>; }
+fn owned3<T: 'static>(a: Box<T>) { box a as Box<A>; }

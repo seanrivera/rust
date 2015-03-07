@@ -9,7 +9,8 @@
 // except according to those terms.
 
 struct T (&'static [int]);
-static t : T = T (&'static [5, 4, 3]);
-fn main () {
-    assert_eq!(t[0], 5);
+static t : T = T (&[5, 4, 3]);
+pub fn main () {
+    let T(ref v) = t;
+    assert_eq!(v[0], 5);
 }

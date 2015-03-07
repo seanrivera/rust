@@ -8,27 +8,31 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::comm::*;
-use std::task;
+#![allow(unknown_features)]
+#![feature(box_syntax)]
 
-fn child(c: &SharedChan<~uint>, i: uint) {
-    c.send(~i);
+use std::sync::mpsc::{channel, Sender};
+use std::thread;
+
+fn child(tx: &Sender<Box<uint>>, i: uint) {
+    tx.send(box i).unwrap();
 }
 
 pub fn main() {
-    let (p, ch) = stream();
-    let ch = SharedChan::new(ch);
-    let n = 100u;
-    let mut expected = 0u;
-    for i in range(0u, n) {
-        let ch = ch.clone();
-        task::spawn(|| child(&ch, i) );
+    let (tx, rx) = channel();
+    let n = 100;
+    let mut expected = 0;
+    let _t = (0..n).map(|i| {
         expected += i;
-    }
+        let tx = tx.clone();
+        thread::spawn(move|| {
+            child(&tx, i)
+        })
+    }).collect::<Vec<_>>();
 
-    let mut actual = 0u;
-    for _ in range(0u, n) {
-        let j = p.recv();
+    let mut actual = 0;
+    for _ in 0..n {
+        let j = rx.recv().unwrap();
         actual += *j;
     }
 

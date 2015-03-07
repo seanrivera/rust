@@ -1,4 +1,4 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,170 +8,210 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![allow(non_camel_case_types)]
 
-use std::option;
-use std::os;
-use std::hashmap::HashSet;
+pub use self::FileMatch::*;
 
-pub enum FileMatch { FileMatches, FileDoesntMatch }
+use std::collections::HashSet;
+use std::env;
+use std::fs;
+use std::io::prelude::*;
+use std::path::{Path, PathBuf};
+
+use util::fs as myfs;
+use session::search_paths::{SearchPaths, PathKind};
+
+#[derive(Copy)]
+pub enum FileMatch {
+    FileMatches,
+    FileDoesntMatch,
+}
 
 // A module for searching for libraries
 // FIXME (#2658): I'm not happy how this module turned out. Should
 // probably just be folded into cstore.
 
-/// Functions with type `pick` take a parent directory as well as
-/// a file found in that directory.
-pub type pick<'self> = &'self fn(path: &Path) -> FileMatch;
-
-pub fn pick_file(file: Path, path: &Path) -> Option<Path> {
-    if path.file_path() == file {
-        option::Some((*path).clone())
-    } else {
-        option::None
-    }
+pub struct FileSearch<'a> {
+    pub sysroot: &'a Path,
+    pub search_paths: &'a SearchPaths,
+    pub triple: &'a str,
+    pub kind: PathKind,
 }
 
-pub trait FileSearch {
-    fn sysroot(&self) -> @Path;
-    fn for_each_lib_search_path(&self, f: &fn(&Path) -> FileMatch);
-    fn get_target_lib_path(&self) -> Path;
-    fn get_target_lib_file_path(&self, file: &Path) -> Path;
-}
+impl<'a> FileSearch<'a> {
+    pub fn for_each_lib_search_path<F>(&self, mut f: F) where
+        F: FnMut(&Path, PathKind) -> FileMatch,
+    {
+        let mut visited_dirs = HashSet::new();
+        let mut found = false;
 
-pub fn mk_filesearch(maybe_sysroot: &Option<@Path>,
-                     target_triple: &str,
-                     addl_lib_search_paths: @mut ~[Path])
-                  -> @FileSearch {
-    struct FileSearchImpl {
-        sysroot: @Path,
-        addl_lib_search_paths: @mut ~[Path],
-        target_triple: ~str
-    }
-    impl FileSearch for FileSearchImpl {
-        fn sysroot(&self) -> @Path { self.sysroot }
-        fn for_each_lib_search_path(&self, f: &fn(&Path) -> FileMatch) {
-            let mut visited_dirs = HashSet::new();
-            let mut found = false;
-
-            debug!("filesearch: searching additional lib search paths [%?]",
-                   self.addl_lib_search_paths.len());
-            for path in self.addl_lib_search_paths.iter() {
-                match f(path) {
-                    FileMatches => found = true,
-                    FileDoesntMatch => ()
-                }
-                visited_dirs.insert(path.to_str());
+        for (path, kind) in self.search_paths.iter(self.kind) {
+            match f(path, kind) {
+                FileMatches => found = true,
+                FileDoesntMatch => ()
             }
+            visited_dirs.insert(path.to_path_buf());
+        }
 
-            debug!("filesearch: searching target lib path");
-            let tlib_path = make_target_lib_path(self.sysroot,
-                                        self.target_triple);
-            if !visited_dirs.contains(&tlib_path.to_str()) {
-                match f(&tlib_path) {
-                    FileMatches => found = true,
-                    FileDoesntMatch => ()
-                }
+        debug!("filesearch: searching lib path");
+        let tlib_path = make_target_lib_path(self.sysroot,
+                                             self.triple);
+        if !visited_dirs.contains(&tlib_path) {
+            match f(&tlib_path, PathKind::All) {
+                FileMatches => found = true,
+                FileDoesntMatch => ()
             }
-            visited_dirs.insert(tlib_path.to_str());
-            // Try RUST_PATH
-            if !found {
-                let rustpath = rust_path();
-                for path in rustpath.iter() {
-                    let tlib_path = make_rustpkg_target_lib_path(path, self.target_triple);
-                    debug!("is %s in visited_dirs? %?", tlib_path.to_str(),
-                            visited_dirs.contains(&tlib_path.to_str()));
+        }
 
-                    if !visited_dirs.contains(&tlib_path.to_str()) {
-                        visited_dirs.insert(tlib_path.to_str());
-                        // Don't keep searching the RUST_PATH if one match turns up --
-                        // if we did, we'd get a "multiple matching crates" error
-                        match f(&tlib_path) {
-                           FileMatches => {
-                               break;
-                           }
-                           FileDoesntMatch => ()
-                        }
+        visited_dirs.insert(tlib_path);
+        // Try RUST_PATH
+        if !found {
+            let rustpath = rust_path();
+            for path in &rustpath {
+                let tlib_path = make_rustpkg_lib_path(
+                    self.sysroot, path, self.triple);
+                debug!("is {} in visited_dirs? {}", tlib_path.display(),
+                        visited_dirs.contains(&tlib_path));
+
+                if !visited_dirs.contains(&tlib_path) {
+                    visited_dirs.insert(tlib_path.clone());
+                    // Don't keep searching the RUST_PATH if one match turns up --
+                    // if we did, we'd get a "multiple matching crates" error
+                    match f(&tlib_path, PathKind::All) {
+                       FileMatches => {
+                           break;
+                       }
+                       FileDoesntMatch => ()
                     }
                 }
             }
         }
-        fn get_target_lib_path(&self) -> Path {
-            make_target_lib_path(self.sysroot, self.target_triple)
-        }
-        fn get_target_lib_file_path(&self, file: &Path) -> Path {
-            self.get_target_lib_path().push_rel(file)
+    }
+
+    pub fn get_lib_path(&self) -> PathBuf {
+        make_target_lib_path(self.sysroot, self.triple)
+    }
+
+    pub fn search<F>(&self, mut pick: F)
+        where F: FnMut(&Path, PathKind) -> FileMatch
+    {
+        self.for_each_lib_search_path(|lib_search_path, kind| {
+            debug!("searching {}", lib_search_path.display());
+            match fs::read_dir(lib_search_path) {
+                Ok(files) => {
+                    let files = files.filter_map(|p| p.ok().map(|s| s.path()))
+                                     .collect::<Vec<_>>();
+                    let mut rslt = FileDoesntMatch;
+                    fn is_rlib(p: &Path) -> bool {
+                        p.extension().and_then(|s| s.to_str()) == Some("rlib")
+                    }
+                    // Reading metadata out of rlibs is faster, and if we find both
+                    // an rlib and a dylib we only read one of the files of
+                    // metadata, so in the name of speed, bring all rlib files to
+                    // the front of the search list.
+                    let files1 = files.iter().filter(|p| is_rlib(p));
+                    let files2 = files.iter().filter(|p| !is_rlib(p));
+                    for path in files1.chain(files2) {
+                        debug!("testing {}", path.display());
+                        let maybe_picked = pick(path, kind);
+                        match maybe_picked {
+                            FileMatches => {
+                                debug!("picked {}", path.display());
+                                rslt = FileMatches;
+                            }
+                            FileDoesntMatch => {
+                                debug!("rejected {}", path.display());
+                            }
+                        }
+                    }
+                    rslt
+                }
+                Err(..) => FileDoesntMatch,
+            }
+        });
+    }
+
+    pub fn new(sysroot: &'a Path,
+               triple: &'a str,
+               search_paths: &'a SearchPaths,
+               kind: PathKind) -> FileSearch<'a> {
+        debug!("using sysroot = {}, triple = {}", sysroot.display(), triple);
+        FileSearch {
+            sysroot: sysroot,
+            search_paths: search_paths,
+            triple: triple,
+            kind: kind,
         }
     }
 
-    let sysroot = get_sysroot(maybe_sysroot);
-    debug!("using sysroot = %s", sysroot.to_str());
-    @FileSearchImpl {
-        sysroot: sysroot,
-        addl_lib_search_paths: addl_lib_search_paths,
-        target_triple: target_triple.to_owned()
-    } as @FileSearch
+    // Returns a list of directories where target-specific dylibs might be located.
+    pub fn get_dylib_search_paths(&self) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        self.for_each_lib_search_path(|lib_search_path, _| {
+            paths.push(lib_search_path.to_path_buf());
+            FileDoesntMatch
+        });
+        paths
+    }
+
+    // Returns a list of directories where target-specific tool binaries are located.
+    pub fn get_tools_search_paths(&self) -> Vec<PathBuf> {
+        let mut p = PathBuf::new(self.sysroot);
+        p.push(&find_libdir(self.sysroot));
+        p.push(&rustlibdir());
+        p.push(&self.triple);
+        p.push("bin");
+        vec![p]
+    }
 }
 
-pub fn search(filesearch: @FileSearch, pick: pick) {
-    do filesearch.for_each_lib_search_path() |lib_search_path| {
-        debug!("searching %s", lib_search_path.to_str());
-        let r = os::list_dir_path(lib_search_path);
-        let mut rslt = FileDoesntMatch;
-        for path in r.iter() {
-            debug!("testing %s", path.to_str());
-            let maybe_picked = pick(path);
-            match maybe_picked {
-                FileMatches => {
-                    debug!("picked %s", path.to_str());
-                    rslt = FileMatches;
-                }
-                FileDoesntMatch => {
-                    debug!("rejected %s", path.to_str());
-                }
-            }
-        }
-        rslt
-    };
-}
-
-pub fn relative_target_lib_path(target_triple: &str) -> Path {
-    Path(libdir()).push_many([~"rustc",
-                              target_triple.to_owned(),
-                              libdir()])
+pub fn relative_target_lib_path(sysroot: &Path, target_triple: &str) -> PathBuf {
+    let mut p = PathBuf::new(&find_libdir(sysroot));
+    assert!(p.is_relative());
+    p.push(&rustlibdir());
+    p.push(target_triple);
+    p.push("lib");
+    p
 }
 
 fn make_target_lib_path(sysroot: &Path,
-                        target_triple: &str) -> Path {
-    sysroot.push_rel(&relative_target_lib_path(target_triple))
+                        target_triple: &str) -> PathBuf {
+    sysroot.join(&relative_target_lib_path(sysroot, target_triple))
 }
 
-fn make_rustpkg_target_lib_path(dir: &Path,
-                        target_triple: &str) -> Path {
-    dir.push_rel(&Path(libdir()).push(target_triple.to_owned()))
+fn make_rustpkg_lib_path(sysroot: &Path,
+                         dir: &Path,
+                         triple: &str) -> PathBuf {
+    let mut p = dir.join(&find_libdir(sysroot));
+    p.push(triple);
+    p
 }
 
-fn get_or_default_sysroot() -> Path {
-    match os::self_exe_path() {
-      option::Some(ref p) => (*p).pop(),
-      option::None => fail!("can't determine value for sysroot")
+pub fn get_or_default_sysroot() -> PathBuf {
+    // Follow symlinks.  If the resolved path is relative, make it absolute.
+    fn canonicalize(path: Option<PathBuf>) -> Option<PathBuf> {
+        path.and_then(|path| {
+            match myfs::realpath(&path) {
+                Ok(canon) => Some(canon),
+                Err(e) => panic!("failed to get realpath: {}", e),
+            }
+        })
     }
-}
 
-fn get_sysroot(maybe_sysroot: &Option<@Path>) -> @Path {
-    match *maybe_sysroot {
-      option::Some(sr) => sr,
-      option::None => @get_or_default_sysroot()
+    match canonicalize(env::current_exe().ok()) {
+        Some(mut p) => { p.pop(); p.pop(); p }
+        None => panic!("can't determine value for sysroot")
     }
 }
 
 #[cfg(windows)]
-static PATH_ENTRY_SEPARATOR: &'static str = ";";
+const PATH_ENTRY_SEPARATOR: char = ';';
 #[cfg(not(windows))]
-static PATH_ENTRY_SEPARATOR: &'static str = ":";
+const PATH_ENTRY_SEPARATOR: char = ':';
 
 /// Returns RUST_PATH as a string, without default paths added
-pub fn get_rust_path() -> Option<~str> {
-    os::getenv("RUST_PATH")
+pub fn get_rust_path() -> Option<String> {
+    env::var("RUST_PATH").ok()
 }
 
 /// Returns the value of RUST_PATH, as a list
@@ -179,49 +219,84 @@ pub fn get_rust_path() -> Option<~str> {
 /// $HOME/.rust
 /// DIR/.rust for any DIR that's the current working directory
 /// or an ancestor of it
-pub fn rust_path() -> ~[Path] {
-    let mut env_rust_path: ~[Path] = match get_rust_path() {
+pub fn rust_path() -> Vec<PathBuf> {
+    let mut env_rust_path: Vec<PathBuf> = match get_rust_path() {
         Some(env_path) => {
-            let env_path_components: ~[&str] =
-                env_path.split_str_iter(PATH_ENTRY_SEPARATOR).collect();
-            env_path_components.map(|&s| Path(s))
+            let env_path_components =
+                env_path.split(PATH_ENTRY_SEPARATOR);
+            env_path_components.map(|s| PathBuf::new(s)).collect()
         }
-        None => ~[]
+        None => Vec::new()
     };
-    let cwd = os::getcwd();
+    let cwd = env::current_dir().unwrap();
     // now add in default entries
-    let cwd_dot_rust = cwd.push(".rust");
+    let cwd_dot_rust = cwd.join(".rust");
     if !env_rust_path.contains(&cwd_dot_rust) {
         env_rust_path.push(cwd_dot_rust);
     }
     if !env_rust_path.contains(&cwd) {
         env_rust_path.push(cwd.clone());
     }
-    do cwd.each_parent() |p| {
-        if !env_rust_path.contains(&p.push(".rust")) {
-            push_if_exists(&mut env_rust_path, p);
+    let mut cur = &*cwd;
+    while let Some(parent) = cur.parent() {
+        let candidate = parent.join(".rust");
+        if !env_rust_path.contains(&candidate) && candidate.exists() {
+            env_rust_path.push(candidate.clone());
         }
+        cur = parent;
     }
-    let h = os::homedir();
-    for h in h.iter() {
-        if !env_rust_path.contains(&h.push(".rust")) {
-            push_if_exists(&mut env_rust_path, h);
+    if let Some(h) = env::home_dir() {
+        let p = h.join(".rust");
+        if !env_rust_path.contains(&p) && p.exists() {
+            env_rust_path.push(p);
         }
     }
     env_rust_path
 }
 
+// The name of the directory rustc expects libraries to be located.
+// On Unix should be "lib", on windows "bin"
+#[cfg(unix)]
+fn find_libdir(sysroot: &Path) -> String {
+    // FIXME: This is a quick hack to make the rustc binary able to locate
+    // Rust libraries in Linux environments where libraries might be installed
+    // to lib64/lib32. This would be more foolproof by basing the sysroot off
+    // of the directory where librustc is located, rather than where the rustc
+    // binary is.
+    //If --libdir is set during configuration to the value other than
+    // "lib" (i.e. non-default), this value is used (see issue #16552).
 
-/// Adds p/.rust into vec, only if it exists
-fn push_if_exists(vec: &mut ~[Path], p: &Path) {
-    let maybe_dir = p.push(".rust");
-    if os::path_exists(&maybe_dir) {
-        vec.push(maybe_dir);
+    match option_env!("CFG_LIBDIR_RELATIVE") {
+        Some(libdir) if libdir != "lib" => return libdir.to_string(),
+        _ => if sysroot.join(&primary_libdir_name()).join(&rustlibdir()).exists() {
+            return primary_libdir_name();
+        } else {
+            return secondary_libdir_name();
+        }
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    fn primary_libdir_name() -> String {
+        "lib64".to_string()
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    fn primary_libdir_name() -> String {
+        "lib32".to_string()
+    }
+
+    fn secondary_libdir_name() -> String {
+        "lib".to_string()
     }
 }
 
-// The name of the directory rustc expects libraries to be located.
-// On Unix should be "lib", on windows "bin"
-pub fn libdir() -> ~str {
-    (env!("CFG_LIBDIR")).to_owned()
+#[cfg(windows)]
+fn find_libdir(_sysroot: &Path) -> String {
+    "bin".to_string()
+}
+
+// The name of rustc's own place to organize libraries.
+// Used to be "rustc", now the default is "rustlib"
+pub fn rustlibdir() -> String {
+    "rustlib".to_string()
 }

@@ -8,9 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-trait MyEq { }
+pub trait MyEq : ::std::marker::MarkerTrait { }
 
-trait MyNum {
+pub trait MyNum : ::std::marker::MarkerTrait {
     fn from_int(int) -> Self;
 }
 

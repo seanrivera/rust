@@ -1,4 +1,3 @@
-// -*- rust -*-
 // Copyright 2012 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
@@ -19,89 +18,83 @@
 
 */
 
-extern mod extra;
+extern crate getopts;
 
-use extra::{time, getopts};
-use std::comm::*;
-use std::io::WriterUtil;
-use std::io;
-use std::os;
-use std::result::{Ok, Err};
-use std::task;
-use std::uint;
+use std::sync::mpsc::{channel, Sender};
+use std::env;
+use std::result::Result::{Ok, Err};
+use std::thread;
+use std::time::Duration;
 
-fn fib(n: int) -> int {
-    fn pfib(c: &SharedChan<int>, n: int) {
+fn fib(n: isize) -> isize {
+    fn pfib(tx: &Sender<isize>, n: isize) {
         if n == 0 {
-            c.send(0);
+            tx.send(0).unwrap();
         } else if n <= 2 {
-            c.send(1);
+            tx.send(1).unwrap();
         } else {
-            let (pp, cc) = stream();
-            let cc = SharedChan::new(cc);
-            let ch = cc.clone();
-            task::spawn(|| pfib(&ch, n - 1) );
-            let ch = cc.clone();
-            task::spawn(|| pfib(&ch, n - 2) );
-            c.send(pp.recv() + pp.recv());
+            let (tx1, rx) = channel();
+            let tx2 = tx1.clone();
+            thread::spawn(move|| pfib(&tx2, n - 1));
+            let tx2 = tx1.clone();
+            thread::spawn(move|| pfib(&tx2, n - 2));
+            tx.send(rx.recv().unwrap() + rx.recv().unwrap());
         }
     }
 
-    let (p, ch) = stream();
-    let ch = SharedChan::new(ch);
-    let _t = task::spawn(|| pfib(&ch, n) );
-    p.recv()
+    let (tx, rx) = channel();
+    thread::spawn(move|| pfib(&tx, n) );
+    rx.recv().unwrap()
 }
 
 struct Config {
     stress: bool
 }
 
-fn parse_opts(argv: ~[~str]) -> Config {
-    let opts = ~[getopts::optflag("stress")];
+fn parse_opts(argv: Vec<String> ) -> Config {
+    let opts = vec!(getopts::optflag("", "stress", ""));
 
-    let opt_args = argv.slice(1, argv.len());
+    let argv = argv.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    let opt_args = &argv[1..argv.len()];
 
-    match getopts::getopts(opt_args, opts) {
+    match getopts::getopts(opt_args, &opts) {
       Ok(ref m) => {
-          return Config {stress: getopts::opt_present(m, "stress")}
+          return Config {stress: m.opt_present("stress")}
       }
-      Err(_) => { fail!(); }
+      Err(_) => { panic!(); }
     }
 }
 
-fn stress_task(id: int) {
+fn stress_task(id: isize) {
     let mut i = 0;
     loop {
         let n = 15;
         assert_eq!(fib(n), fib(n));
         i += 1;
-        error!("%d: Completed %d iterations", id, i);
+        println!("{}: Completed {} iterations", id, i);
     }
 }
 
 fn stress(num_tasks: int) {
-    let mut results = ~[];
-    for i in range(0, num_tasks) {
-        let mut builder = task::task();
-        builder.future_result(|r| results.push(r));
-        do builder.spawn {
+    let mut results = Vec::new();
+    for i in 0..num_tasks {
+        results.push(thread::spawn(move|| {
             stress_task(i);
-        }
+        }));
     }
-    for r in results.iter() {
-        r.recv();
+    for r in results {
+        let _ = r.join();
     }
 }
 
 fn main() {
-    let args = os::args();
-    let args = if os::getenv("RUST_BENCH").is_some() {
-        ~[~"", ~"20"]
-    } else if args.len() <= 1u {
-        ~[~"", ~"8"]
+    let args = env::args();
+    let args = if env::var_os("RUST_BENCH").is_some() {
+        vec!("".to_string(), "20".to_string())
+    } else if args.len() <= 1 {
+        vec!("".to_string(), "8".to_string())
     } else {
-        args
+        args.map(|x| x.to_string()).collect()
     };
 
     let opts = parse_opts(args.clone());
@@ -109,22 +102,17 @@ fn main() {
     if opts.stress {
         stress(2);
     } else {
-        let max = uint::parse_bytes(args[1].as_bytes(), 10u).unwrap() as int;
+        let max = args[1].parse::<isize>().unwrap();
 
         let num_trials = 10;
 
-        let out = io::stdout();
+        for n in 1..max + 1 {
+            for _ in 0..num_trials {
+                let mut fibn = None;
+                let dur = Duration::span(|| fibn = Some(fib(n)));
+                let fibn = fibn.unwrap();
 
-        for n in range(1, max + 1) {
-            for _ in range(0, num_trials) {
-                let start = time::precise_time_ns();
-                let fibn = fib(n);
-                let stop = time::precise_time_ns();
-
-                let elapsed = stop - start;
-
-                out.write_line(fmt!("%d\t%d\t%s", n, fibn,
-                                    elapsed.to_str()));
+                println!("{}\t{}\t{}", n, fibn, dur);
             }
         }
     }

@@ -1,6 +1,5 @@
-// xfail-fast
 
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -9,16 +8,22 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
+//
+// ignore-lexer-test FIXME #15883
+
+#![feature(unsafe_destructor)]
 
 pub type Task = int;
 
 // tjc: I don't know why
 pub mod pipes {
+    use self::state::{empty, full, blocked, terminated};
     use super::Task;
-    use std::cast::{forget, transmute};
-    use std::cast;
-    use std::task;
-    use std::util;
+    use std::mem::{forget, transmute};
+    use std::mem::{replace, swap};
+    use std::mem;
+    use std::thread::Thread;
+    use std::marker::Send;
 
     pub struct Stuff<T> {
         state: state,
@@ -26,7 +31,8 @@ pub mod pipes {
         payload: Option<T>
     }
 
-    #[deriving(Eq)]
+    #[derive(PartialEq, Debug)]
+    #[repr(int)]
     pub enum state {
         empty,
         full,
@@ -40,27 +46,29 @@ pub mod pipes {
         payload: Option<T>
     }
 
-    pub fn packet<T:Send>() -> *packet<T> {
+    unsafe impl<T:Send> Send for packet<T> {}
+
+    pub fn packet<T:Send>() -> *const packet<T> {
         unsafe {
-            let p: *packet<T> = cast::transmute(~Stuff{
+            let p: *const packet<T> = mem::transmute(Box::new(Stuff{
                 state: empty,
                 blocked_task: None::<Task>,
                 payload: None::<T>
-            });
+            }));
             p
         }
     }
 
     mod rusti {
-      pub fn atomic_xchg(_dst: &mut int, _src: int) -> int { fail!(); }
-      pub fn atomic_xchg_acq(_dst: &mut int, _src: int) -> int { fail!(); }
-      pub fn atomic_xchg_rel(_dst: &mut int, _src: int) -> int { fail!(); }
+      pub fn atomic_xchg(_dst: &mut int, _src: int) -> int { panic!(); }
+      pub fn atomic_xchg_acq(_dst: &mut int, _src: int) -> int { panic!(); }
+      pub fn atomic_xchg_rel(_dst: &mut int, _src: int) -> int { panic!(); }
     }
 
     // We should consider moving this to ::std::unsafe, although I
     // suspect graydon would want us to use void pointers instead.
-    pub unsafe fn uniquify<T>(x: *T) -> ~T {
-        cast::transmute(x)
+    pub unsafe fn uniquify<T>(x: *const T) -> Box<T> {
+        mem::transmute(x)
     }
 
     pub fn swap_state_acq(dst: &mut state, src: state) -> state {
@@ -88,7 +96,7 @@ pub mod pipes {
             // The receiver will eventually clean this up.
             unsafe { forget(p); }
           }
-          full => { fail!("duplicate send") }
+          full => { panic!("duplicate send") }
           blocked => {
 
             // The receiver will eventually clean this up.
@@ -108,9 +116,9 @@ pub mod pipes {
             let old_state = swap_state_acq(&mut (*p).state,
                                            blocked);
             match old_state {
-              empty | blocked => { task::deschedule(); }
+              empty | blocked => { Thread::yield_now(); }
               full => {
-                let payload = util::replace(&mut p.payload, None);
+                let payload = replace(&mut p.payload, None);
                 return Some(payload.unwrap())
               }
               terminated => {
@@ -121,7 +129,7 @@ pub mod pipes {
         }
     }
 
-    pub fn sender_terminate<T:Send>(p: *packet<T>) {
+    pub fn sender_terminate<T:Send>(p: *const packet<T>) {
         let mut p = unsafe { uniquify(p) };
         match swap_state_rel(&mut (*p).state, terminated) {
           empty | blocked => {
@@ -130,7 +138,7 @@ pub mod pipes {
           }
           full => {
             // This is impossible
-            fail!("you dun goofed")
+            panic!("you dun goofed")
           }
           terminated => {
             // I have to clean up, use drop_glue
@@ -138,7 +146,7 @@ pub mod pipes {
         }
     }
 
-    pub fn receiver_terminate<T:Send>(p: *packet<T>) {
+    pub fn receiver_terminate<T:Send>(p: *const packet<T>) {
         let mut p = unsafe { uniquify(p) };
         match swap_state_rel(&mut (*p).state, terminated) {
           empty => {
@@ -147,7 +155,7 @@ pub mod pipes {
           }
           blocked => {
             // this shouldn't happen.
-            fail!("terminating a blocked packet")
+            panic!("terminating a blocked packet")
           }
           terminated | full => {
             // I have to clean up, use drop_glue
@@ -156,7 +164,7 @@ pub mod pipes {
     }
 
     pub struct send_packet<T> {
-        p: Option<*packet<T>>,
+        p: Option<*const packet<T>>,
     }
 
     #[unsafe_destructor]
@@ -164,9 +172,9 @@ pub mod pipes {
         fn drop(&mut self) {
             unsafe {
                 if self.p != None {
-                    let self_p: &mut Option<*packet<T>> =
-                        cast::transmute(&self.p);
-                    let p = util::replace(self_p, None);
+                    let self_p: &mut Option<*const packet<T>> =
+                        mem::transmute(&self.p);
+                    let p = replace(self_p, None);
                     sender_terminate(p.unwrap())
                 }
             }
@@ -174,19 +182,19 @@ pub mod pipes {
     }
 
     impl<T:Send> send_packet<T> {
-        pub fn unwrap(&mut self) -> *packet<T> {
-            util::replace(&mut self.p, None).unwrap()
+        pub fn unwrap(&mut self) -> *const packet<T> {
+            replace(&mut self.p, None).unwrap()
         }
     }
 
-    pub fn send_packet<T:Send>(p: *packet<T>) -> send_packet<T> {
+    pub fn send_packet<T:Send>(p: *const packet<T>) -> send_packet<T> {
         send_packet {
             p: Some(p)
         }
     }
 
     pub struct recv_packet<T> {
-        p: Option<*packet<T>>,
+        p: Option<*const packet<T>>,
     }
 
     #[unsafe_destructor]
@@ -194,9 +202,9 @@ pub mod pipes {
         fn drop(&mut self) {
             unsafe {
                 if self.p != None {
-                    let self_p: &mut Option<*packet<T>> =
-                        cast::transmute(&self.p);
-                    let p = util::replace(self_p, None);
+                    let self_p: &mut Option<*const packet<T>> =
+                        mem::transmute(&self.p);
+                    let p = replace(self_p, None);
                     receiver_terminate(p.unwrap())
                 }
             }
@@ -204,12 +212,12 @@ pub mod pipes {
     }
 
     impl<T:Send> recv_packet<T> {
-        pub fn unwrap(&mut self) -> *packet<T> {
-            util::replace(&mut self.p, None).unwrap()
+        pub fn unwrap(&mut self) -> *const packet<T> {
+            replace(&mut self.p, None).unwrap()
         }
     }
 
-    pub fn recv_packet<T:Send>(p: *packet<T>) -> recv_packet<T> {
+    pub fn recv_packet<T:Send>(p: *const packet<T>) -> recv_packet<T> {
         recv_packet {
             p: Some(p)
         }
@@ -222,26 +230,31 @@ pub mod pipes {
 }
 
 pub mod pingpong {
-    use std::cast;
+    use std::mem;
 
     pub struct ping(::pipes::send_packet<pong>);
+
+    unsafe impl Send for ping {}
+
     pub struct pong(::pipes::send_packet<ping>);
+
+    unsafe impl Send for pong {}
 
     pub fn liberate_ping(p: ping) -> ::pipes::send_packet<pong> {
         unsafe {
-            let _addr : *::pipes::send_packet<pong> = match &p {
-              &ping(ref x) => { cast::transmute(x) }
+            let _addr : *const ::pipes::send_packet<pong> = match &p {
+              &ping(ref x) => { mem::transmute(x) }
             };
-            fail!()
+            panic!()
         }
     }
 
     pub fn liberate_pong(p: pong) -> ::pipes::send_packet<ping> {
         unsafe {
-            let _addr : *::pipes::send_packet<ping> = match &p {
-              &pong(ref x) => { cast::transmute(x) }
+            let _addr : *const ::pipes::send_packet<ping> = match &p {
+              &pong(ref x) => { mem::transmute(x) }
             };
-            fail!()
+            panic!()
         }
     }
 
@@ -265,7 +278,7 @@ pub mod pingpong {
         pub fn do_pong(c: pong) -> (ping, ()) {
             let packet = ::pipes::recv(c);
             if packet.is_none() {
-                fail!("sender closed the connection")
+                panic!("sender closed the connection")
             }
             (pingpong::liberate_pong(packet.unwrap()), ())
         }
@@ -280,7 +293,7 @@ pub mod pingpong {
         pub fn do_ping(c: ping) -> (pong, ()) {
             let packet = ::pipes::recv(c);
             if packet.is_none() {
-                fail!("sender closed the connection")
+                panic!("sender closed the connection")
             }
             (pingpong::liberate_ping(packet.unwrap()), ())
         }
@@ -295,16 +308,16 @@ pub mod pingpong {
 
 fn client(chan: pingpong::client::ping) {
     let chan = pingpong::client::do_ping(chan);
-    error!(~"Sent ping");
+    println!("Sent ping");
     let (_chan, _data) = pingpong::client::do_pong(chan);
-    error!(~"Received pong");
+    println!("Received pong");
 }
 
 fn server(chan: pingpong::server::ping) {
     let (chan, _data) = pingpong::server::do_ping(chan);
-    error!(~"Received ping");
+    println!("Received ping");
     let _chan = pingpong::server::do_pong(chan);
-    error!(~"Sent pong");
+    println!("Sent pong");
 }
 
 pub fn main() {
@@ -312,8 +325,6 @@ pub fn main() {
 //    Commented out because of option::get error
 
     let (client_, server_) = pingpong::init();
-    let client_ = Cell::new(client_);
-    let server_ = Cell::new(server_);
 
     task::spawn {|client_|
         let client__ = client_.take();

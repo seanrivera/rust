@@ -13,6 +13,7 @@
 #include "rustllvm.h"
 
 #include "llvm/Support/CBindingWrapping.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Target/TargetLibraryInfo.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 
@@ -67,23 +68,32 @@ LLVMRustCreateTargetMachine(const char *triple,
                             CodeModel::Model CM,
                             Reloc::Model RM,
                             CodeGenOpt::Level OptLevel,
-                            bool EnableSegmentedStacks) {
+                            bool EnableSegmentedStacks,
+                            bool UseSoftFloat,
+                            bool NoFramePointerElim,
+                            bool PositionIndependentExecutable,
+                            bool FunctionSections,
+                            bool DataSections) {
     std::string Error;
     Triple Trip(Triple::normalize(triple));
     const llvm::Target *TheTarget = TargetRegistry::lookupTarget(Trip.getTriple(),
                                                                  Error);
     if (TheTarget == NULL) {
-        LLVMRustError = Error.c_str();
+        LLVMRustSetLastError(Error.c_str());
         return NULL;
     }
 
     TargetOptions Options;
-    Options.NoFramePointerElim = true;
+    Options.PositionIndependentExecutable = PositionIndependentExecutable;
+    Options.NoFramePointerElim = NoFramePointerElim;
+#if LLVM_VERSION_MINOR < 5
     Options.EnableSegmentedStacks = EnableSegmentedStacks;
-    Options.FixedStackSegmentSize = 2 * 1024 * 1024; // XXX: This is too big.
-    Options.FloatABIType =
-         (Trip.getEnvironment() == Triple::GNUEABIHF) ? FloatABI::Hard :
-                                                        FloatABI::Default;
+#endif
+    Options.FloatABIType = FloatABI::Default;
+    Options.UseSoftFloat = UseSoftFloat;
+    if (UseSoftFloat) {
+        Options.FloatABIType = FloatABI::Soft;
+    }
 
     TargetMachine *TM = TheTarget->createTargetMachine(Trip.getTriple(),
                                                        cpu,
@@ -92,6 +102,8 @@ LLVMRustCreateTargetMachine(const char *triple,
                                                        RM,
                                                        CM,
                                                        OptLevel);
+    TM->setDataSections(DataSections);
+    TM->setFunctionSections(FunctionSections);
     return wrap(TM);
 }
 
@@ -108,24 +120,40 @@ LLVMRustAddAnalysisPasses(LLVMTargetMachineRef TM,
                           LLVMPassManagerRef PMR,
                           LLVMModuleRef M) {
     PassManagerBase *PM = unwrap(PMR);
+#if LLVM_VERSION_MINOR >= 6
+    PM->add(new DataLayoutPass());
+#elif LLVM_VERSION_MINOR == 5
+    PM->add(new DataLayoutPass(unwrap(M)));
+#else
     PM->add(new DataLayout(unwrap(M)));
+#endif
     unwrap(TM)->addAnalysisPasses(*PM);
 }
 
 // Unfortunately, the LLVM C API doesn't provide a way to set the `LibraryInfo`
 // field of a PassManagerBuilder, we expose our own method of doing so.
 extern "C" void
-LLVMRustAddBuilderLibraryInfo(LLVMPassManagerBuilderRef PMB, LLVMModuleRef M) {
+LLVMRustAddBuilderLibraryInfo(LLVMPassManagerBuilderRef PMB,
+                              LLVMModuleRef M,
+                              bool DisableSimplifyLibCalls) {
     Triple TargetTriple(unwrap(M)->getTargetTriple());
-    unwrap(PMB)->LibraryInfo = new TargetLibraryInfo(TargetTriple);
+    TargetLibraryInfo *TLI = new TargetLibraryInfo(TargetTriple);
+    if (DisableSimplifyLibCalls)
+      TLI->disableAllFunctions();
+    unwrap(PMB)->LibraryInfo = TLI;
 }
 
 // Unfortunately, the LLVM C API doesn't provide a way to create the
 // TargetLibraryInfo pass, so we use this method to do so.
 extern "C" void
-LLVMRustAddLibraryInfo(LLVMPassManagerRef PMB, LLVMModuleRef M) {
+LLVMRustAddLibraryInfo(LLVMPassManagerRef PMB,
+                       LLVMModuleRef M,
+                       bool DisableSimplifyLibCalls) {
     Triple TargetTriple(unwrap(M)->getTargetTriple());
-    unwrap(PMB)->add(new TargetLibraryInfo(TargetTriple));
+    TargetLibraryInfo *TLI = new TargetLibraryInfo(TargetTriple);
+    if (DisableSimplifyLibCalls)
+      TLI->disableAllFunctions();
+    unwrap(PMB)->add(TLI);
 }
 
 // Unfortunately, the LLVM C API doesn't provide an easy way of iterating over
@@ -163,9 +191,18 @@ LLVMRustWriteOutputFile(LLVMTargetMachineRef Target,
   PassManager *PM = unwrap<PassManager>(PMR);
 
   std::string ErrorInfo;
-  raw_fd_ostream OS(path, ErrorInfo, sys::fs::F_Binary);
+#if LLVM_VERSION_MINOR >= 6
+  std::error_code EC;
+  raw_fd_ostream OS(path, EC, sys::fs::F_None);
+  if (EC)
+    ErrorInfo = EC.message();
+#elif LLVM_VERSION_MINOR >= 4
+  raw_fd_ostream OS(path, ErrorInfo, sys::fs::F_None);
+#else
+  raw_fd_ostream OS(path, ErrorInfo, raw_fd_ostream::F_Binary);
+#endif
   if (ErrorInfo != "") {
-    LLVMRustError = ErrorInfo.c_str();
+    LLVMRustSetLastError(ErrorInfo.c_str());
     return false;
   }
   formatted_raw_ostream FOS(OS);
@@ -181,9 +218,26 @@ LLVMRustPrintModule(LLVMPassManagerRef PMR,
                     const char* path) {
   PassManager *PM = unwrap<PassManager>(PMR);
   std::string ErrorInfo;
-  raw_fd_ostream OS(path, ErrorInfo, sys::fs::F_Binary);
+
+#if LLVM_VERSION_MINOR >= 6
+  std::error_code EC;
+  raw_fd_ostream OS(path, EC, sys::fs::F_None);
+  if (EC)
+    ErrorInfo = EC.message();
+#elif LLVM_VERSION_MINOR >= 4
+  raw_fd_ostream OS(path, ErrorInfo, sys::fs::F_None);
+#else
+  raw_fd_ostream OS(path, ErrorInfo, raw_fd_ostream::F_Binary);
+#endif
+
   formatted_raw_ostream FOS(OS);
+
+#if LLVM_VERSION_MINOR >= 5
+  PM->add(createPrintModulePass(FOS));
+#else
   PM->add(createPrintModulePass(&FOS));
+#endif
+
   PM->run(*unwrap(M));
 }
 
@@ -206,4 +260,33 @@ LLVMRustPrintPasses() {
 extern "C" void
 LLVMRustAddAlwaysInlinePass(LLVMPassManagerBuilderRef PMB, bool AddLifetimes) {
     unwrap(PMB)->Inliner = createAlwaysInlinerPass(AddLifetimes);
+}
+
+extern "C" void
+LLVMRustRunRestrictionPass(LLVMModuleRef M, char **symbols, size_t len) {
+    PassManager passes;
+    ArrayRef<const char*> ref(symbols, len);
+    passes.add(llvm::createInternalizePass(ref));
+    passes.run(*unwrap(M));
+}
+
+extern "C" void
+LLVMRustMarkAllFunctionsNounwind(LLVMModuleRef M) {
+    for (Module::iterator GV = unwrap(M)->begin(),
+         E = unwrap(M)->end(); GV != E; ++GV) {
+        GV->setDoesNotThrow();
+        Function *F = dyn_cast<Function>(GV);
+        if (F == NULL)
+            continue;
+
+        for (Function::iterator B = F->begin(), BE = F->end(); B != BE; ++B) {
+            for (BasicBlock::iterator I = B->begin(), IE = B->end();
+                 I != IE; ++I) {
+                if (isa<InvokeInst>(I)) {
+                    InvokeInst *CI = cast<InvokeInst>(I);
+                    CI->setDoesNotThrow();
+                }
+            }
+        }
+    }
 }

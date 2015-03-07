@@ -8,12 +8,13 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#[derive(PartialEq, Debug)]
 struct Foo(uint);
 
 fn foo() -> Foo {
     Foo(42)
 }
 
-fn main() {
-    assert_eq!(*foo(), 42);
+pub fn main() {
+    assert_eq!(foo(), Foo(42));
 }

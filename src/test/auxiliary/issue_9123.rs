@@ -8,12 +8,13 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[crate_type = "lib"];
+#![crate_type = "lib"]
 
 pub trait X {
     fn x() {
         fn f() { }
         f();
     }
+    fn dummy(&self) { }
 }
 

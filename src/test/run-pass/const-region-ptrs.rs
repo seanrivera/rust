@@ -8,15 +8,15 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-struct Pair<'self> { a: int, b: &'self int }
+struct Pair<'a> { a: int, b: &'a int }
 
-static x: &'static int = &10;
+const x: &'static int = &10;
 
-static y: &'static Pair<'static> = &Pair {a: 15, b: x};
+const y: &'static Pair<'static> = &Pair {a: 15, b: x};
 
 pub fn main() {
-    printfln!("x = %?", *x);
-    printfln!("y = {a: %?, b: %?}", y.a, *(y.b));
+    println!("x = {}", *x);
+    println!("y = {{a: {}, b: {}}}", y.a, *(y.b));
     assert_eq!(*x, 10);
     assert_eq!(*(y.b), 10);
 }

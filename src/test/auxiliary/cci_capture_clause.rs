@@ -8,12 +8,13 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::task;
+use std::thread;
+use std::sync::mpsc::{Receiver, channel};
 
-pub fn foo<T:Send + Clone>(x: T) -> Port<T> {
-    let (p, c) = stream();
-    do task::spawn() {
-        c.send(x.clone());
-    }
-    p
+pub fn foo<T:'static + Send + Clone>(x: T) -> Receiver<T> {
+    let (tx, rx) = channel();
+    thread::spawn(move|| {
+        tx.send(x.clone());
+    });
+    rx
 }

@@ -1,4 +1,4 @@
-# Copyright 2013 The Rust Project Developers. See the COPYRIGHT
+# Copyright 2013-2014 The Rust Project Developers. See the COPYRIGHT
 # file at the top-level directory of this distribution and at
 # http://rust-lang.org/COPYRIGHT.
 #
@@ -8,91 +8,47 @@
 # option. This file may not be copied, modified, or distributed
 # except according to those terms.
 
-license0 = """\
-// Copyright 2012-2013 The Rust Project Developers. See the
-// COPYRIGHT file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-"""
+import re
 
-license1 = """\
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-"""
-
-license2 = """\
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-"""
-
-license3 = """\
-# Copyright 2013 The Rust Project Developers. See the COPYRIGHT
-# file at the top-level directory of this distribution and at
-# http://rust-lang.org/COPYRIGHT.
-#
-# Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-# http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-# <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-# option. This file may not be copied, modified, or distributed
-# except according to those terms.
-"""
-
-license4 = """\
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-"""
-
-licenses = [license0, license1, license2, license3, license4]
+license_re = re.compile(
+u"""(#|//) Copyright .* The Rust Project Developers. See the COPYRIGHT
+\\1 file at the top-level directory of this distribution and at
+\\1 http://rust-lang.org/COPYRIGHT.
+\\1
+\\1 Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+\\1 http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+\\1 <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+\\1 option. This file may not be copied, modified, or distributed
+\\1 except according to those terms.""")
 
 exceptions = [
-    "rt/rust_android_dummy.cpp", # BSD, chromium
-    "rt/rust_android_dummy.h", # BSD, chromium
-    "rt/isaac/randport.cpp", # public domain
-    "rt/isaac/rand.h", # public domain
-    "rt/isaac/standard.h", # public domain
+    "libstd/sync/mpsc/mpsc_queue.rs", # BSD
+    "libstd/sync/mpsc/spsc_queue.rs", # BSD
+    "test/bench/shootout-binarytrees.rs", # BSD
+    "test/bench/shootout-chameneos-redux.rs", # BSD
+    "test/bench/shootout-fannkuch-redux.rs", # BSD
+    "test/bench/shootout-fasta.rs", # BSD
+    "test/bench/shootout-fasta-redux.rs", # BSD
+    "test/bench/shootout-k-nucleotide.rs", # BSD
+    "test/bench/shootout-mandelbrot.rs", # BSD
+    "test/bench/shootout-meteor.rs", # BSD
+    "test/bench/shootout-nbody.rs", # BSD
+    "test/bench/shootout-regex-dna.rs", # BSD
+    "test/bench/shootout-reverse-complement.rs", # BSD
+    "test/bench/shootout-spectralnorm.rs", # BSD
+    "test/bench/shootout-threadring.rs", # BSD
 ]
 
 def check_license(name, contents):
-    valid_license = False
-    for a_valid_license in licenses:
-        if contents.startswith(a_valid_license):
-            valid_license = True
-            break
-    if valid_license:
+    # Whitelist check
+    if any(name.endswith(e) for e in exceptions):
         return True
 
-    for exception in exceptions:
-        if name.endswith(exception):
-            return True
-
+    # Xfail check
     firstlineish = contents[:100]
-    if firstlineish.find("xfail-license") != -1:
+    if "ignore-license" in firstlineish:
         return True
 
-    return False
+    # License check
+    boilerplate = contents[:500]
+    return bool(license_re.search(boilerplate))
