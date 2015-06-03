@@ -9,6 +9,7 @@
 // except according to those terms.
 
 
+
 pub fn main() {
     let mut v = vec!(1);
     v.push(2);

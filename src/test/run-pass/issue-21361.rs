@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 fn main() {
     let v = vec![1, 2, 3];
     let boxed: Box<Iterator<Item=i32>> = Box::new(v.into_iter());

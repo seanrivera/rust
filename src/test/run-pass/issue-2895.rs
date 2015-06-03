@@ -8,14 +8,15 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 use std::mem;
 
 struct Cat {
-    x: int
+    x: isize
 }
 
 struct Kitty {
-    x: int,
+    x: isize,
 }
 
 impl Drop for Kitty {
@@ -24,12 +25,12 @@ impl Drop for Kitty {
 
 #[cfg(any(target_arch = "x86_64", target_arch="aarch64"))]
 pub fn main() {
-    assert_eq!(mem::size_of::<Cat>(), 8 as uint);
-    assert_eq!(mem::size_of::<Kitty>(), 16 as uint);
+    assert_eq!(mem::size_of::<Cat>(), 8 as usize);
+    assert_eq!(mem::size_of::<Kitty>(), 16 as usize);
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "arm"))]
 pub fn main() {
-    assert_eq!(mem::size_of::<Cat>(), 4 as uint);
-    assert_eq!(mem::size_of::<Kitty>(), 8 as uint);
+    assert_eq!(mem::size_of::<Cat>(), 4 as usize);
+    assert_eq!(mem::size_of::<Kitty>(), 8 as usize);
 }

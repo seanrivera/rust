@@ -33,7 +33,7 @@ pub struct Toc {
 }
 
 impl Toc {
-    fn count_entries_with_level(&self, level: u32) -> uint {
+    fn count_entries_with_level(&self, level: u32) -> usize {
         self.entries.iter().filter(|e| e.level == level).count()
     }
 }
@@ -198,7 +198,7 @@ impl fmt::Display for Toc {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::{TocBuilder, Toc, TocEntry};
 
     #[test]

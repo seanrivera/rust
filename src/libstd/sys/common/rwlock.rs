@@ -17,60 +17,63 @@ use sys::rwlock as imp;
 /// safer types at the top level of this crate instead of this type.
 pub struct RWLock(imp::RWLock);
 
-/// Constant initializer for static RWLocks.
-pub const RWLOCK_INIT: RWLock = RWLock(imp::RWLOCK_INIT);
-
 impl RWLock {
-    /// Acquire shared access to the underlying lock, blocking the current
+    /// Creates a new reader-writer lock for use.
+    ///
+    /// Behavior is undefined if the reader-writer lock is moved after it is
+    /// first used with any of the functions below.
+    pub const fn new() -> RWLock { RWLock(imp::RWLock::new()) }
+
+    /// Acquires shared access to the underlying lock, blocking the current
     /// thread to do so.
     ///
     /// Behavior is undefined if the rwlock has been moved between this and any
-    /// previous methodo call.
+    /// previous method call.
     #[inline]
     pub unsafe fn read(&self) { self.0.read() }
 
-    /// Attempt to acquire shared access to this lock, returning whether it
+    /// Attempts to acquire shared access to this lock, returning whether it
     /// succeeded or not.
     ///
     /// This function does not block the current thread.
     ///
     /// Behavior is undefined if the rwlock has been moved between this and any
-    /// previous methodo call.
+    /// previous method call.
     #[inline]
     pub unsafe fn try_read(&self) -> bool { self.0.try_read() }
 
-    /// Acquire write access to the underlying lock, blocking the current thread
+    /// Acquires write access to the underlying lock, blocking the current thread
     /// to do so.
     ///
     /// Behavior is undefined if the rwlock has been moved between this and any
-    /// previous methodo call.
+    /// previous method call.
     #[inline]
     pub unsafe fn write(&self) { self.0.write() }
 
-    /// Attempt to acquire exclusive access to this lock, returning whether it
+    /// Attempts to acquire exclusive access to this lock, returning whether it
     /// succeeded or not.
     ///
     /// This function does not block the current thread.
     ///
     /// Behavior is undefined if the rwlock has been moved between this and any
-    /// previous methodo call.
+    /// previous method call.
     #[inline]
     pub unsafe fn try_write(&self) -> bool { self.0.try_write() }
 
-    /// Unlock previously acquired shared access to this lock.
+    /// Unlocks previously acquired shared access to this lock.
     ///
     /// Behavior is undefined if the current thread does not have shared access.
     #[inline]
     pub unsafe fn read_unlock(&self) { self.0.read_unlock() }
 
-    /// Unlock previously acquired exclusive access to this lock.
+    /// Unlocks previously acquired exclusive access to this lock.
     ///
     /// Behavior is undefined if the current thread does not currently have
     /// exclusive access.
     #[inline]
     pub unsafe fn write_unlock(&self) { self.0.write_unlock() }
 
-    /// Destroy OS-related resources with this RWLock.
+    /// Destroys OS-related resources with this RWLock.
     ///
     /// Behavior is undefined if there are any currently active users of this
     /// lock.

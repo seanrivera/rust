@@ -9,13 +9,16 @@
 // except according to those terms.
 
 // aux-build:linkage-visibility.rs
-// ignore-android: FIXME(#10379)
+// ignore-android: FIXME(#10356)
 // ignore-windows: std::dynamic_lib does not work on Windows well
+// ignore-musl
 
-extern crate "linkage-visibility" as foo;
+#![feature(std_misc)]
+
+extern crate linkage_visibility as foo;
 
 pub fn main() {
     foo::test();
-    foo::foo2::<int>();
+    foo::foo2::<isize>();
     foo::foo();
 }

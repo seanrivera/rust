@@ -52,10 +52,10 @@ struct StandardLibraryInjector {
 impl fold::Folder for StandardLibraryInjector {
     fn fold_crate(&mut self, mut krate: ast::Crate) -> ast::Crate {
 
-        // The name to use in `extern crate "name" as std;`
+        // The name to use in `extern crate name as std;`
         let actual_crate_name = match self.alt_std_name {
-            Some(ref s) => token::intern_and_get_ident(&s[..]),
-            None => token::intern_and_get_ident("std"),
+            Some(ref s) => token::intern(&s),
+            None => token::intern("std"),
         };
 
         krate.module.items.insert(0, P(ast::Item {
@@ -64,7 +64,7 @@ impl fold::Folder for StandardLibraryInjector {
             attrs: vec!(
                 attr::mk_attr_outer(attr::mk_attr_id(), attr::mk_word_item(
                         InternedString::new("macro_use")))),
-            node: ast::ItemExternCrate(Some((actual_crate_name, ast::CookedStr))),
+            node: ast::ItemExternCrate(Some(actual_crate_name)),
             vis: ast::Inherited,
             span: DUMMY_SP
         }));

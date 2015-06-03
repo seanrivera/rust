@@ -74,17 +74,6 @@
 //! `&foo()` or `match foo() { ref x => ... }`, where the user is
 //! implicitly requesting a temporary.
 //!
-//! Somewhat surprisingly, not all lvalue expressions yield lvalue datums
-//! when trans'd. Ultimately the reason for this is to micro-optimize
-//! the resulting LLVM. For example, consider the following code:
-//!
-//!     fn foo() -> Box<int> { ... }
-//!     let x = *foo();
-//!
-//! The expression `*foo()` is an lvalue, but if you invoke `expr::trans`,
-//! it will return an rvalue datum. See `deref_once` in expr.rs for
-//! more details.
-//!
 //! ### Rvalues in detail
 //!
 //! Rvalues datums are values with no cleanup scheduled. One must be
@@ -113,7 +102,7 @@ use trans::expr;
 use trans::tvec;
 use trans::type_of;
 use middle::ty::{self, Ty};
-use util::ppaux::{ty_to_string};
+use util::ppaux::ty_to_string;
 
 use std::fmt;
 use syntax::ast;
@@ -172,7 +161,7 @@ impl Drop for Rvalue {
     fn drop(&mut self) { }
 }
 
-#[derive(Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum RvalueMode {
     /// `val` is a pointer to the actual value (and thus has type *T)
     ByRef,
@@ -307,8 +296,8 @@ impl KindOps for Lvalue {
                               -> Block<'blk, 'tcx> {
         let _icx = push_ctxt("<Lvalue as KindOps>::post_store");
         if bcx.fcx.type_needs_drop(ty) {
-            // cancel cleanup of affine values by zeroing out
-            let () = zero_mem(bcx, val, ty);
+            // cancel cleanup of affine values by drop-filling the memory
+            let () = drop_done_fill_mem(bcx, val, ty);
             bcx
         } else {
             bcx
@@ -469,15 +458,6 @@ impl<'tcx> Datum<'tcx, Expr> {
                 let scope = cleanup::temporary_scope(bcx.tcx(), expr_id);
                 r.add_clean(bcx.fcx, scope);
             })
-    }
-
-    /// Ensures that `self` will get cleaned up, if it is not an lvalue already.
-    pub fn clean<'blk>(self,
-                       bcx: Block<'blk, 'tcx>,
-                       name: &'static str,
-                       expr_id: ast::NodeId)
-                       -> Block<'blk, 'tcx> {
-        self.to_lvalue_datum(bcx, name, expr_id).bcx
     }
 
     pub fn to_lvalue_datum<'blk>(self,

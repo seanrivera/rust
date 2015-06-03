@@ -8,7 +8,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::thread::Thread;
+// pretty-expanded FIXME #23616
+
+#![feature(std_misc)]
+
+use std::thread;
 use std::sync::mpsc::{channel, Sender};
 
 fn producer(tx: &Sender<Vec<u8>>) {
@@ -19,9 +23,10 @@ fn producer(tx: &Sender<Vec<u8>>) {
 
 pub fn main() {
     let (tx, rx) = channel::<Vec<u8>>();
-    let _prod = Thread::spawn(move|| {
+    let prod = thread::spawn(move|| {
         producer(&tx)
     });
 
     let _data: Vec<u8> = rx.recv().unwrap();
+    prod.join();
 }

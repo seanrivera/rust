@@ -10,8 +10,9 @@
 
 // regression test for issue #5625
 
+
 enum E {
-    Foo{f : int},
+    Foo{f : isize},
     Bar
 }
 

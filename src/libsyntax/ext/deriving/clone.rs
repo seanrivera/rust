@@ -8,21 +8,20 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use ast::{MetaItem, Item, Expr};
+use ast::{MetaItem, Expr};
 use codemap::Span;
-use ext::base::ExtCtxt;
+use ext::base::{ExtCtxt, Annotatable};
 use ext::build::AstBuilder;
 use ext::deriving::generic::*;
 use ext::deriving::generic::ty::*;
 use parse::token::InternedString;
 use ptr::P;
 
-pub fn expand_deriving_clone<F>(cx: &mut ExtCtxt,
-                                span: Span,
-                                mitem: &MetaItem,
-                                item: &Item,
-                                push: F) where
-    F: FnOnce(P<Item>),
+pub fn expand_deriving_clone(cx: &mut ExtCtxt,
+                             span: Span,
+                             mitem: &MetaItem,
+                             item: &Annotatable,
+                             push: &mut FnMut(Annotatable))
 {
     let inline = cx.meta_word(span, InternedString::new("inline"));
     let attrs = vec!(cx.attribute(span, inline));
@@ -40,6 +39,7 @@ pub fn expand_deriving_clone<F>(cx: &mut ExtCtxt,
                 args: Vec::new(),
                 ret_ty: Self_,
                 attributes: attrs,
+                is_unsafe: false,
                 combine_substructure: combine_substructure(Box::new(|c, s, sub| {
                     cs_clone("Clone", c, s, sub)
                 })),
@@ -89,7 +89,7 @@ fn cs_clone(
         }
     }
 
-    if all_fields.len() >= 1 && all_fields[0].name.is_none() {
+    if !all_fields.is_empty() && all_fields[0].name.is_none() {
         // enum-like
         let subcalls = all_fields.iter().map(subcall).collect();
         let path = cx.expr_path(ctor_path);

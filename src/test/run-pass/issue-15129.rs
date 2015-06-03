@@ -8,13 +8,14 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 pub enum T {
     T1(()),
     T2(())
 }
 
 pub enum V {
-    V1(int),
+    V1(isize),
     V2(bool)
 }
 

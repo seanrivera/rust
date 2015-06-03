@@ -48,7 +48,6 @@
 
 use std::fmt;
 use std::hash::{Hash, SipHasher, Hasher};
-use std::iter::range_step;
 use syntax::ast;
 use syntax::visit;
 
@@ -103,7 +102,7 @@ impl Svh {
 
         let hash = state.finish();
         return Svh {
-            hash: range_step(0, 64, 4).map(|i| hex(hash >> i)).collect()
+            hash: (0..64).step_by(4).map(|i| hex(hash >> i)).collect()
         };
 
         fn hex(b: u64) -> char {
@@ -188,8 +187,8 @@ mod svh_visitor {
         SawTy,
         SawGenerics,
         SawFn,
-        SawTyMethod,
-        SawTraitMethod,
+        SawTraitItem,
+        SawImplItem,
         SawStructField,
         SawVariant,
         SawExplicitSelf,
@@ -222,7 +221,7 @@ mod svh_visitor {
 
         SawExprLoop(Option<token::InternedString>),
         SawExprField(token::InternedString),
-        SawExprTupField(uint),
+        SawExprTupField(usize),
         SawExprBreak(Option<token::InternedString>),
         SawExprAgain(Option<token::InternedString>),
 
@@ -463,12 +462,12 @@ mod svh_visitor {
             SawFn.hash(self.st); visit::walk_fn(self, fk, fd, b, s)
         }
 
-        fn visit_ty_method(&mut self, t: &TypeMethod) {
-            SawTyMethod.hash(self.st); visit::walk_ty_method(self, t)
+        fn visit_trait_item(&mut self, ti: &TraitItem) {
+            SawTraitItem.hash(self.st); visit::walk_trait_item(self, ti)
         }
 
-        fn visit_trait_item(&mut self, t: &TraitItem) {
-            SawTraitMethod.hash(self.st); visit::walk_trait_item(self, t)
+        fn visit_impl_item(&mut self, ii: &ImplItem) {
+            SawImplItem.hash(self.st); visit::walk_impl_item(self, ii)
         }
 
         fn visit_struct_field(&mut self, s: &StructField) {

@@ -22,11 +22,13 @@ use std::cell::RefCell;
 #[derive(Clone, Copy, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash, Debug)]
 pub enum Def {
     DefFn(ast::DefId, bool /* is_ctor */),
-    DefSelfTy(/* trait id */ ast::NodeId),
+    DefSelfTy(Option<ast::DefId>,                    // trait id
+              Option<(ast::NodeId, ast::NodeId)>),   // (impl id, self type id)
     DefMod(ast::DefId),
     DefForeignMod(ast::DefId),
     DefStatic(ast::DefId, bool /* is_mutbl */),
     DefConst(ast::DefId),
+    DefAssociatedConst(ast::DefId /* const */, MethodProvenance),
     DefLocal(ast::NodeId),
     DefVariant(ast::DefId /* enum */, ast::DefId /* variant */, bool /* is_structure */),
     DefTy(ast::DefId, bool /* is_enum */),
@@ -65,7 +67,7 @@ pub enum Def {
 ///     <T as Trait>::AssocX::AssocY::MethodOrAssocType
 ///           ^~~~~~~~~~~~~~  ^~~~~~~~~~~~~~~~~~~~~~~~~
 ///           base_def        depth = 2
-#[derive(Copy, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct PathResolution {
     pub base_def: Def,
     pub last_private: LastPrivate,
@@ -85,6 +87,17 @@ impl PathResolution {
     pub fn def_id(&self) -> ast::DefId {
         self.full_def().def_id()
     }
+
+    pub fn new(base_def: Def,
+               last_private: LastPrivate,
+               depth: usize)
+               -> PathResolution {
+        PathResolution {
+            base_def: base_def,
+            last_private: last_private,
+            depth: depth,
+        }
+    }
 }
 
 // Definition mapping
@@ -93,7 +106,7 @@ pub type DefMap = RefCell<NodeMap<PathResolution>>;
 // within.
 pub type ExportMap = NodeMap<Vec<Export>>;
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub struct Export {
     pub name: ast::Name,    // The name of the target.
     pub def_id: ast::DefId, // The definition of the target.
@@ -128,18 +141,20 @@ impl Def {
             DefFn(id, _) | DefMod(id) | DefForeignMod(id) | DefStatic(id, _) |
             DefVariant(_, id, _) | DefTy(id, _) | DefAssociatedTy(_, id) |
             DefTyParam(_, _, id, _) | DefUse(id) | DefStruct(id) | DefTrait(id) |
-            DefMethod(id, _) | DefConst(id) => {
+            DefMethod(id, _) | DefConst(id) | DefAssociatedConst(id, _) |
+            DefSelfTy(Some(id), None)=> {
                 id
             }
             DefLocal(id) |
-            DefSelfTy(id) |
             DefUpvar(id, _) |
             DefRegion(id) |
-            DefLabel(id) => {
+            DefLabel(id)  |
+            DefSelfTy(_, Some((_, id))) => {
                 local_def(id)
             }
 
-            DefPrimTy(_) => panic!("attempted .def_id() on DefPrimTy")
+            DefPrimTy(_) => panic!("attempted .def_id() on DefPrimTy"),
+            DefSelfTy(..) => panic!("attempted .def_id() on invalid DefSelfTy"),
         }
     }
 

@@ -8,12 +8,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![feature(std_misc)]
+
 use std::thread;
 
-fn main() {
-    thread::Thread::spawn(move || { // no need for -> ()
+fn _foo() {
+    thread::spawn(move || { // no need for -> ()
         loop {
             println!("hello");
         }
-    });
+    }).join();
 }
+
+fn main() {}

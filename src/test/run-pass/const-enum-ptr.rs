@@ -8,7 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-enum E { V0, V1(int) }
+
+enum E { V0, V1(isize) }
 static C: &'static E = &E::V0;
 
 pub fn main() {

@@ -8,13 +8,14 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 #![allow(unknown_features)]
 #![feature(box_syntax)]
 
 use std::sync::mpsc::{channel, Sender};
 use std::thread;
 
-fn child(tx: &Sender<Box<uint>>, i: uint) {
+fn child(tx: &Sender<Box<usize>>, i: usize) {
     tx.send(box i).unwrap();
 }
 
@@ -22,7 +23,7 @@ pub fn main() {
     let (tx, rx) = channel();
     let n = 100;
     let mut expected = 0;
-    let _t = (0..n).map(|i| {
+    let ts = (0..n).map(|i| {
         expected += i;
         let tx = tx.clone();
         thread::spawn(move|| {
@@ -37,4 +38,6 @@ pub fn main() {
     }
 
     assert_eq!(expected, actual);
+
+    for t in ts { t.join(); }
 }

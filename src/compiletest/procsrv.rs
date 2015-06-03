@@ -8,24 +8,25 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::process::{ExitStatus, Command, Child, Output, Stdio};
-use std::io::prelude::*;
 use std::dynamic_lib::DynamicLibrary;
+use std::io::prelude::*;
+use std::path::PathBuf;
+use std::process::{ExitStatus, Command, Child, Output, Stdio};
 
 fn add_target_env(cmd: &mut Command, lib_path: &str, aux_path: Option<&str>) {
     // Need to be sure to put both the lib_path and the aux path in the dylib
     // search path for the child.
     let mut path = DynamicLibrary::search_path();
     match aux_path {
-        Some(p) => path.insert(0, Path::new(p)),
+        Some(p) => path.insert(0, PathBuf::from(p)),
         None => {}
     }
-    path.insert(0, Path::new(lib_path));
+    path.insert(0, PathBuf::from(lib_path));
 
     // Add the new dylib search path var
     let var = DynamicLibrary::envvar();
     let newpath = DynamicLibrary::create_path(&path);
-    let newpath = String::from_utf8(newpath).unwrap();
+    let newpath = newpath.to_str().unwrap().to_string();
     cmd.env(var, &newpath);
 }
 

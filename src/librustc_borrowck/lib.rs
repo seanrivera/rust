@@ -16,31 +16,35 @@
 #![crate_type = "dylib"]
 #![crate_type = "rlib"]
 #![doc(html_logo_url = "http://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-      html_favicon_url = "http://www.rust-lang.org/favicon.ico",
+      html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
       html_root_url = "http://doc.rust-lang.org/nightly/")]
 
 #![allow(non_camel_case_types)]
 
-#![feature(core)]
-#![feature(int_uint)]
 #![feature(quote)]
 #![feature(rustc_diagnostic_macros)]
 #![feature(rustc_private)]
 #![feature(staged_api)]
-#![feature(unsafe_destructor)]
+#![feature(into_cow)]
 
 #[macro_use] extern crate log;
 #[macro_use] extern crate syntax;
 
 // for "clarity", rename the graphviz crate to dot; graphviz within `borrowck`
 // refers to the borrowck-specific graphviz adapter traits.
-extern crate "graphviz" as dot;
+extern crate graphviz as dot;
 extern crate rustc;
 
 pub use borrowck::check_crate;
 pub use borrowck::build_borrowck_dataflow_data_for_fn;
 pub use borrowck::FnPartsWithCFG;
 
+// NB: This module needs to be declared first so diagnostics are
+// registered before they are used.
+pub mod diagnostics;
+
 mod borrowck;
 
 pub mod graphviz;
+
+__build_diagnostic_array! { librustc_borrowck, DIAGNOSTICS }

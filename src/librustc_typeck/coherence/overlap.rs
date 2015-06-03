@@ -14,25 +14,29 @@
 use middle::traits;
 use middle::ty;
 use middle::infer::{self, new_infer_ctxt};
-use syntax::ast::{DefId};
-use syntax::ast::{LOCAL_CRATE};
+use syntax::ast::DefId;
+use syntax::ast::LOCAL_CRATE;
 use syntax::ast;
 use syntax::ast_util;
 use syntax::visit;
 use syntax::codemap::Span;
-use util::ppaux::Repr;
+use util::nodemap::DefIdMap;
+use util::ppaux::{Repr, UserString};
 
 pub fn check(tcx: &ty::ctxt) {
-    let mut overlap = OverlapChecker { tcx: tcx };
+    let mut overlap = OverlapChecker { tcx: tcx, default_impls: DefIdMap() };
     overlap.check_for_overlapping_impls();
 
-    // this secondary walk specifically checks for impls of defaulted
-    // traits, for which additional overlap rules exist
+    // this secondary walk specifically checks for some other cases,
+    // like defaulted traits, for which additional overlap rules exist
     visit::walk_crate(&mut overlap, tcx.map.krate());
 }
 
 struct OverlapChecker<'cx, 'tcx:'cx> {
     tcx: &'cx ty::ctxt<'tcx>,
+
+    // maps from a trait def-id to an impl id
+    default_impls: DefIdMap<ast::NodeId>,
 }
 
 impl<'cx, 'tcx> OverlapChecker<'cx, 'tcx> {
@@ -44,59 +48,99 @@ impl<'cx, 'tcx> OverlapChecker<'cx, 'tcx> {
         // check_for_overlapping_impls_of_trait() check, since that
         // check can populate this table further with impls from other
         // crates.
-        let trait_def_ids: Vec<(ast::DefId, Vec<ast::DefId>)> =
-            self.tcx.trait_impls.borrow().iter().map(|(&k, v)| {
-                // FIXME -- it seems like this method actually pushes
-                // duplicate impls onto the list
-                ty::populate_implementations_for_trait_if_necessary(self.tcx, k);
-                (k, v.borrow().clone())
-            }).collect();
+        let trait_defs: Vec<_> = self.tcx.trait_defs.borrow().values().cloned().collect();
 
-        for &(trait_def_id, ref impls) in &trait_def_ids {
-            self.check_for_overlapping_impls_of_trait(trait_def_id, impls);
+        for trait_def in trait_defs {
+            ty::populate_implementations_for_trait_if_necessary(
+                self.tcx,
+                trait_def.trait_ref.def_id);
+            self.check_for_overlapping_impls_of_trait(trait_def);
         }
     }
 
     fn check_for_overlapping_impls_of_trait(&self,
-                                            trait_def_id: ast::DefId,
-                                            trait_impls: &Vec<ast::DefId>)
+                                            trait_def: &'tcx ty::TraitDef<'tcx>)
     {
-        debug!("check_for_overlapping_impls_of_trait(trait_def_id={})",
-               trait_def_id.repr(self.tcx));
+        debug!("check_for_overlapping_impls_of_trait(trait_def={})",
+               trait_def.repr(self.tcx));
 
-        for (i, &impl1_def_id) in trait_impls.iter().enumerate() {
-            if impl1_def_id.krate != ast::LOCAL_CRATE {
-                // we don't need to check impls if both are external;
-                // that's the other crate's job.
-                continue;
-            }
+        // We should already know all impls of this trait, so these
+        // borrows are safe.
+        let blanket_impls = trait_def.blanket_impls.borrow();
+        let nonblanket_impls = trait_def.nonblanket_impls.borrow();
+        let trait_def_id = trait_def.trait_ref.def_id;
 
-            for &impl2_def_id in &trait_impls[(i+1)..] {
+        // Conflicts can only occur between a blanket impl and another impl,
+        // or between 2 non-blanket impls of the same kind.
+
+        for (i, &impl1_def_id) in blanket_impls.iter().enumerate() {
+            for &impl2_def_id in &blanket_impls[(i+1)..] {
                 self.check_if_impls_overlap(trait_def_id,
                                             impl1_def_id,
                                             impl2_def_id);
             }
+
+            for v in nonblanket_impls.values() {
+                for &impl2_def_id in v {
+                    self.check_if_impls_overlap(trait_def_id,
+                                                impl1_def_id,
+                                                impl2_def_id);
+                }
+            }
+        }
+
+        for impl_group in nonblanket_impls.values() {
+            for (i, &impl1_def_id) in impl_group.iter().enumerate() {
+                for &impl2_def_id in &impl_group[(i+1)..] {
+                    self.check_if_impls_overlap(trait_def_id,
+                                                impl1_def_id,
+                                                impl2_def_id);
+                }
+            }
         }
     }
+
+    // We need to coherently pick which impl will be displayed
+    // as causing the error message, and it must be the in the current
+    // crate. Just pick the smaller impl in the file.
+    fn order_impls(&self, impl1_def_id: ast::DefId, impl2_def_id: ast::DefId)
+            -> Option<(ast::DefId, ast::DefId)> {
+        if impl1_def_id.krate != ast::LOCAL_CRATE {
+            if impl2_def_id.krate != ast::LOCAL_CRATE {
+                // we don't need to check impls if both are external;
+                // that's the other crate's job.
+                None
+            } else {
+                Some((impl2_def_id, impl1_def_id))
+            }
+        } else if impl2_def_id.krate != ast::LOCAL_CRATE {
+            Some((impl1_def_id, impl2_def_id))
+        } else if impl1_def_id.node < impl2_def_id.node {
+            Some((impl1_def_id, impl2_def_id))
+        } else {
+            Some((impl2_def_id, impl1_def_id))
+        }
+    }
+
 
     fn check_if_impls_overlap(&self,
                               trait_def_id: ast::DefId,
                               impl1_def_id: ast::DefId,
                               impl2_def_id: ast::DefId)
     {
-        assert_eq!(impl1_def_id.krate, ast::LOCAL_CRATE);
+        if let Some((impl1_def_id, impl2_def_id)) = self.order_impls(
+            impl1_def_id, impl2_def_id)
+        {
+            debug!("check_if_impls_overlap({}, {}, {})",
+                   trait_def_id.repr(self.tcx),
+                   impl1_def_id.repr(self.tcx),
+                   impl2_def_id.repr(self.tcx));
 
-        debug!("check_if_impls_overlap({}, {}, {})",
-               trait_def_id.repr(self.tcx),
-               impl1_def_id.repr(self.tcx),
-               impl2_def_id.repr(self.tcx));
-
-        let infcx = infer::new_infer_ctxt(self.tcx);
-        if !traits::overlapping_impls(&infcx, impl1_def_id, impl2_def_id) {
-            return;
+            let infcx = infer::new_infer_ctxt(self.tcx);
+            if traits::overlapping_impls(&infcx, impl1_def_id, impl2_def_id) {
+                self.report_overlap_error(trait_def_id, impl1_def_id, impl2_def_id);
+            }
         }
-
-        self.report_overlap_error(trait_def_id, impl1_def_id, impl2_def_id);
     }
 
     fn report_overlap_error(&self, trait_def_id: ast::DefId,
@@ -134,27 +178,56 @@ impl<'cx, 'tcx,'v> visit::Visitor<'v> for OverlapChecker<'cx, 'tcx> {
     fn visit_item(&mut self, item: &'v ast::Item) {
         match item.node {
             ast::ItemDefaultImpl(_, _) => {
+                // look for another default impl; note that due to the
+                // general orphan/coherence rules, it must always be
+                // in this crate.
                 let impl_def_id = ast_util::local_def(item.id);
-                match ty::impl_trait_ref(self.tcx, impl_def_id) {
-                    Some(ref trait_ref) => {
-                        match ty::trait_default_impl(self.tcx, trait_ref.def_id) {
-                            Some(other_impl) if other_impl != impl_def_id => {
-                                self.report_overlap_error(trait_ref.def_id,
-                                                          other_impl,
-                                                          impl_def_id);
-                            }
-                            Some(_) => {}
-                            None => {
-                                self.tcx.sess.bug(
-                                          &format!("no default implementation recorded for `{:?}`",
-                                          item));
+                let trait_ref = ty::impl_trait_ref(self.tcx, impl_def_id).unwrap();
+                let prev_default_impl = self.default_impls.insert(trait_ref.def_id, item.id);
+                match prev_default_impl {
+                    Some(prev_id) => {
+                        self.report_overlap_error(trait_ref.def_id,
+                                                  impl_def_id,
+                                                  ast_util::local_def(prev_id));
+                    }
+                    None => { }
+                }
+            }
+            ast::ItemImpl(_, _, _, Some(_), ref self_ty, _) => {
+                let impl_def_id = ast_util::local_def(item.id);
+                let trait_ref = ty::impl_trait_ref(self.tcx, impl_def_id).unwrap();
+                let trait_def_id = trait_ref.def_id;
+                match trait_ref.self_ty().sty {
+                    ty::ty_trait(ref data) => {
+                        // This is something like impl Trait1 for Trait2. Illegal
+                        // if Trait1 is a supertrait of Trait2 or Trait2 is not object safe.
+
+                        if !traits::is_object_safe(self.tcx, data.principal_def_id()) {
+                            // this just means the self-ty is illegal,
+                            // and probably this error should have
+                            // been reported elsewhere, but I'm trying to avoid
+                            // giving a misleading message below.
+                            span_err!(self.tcx.sess, self_ty.span, E0372,
+                                      "the trait `{}` cannot be made into an object",
+                                      ty::item_path_str(self.tcx, data.principal_def_id()));
+                        } else {
+                            let mut supertrait_def_ids =
+                                traits::supertrait_def_ids(self.tcx, data.principal_def_id());
+                            if supertrait_def_ids.any(|d| d == trait_def_id) {
+                                span_err!(self.tcx.sess, item.span, E0371,
+                                          "the object type `{}` automatically \
+                                           implements the trait `{}`",
+                                          trait_ref.self_ty().user_string(self.tcx),
+                                          ty::item_path_str(self.tcx, trait_def_id));
                             }
                         }
                     }
-                    _ => {}
+                    _ => { }
                 }
             }
-            _ => {}
+            _ => {
+            }
         }
+        visit::walk_item(self, item);
     }
 }

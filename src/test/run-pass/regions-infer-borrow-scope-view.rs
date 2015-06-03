@@ -9,6 +9,7 @@
 // except according to those terms.
 
 
+
 fn view<T>(x: &[T]) -> &[T] {x}
 
 pub fn main() {

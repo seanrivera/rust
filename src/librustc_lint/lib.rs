@@ -27,21 +27,18 @@
 #![crate_type = "dylib"]
 #![crate_type = "rlib"]
 #![doc(html_logo_url = "http://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-      html_favicon_url = "http://www.rust-lang.org/favicon.ico",
+      html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
       html_root_url = "http://doc.rust-lang.org/nightly/")]
 
 #![feature(box_patterns)]
 #![feature(box_syntax)]
 #![feature(collections)]
 #![feature(core)]
-#![feature(int_uint)]
 #![feature(quote)]
 #![feature(rustc_diagnostic_macros)]
 #![feature(rustc_private)]
-#![feature(unsafe_destructor)]
 #![feature(staged_api)]
-#![feature(std_misc)]
-#![feature(unicode)]
+#![feature(str_char)]
 #![cfg_attr(test, feature(test))]
 
 extern crate syntax;
@@ -57,7 +54,7 @@ pub use rustc::session as session;
 pub use rustc::util as util;
 
 use session::Session;
-use lint::{LintPassObject, LintId};
+use lint::LintId;
 
 mod builtin;
 
@@ -68,7 +65,7 @@ pub fn register_builtins(store: &mut lint::LintStore, sess: Option<&Session>) {
     macro_rules! add_builtin {
         ($sess:ident, $($name:ident),*,) => (
             {$(
-                store.register_pass($sess, false, box builtin::$name as LintPassObject);
+                store.register_pass($sess, false, box builtin::$name);
                 )*}
             )
     }
@@ -76,7 +73,7 @@ pub fn register_builtins(store: &mut lint::LintStore, sess: Option<&Session>) {
     macro_rules! add_builtin_with_new {
         ($sess:ident, $($name:ident),*,) => (
             {$(
-                store.register_pass($sess, false, box builtin::$name::new() as LintPassObject);
+                store.register_pass($sess, false, box builtin::$name::new());
                 )*}
             )
     }
@@ -90,7 +87,6 @@ pub fn register_builtins(store: &mut lint::LintStore, sess: Option<&Session>) {
     add_builtin!(sess,
                  HardwiredLints,
                  WhileTrue,
-                 UnusedCasts,
                  ImproperCTypes,
                  BoxPointers,
                  UnusedAttributes,
@@ -112,6 +108,8 @@ pub fn register_builtins(store: &mut lint::LintStore, sess: Option<&Session>) {
                  UnconditionalRecursion,
                  InvalidNoMangleItems,
                  PluginAsLibrary,
+                 DropWithReprExtern,
+                 MutableTransmutes,
                  );
 
     add_builtin_with_new!(sess,
@@ -130,7 +128,7 @@ pub fn register_builtins(store: &mut lint::LintStore, sess: Option<&Session>) {
                     UNUSED_UNSAFE, PATH_STATEMENTS);
 
     // We have one lint pass defined specially
-    store.register_pass(sess, false, box lint::GatherNodeLevels as LintPassObject);
+    store.register_pass(sess, false, box lint::GatherNodeLevels);
 
     // Insert temporary renamings for a one-time deprecation
     store.register_renamed("raw_pointer_deriving", "raw_pointer_derive");

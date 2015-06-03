@@ -10,10 +10,12 @@
 
 // min-lldb-version: 310
 
-// This test case checks if function arguments already have the correct value when breaking at the
-// first line of the function, that is if the function prologue has already been executed at the
-// first line. Note that because of the __morestack part of the prologue GDB incorrectly breaks at
-// before the arguments have been properly loaded when setting the breakpoint via the function name.
+// This test case checks if function arguments already have the correct value
+// when breaking at the first line of the function, that is if the function
+// prologue has already been executed at the first line. Note that because of
+// the __morestack part of the prologue GDB incorrectly breaks at before the
+// arguments have been properly loaded when setting the breakpoint via the
+// function name.
 
 // compile-flags:-g
 
@@ -224,8 +226,8 @@
 #![allow(unused_variables)]
 #![omit_gdb_pretty_printer_section]
 
-fn immediate_args(a: int, b: bool, c: f64) {
-    ::std::old_io::print("") // #break
+fn immediate_args(a: isize, b: bool, c: f64) {
+    println!("") // #break
 }
 
 struct BigStruct {
@@ -240,21 +242,21 @@ struct BigStruct {
 }
 
 fn non_immediate_args(a: BigStruct, b: BigStruct) {
-    ::std::old_io::print("") // #break
+    println!("") // #break
 }
 
 fn binding(a: i64, b: u64, c: f64) {
     let x = 0; // #break
-    ::std::old_io::print("")
+    println!("")
 }
 
 fn assignment(mut a: u64, b: u64, c: f64) {
     a = b; // #break
-    ::std::old_io::print("")
+    println!("")
 }
 
 fn function_call(x: u64, y: u64, z: f64) {
-    std::old_io::stdio::print("Hi!") // #break
+    println!("Hi!") // #break
 }
 
 fn identifier(x: u64, y: u64, z: f64) -> u64 {
@@ -330,6 +332,3 @@ fn main() {
     while_expr(40, 41, 42);
     loop_expr(43, 44, 45);
 }
-
-
-

@@ -13,14 +13,14 @@ pub use self::CommentStyle::*;
 use ast;
 use codemap::{BytePos, CharPos, CodeMap, Pos};
 use diagnostic;
-use parse::lexer::{is_whitespace, Reader};
-use parse::lexer::{StringReader, TokenAndSpan};
 use parse::lexer::is_block_doc_comment;
+use parse::lexer::{StringReader, TokenAndSpan};
+use parse::lexer::{is_whitespace, Reader};
 use parse::lexer;
 use print::pprust;
+use str::char_at;
 
 use std::io::Read;
-use std::str;
 use std::usize;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -64,7 +64,7 @@ pub fn strip_doc_comment_decoration(comment: &str) -> String {
         let mut i = 0;
         let mut j = lines.len();
         // first line of all-stars should be omitted
-        if lines.len() > 0 &&
+        if !lines.is_empty() &&
                 lines[0].chars().all(|c| c == '*') {
             i += 1;
         }
@@ -210,11 +210,11 @@ fn all_whitespace(s: &str, col: CharPos) -> Option<usize> {
     let mut col = col.to_usize();
     let mut cursor: usize = 0;
     while col > 0 && cursor < len {
-        let r: str::CharRange = s.char_range_at(cursor);
-        if !r.ch.is_whitespace() {
+        let ch = char_at(s, cursor);
+        if !ch.is_whitespace() {
             return None;
         }
-        cursor = r.next;
+        cursor += ch.len_utf8();
         col -= 1;
     }
     return Some(cursor);
@@ -247,7 +247,7 @@ fn read_block_comment(rdr: &mut StringReader,
     rdr.bump();
     rdr.bump();
 
-    let mut curr_line = String::from_str("/*");
+    let mut curr_line = String::from("/*");
 
     // doc-comments are not really comments, they are attributes
     if (rdr.curr_is('*') && !rdr.nextch_is('*')) || rdr.curr_is('!') {
@@ -295,7 +295,7 @@ fn read_block_comment(rdr: &mut StringReader,
                 }
             }
         }
-        if curr_line.len() != 0 {
+        if !curr_line.is_empty() {
             trim_whitespace_prefix_and_push_line(&mut lines,
                                                  curr_line,
                                                  col);
@@ -383,7 +383,7 @@ pub fn gather_comments_and_literals(span_diagnostic: &diagnostic::SpanHandler,
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
 
     #[test] fn test_block_doc_comment_1() {

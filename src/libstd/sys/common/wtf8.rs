@@ -21,26 +21,28 @@
 //! nor can it decode WTF-8 from arbitrary bytes.
 //! WTF-8 strings can be obtained from UTF-8, UTF-16, or code points.
 
+// this module is imported from @SimonSapin's repo and has tons of dead code on
+// unix (it's mostly used on windows), so don't worry about dead code here.
+#![allow(dead_code)]
+
 use core::prelude::*;
 
 use core::char::{encode_utf8_raw, encode_utf16_raw};
 use core::str::{char_range_at_raw, next_code_point};
-use core::raw::Slice as RawSlice;
 
 use ascii::*;
 use borrow::Cow;
 use cmp;
 use fmt;
 use hash::{Hash, Hasher};
-use iter::{FromIterator, IntoIterator};
+use iter::FromIterator;
 use mem;
-use num::Int;
 use ops;
 use slice;
 use str;
 use string::String;
 use sys_common::AsInner;
-use unicode::str::{Utf16Item, utf16_items};
+use rustc_unicode::str::{Utf16Item, utf16_items};
 use vec::Vec;
 
 const UTF8_REPLACEMENT_CHARACTER: &'static [u8] = b"\xEF\xBF\xBD";
@@ -65,7 +67,7 @@ impl fmt::Debug for CodePoint {
 }
 
 impl CodePoint {
-    /// Unsafely create a new `CodePoint` without checking the value.
+    /// Unsafely creates a new `CodePoint` without checking the value.
     ///
     /// Only use when `value` is known to be less than or equal to 0x10FFFF.
     #[inline]
@@ -73,9 +75,9 @@ impl CodePoint {
         CodePoint { value: value }
     }
 
-    /// Create a new `CodePoint` if the value is a valid code point.
+    /// Creates a new `CodePoint` if the value is a valid code point.
     ///
-    /// Return `None` if `value` is above 0x10FFFF.
+    /// Returns `None` if `value` is above 0x10FFFF.
     #[inline]
     pub fn from_u32(value: u32) -> Option<CodePoint> {
         match value {
@@ -84,7 +86,7 @@ impl CodePoint {
         }
     }
 
-    /// Create a new `CodePoint` from a `char`.
+    /// Creates a new `CodePoint` from a `char`.
     ///
     /// Since all Unicode scalar values are code points, this always succeeds.
     #[inline]
@@ -92,15 +94,15 @@ impl CodePoint {
         CodePoint { value: value as u32 }
     }
 
-    /// Return the numeric value of the code point.
+    /// Returns the numeric value of the code point.
     #[inline]
     pub fn to_u32(&self) -> u32 {
         self.value
     }
 
-    /// Optionally return a Unicode scalar value for the code point.
+    /// Optionally returns a Unicode scalar value for the code point.
     ///
-    /// Return `None` if the code point is a surrogate (from U+D800 to U+DFFF).
+    /// Returns `None` if the code point is a surrogate (from U+D800 to U+DFFF).
     #[inline]
     pub fn to_char(&self) -> Option<char> {
         match self.value {
@@ -109,9 +111,9 @@ impl CodePoint {
         }
     }
 
-    /// Return a Unicode scalar value for the code point.
+    /// Returns a Unicode scalar value for the code point.
     ///
-    /// Return `'\u{FFFD}'` (the replacement character “�”)
+    /// Returns `'\u{FFFD}'` (the replacement character “�”)
     /// if the code point is a surrogate (from U+D800 to U+DFFF).
     #[inline]
     pub fn to_char_lossy(&self) -> char {
@@ -147,19 +149,19 @@ impl fmt::Debug for Wtf8Buf {
 }
 
 impl Wtf8Buf {
-    /// Create an new, empty WTF-8 string.
+    /// Creates an new, empty WTF-8 string.
     #[inline]
     pub fn new() -> Wtf8Buf {
         Wtf8Buf { bytes: Vec::new() }
     }
 
-    /// Create an new, empty WTF-8 string with pre-allocated capacity for `n` bytes.
+    /// Creates an new, empty WTF-8 string with pre-allocated capacity for `n` bytes.
     #[inline]
-    pub fn with_capacity(n: uint) -> Wtf8Buf {
+    pub fn with_capacity(n: usize) -> Wtf8Buf {
         Wtf8Buf { bytes: Vec::with_capacity(n) }
     }
 
-    /// Create a WTF-8 string from an UTF-8 `String`.
+    /// Creates a WTF-8 string from a UTF-8 `String`.
     ///
     /// This takes ownership of the `String` and does not copy.
     ///
@@ -169,17 +171,17 @@ impl Wtf8Buf {
         Wtf8Buf { bytes: string.into_bytes() }
     }
 
-    /// Create a WTF-8 string from an UTF-8 `&str` slice.
+    /// Creates a WTF-8 string from a UTF-8 `&str` slice.
     ///
     /// This copies the content of the slice.
     ///
     /// Since WTF-8 is a superset of UTF-8, this always succeeds.
     #[inline]
     pub fn from_str(str: &str) -> Wtf8Buf {
-        Wtf8Buf { bytes: slice::SliceExt::to_vec(str.as_bytes()) }
+        Wtf8Buf { bytes: <[_]>::to_vec(str.as_bytes()) }
     }
 
-    /// Create a WTF-8 string from a potentially ill-formed UTF-16 slice of 16-bit code units.
+    /// Creates a WTF-8 string from a potentially ill-formed UTF-16 slice of 16-bit code units.
     ///
     /// This is lossless: calling `.encode_wide()` on the resulting string
     /// will always return the original code units.
@@ -210,10 +212,10 @@ impl Wtf8Buf {
         unsafe {
             // Attempt to not use an intermediate buffer by just pushing bytes
             // directly onto this string.
-            let slice = RawSlice {
-                data: self.bytes.as_ptr().offset(cur_len as int),
-                len: 4,
-            };
+            let slice = slice::from_raw_parts_mut(
+                self.bytes.as_mut_ptr().offset(cur_len as isize),
+                4
+            );
             let used = encode_utf8_raw(code_point.value, mem::transmute(slice))
                 .unwrap_or(0);
             self.bytes.set_len(cur_len + used);
@@ -231,19 +233,19 @@ impl Wtf8Buf {
     ///
     /// # Panics
     ///
-    /// Panics if the new capacity overflows `uint`.
+    /// Panics if the new capacity overflows `usize`.
     #[inline]
-    pub fn reserve(&mut self, additional: uint) {
+    pub fn reserve(&mut self, additional: usize) {
         self.bytes.reserve(additional)
     }
 
     /// Returns the number of bytes that this string buffer can hold without reallocating.
     #[inline]
-    pub fn capacity(&self) -> uint {
+    pub fn capacity(&self) -> usize {
         self.bytes.capacity()
     }
 
-    /// Append an UTF-8 slice at the end of the string.
+    /// Append a UTF-8 slice at the end of the string.
     #[inline]
     pub fn push_str(&mut self, other: &str) {
         self.bytes.push_all(other.as_bytes())
@@ -310,12 +312,12 @@ impl Wtf8Buf {
     /// Panics if `new_len` > current length,
     /// or if `new_len` is not a code point boundary.
     #[inline]
-    pub fn truncate(&mut self, new_len: uint) {
+    pub fn truncate(&mut self, new_len: usize) {
         assert!(is_code_point_boundary(self, new_len));
         self.bytes.truncate(new_len)
     }
 
-    /// Consume the WTF-8 string and try to convert it to UTF-8.
+    /// Consumes the WTF-8 string and tries to convert it to UTF-8.
     ///
     /// This does not copy the data.
     ///
@@ -329,7 +331,7 @@ impl Wtf8Buf {
         }
     }
 
-    /// Consume the WTF-8 string and convert it lossily to UTF-8.
+    /// Consumes the WTF-8 string and converts it lossily to UTF-8.
     ///
     /// This does not copy the data (but may overwrite parts of it in place).
     ///
@@ -341,8 +343,8 @@ impl Wtf8Buf {
                 Some((surrogate_pos, _)) => {
                     pos = surrogate_pos + 3;
                     slice::bytes::copy_memory(
+                        UTF8_REPLACEMENT_CHARACTER,
                         &mut self.bytes[surrogate_pos .. pos],
-                        UTF8_REPLACEMENT_CHARACTER
                     );
                 },
                 None => return unsafe { String::from_utf8_unchecked(self.bytes) }
@@ -450,7 +452,7 @@ impl fmt::Debug for Wtf8 {
 }
 
 impl Wtf8 {
-    /// Create a WTF-8 slice from a UTF-8 `&str` slice.
+    /// Creates a WTF-8 slice from a UTF-8 `&str` slice.
     ///
     /// Since WTF-8 is a superset of UTF-8, this always succeeds.
     #[inline]
@@ -458,39 +460,39 @@ impl Wtf8 {
         unsafe { mem::transmute(value.as_bytes()) }
     }
 
-    /// Return the length, in WTF-8 bytes.
+    /// Returns the length, in WTF-8 bytes.
     #[inline]
-    pub fn len(&self) -> uint {
+    pub fn len(&self) -> usize {
         self.bytes.len()
     }
 
-    /// Return the code point at `position` if it is in the ASCII range,
+    /// Returns the code point at `position` if it is in the ASCII range,
     /// or `b'\xFF' otherwise.
     ///
     /// # Panics
     ///
     /// Panics if `position` is beyond the end of the string.
     #[inline]
-    pub fn ascii_byte_at(&self, position: uint) -> u8 {
+    pub fn ascii_byte_at(&self, position: usize) -> u8 {
         match self.bytes[position] {
             ascii_byte @ 0x00 ... 0x7F => ascii_byte,
             _ => 0xFF
         }
     }
 
-    /// Return the code point at `position`.
+    /// Returns the code point at `position`.
     ///
     /// # Panics
     ///
     /// Panics if `position` is not at a code point boundary,
     /// or is beyond the end of the string.
     #[inline]
-    pub fn code_point_at(&self, position: uint) -> CodePoint {
+    pub fn code_point_at(&self, position: usize) -> CodePoint {
         let (code_point, _) = self.code_point_range_at(position);
         code_point
     }
 
-    /// Return the code point at `position`
+    /// Returns the code point at `position`
     /// and the position of the next code point.
     ///
     /// # Panics
@@ -498,20 +500,20 @@ impl Wtf8 {
     /// Panics if `position` is not at a code point boundary,
     /// or is beyond the end of the string.
     #[inline]
-    pub fn code_point_range_at(&self, position: uint) -> (CodePoint, uint) {
+    pub fn code_point_range_at(&self, position: usize) -> (CodePoint, usize) {
         let (c, n) = char_range_at_raw(&self.bytes, position);
         (CodePoint { value: c }, n)
     }
 
-    /// Return an iterator for the string’s code points.
+    /// Returns an iterator for the string’s code points.
     #[inline]
     pub fn code_points(&self) -> Wtf8CodePoints {
         Wtf8CodePoints { bytes: self.bytes.iter() }
     }
 
-    /// Try to convert the string to UTF-8 and return a `&str` slice.
+    /// Tries to convert the string to UTF-8 and return a `&str` slice.
     ///
-    /// Return `None` if the string contains surrogates.
+    /// Returns `None` if the string contains surrogates.
     ///
     /// This does not copy the data.
     #[inline]
@@ -524,8 +526,8 @@ impl Wtf8 {
         }
     }
 
-    /// Lossily convert the string to UTF-8.
-    /// Return an UTF-8 `&str` slice if the contents are well-formed in UTF-8.
+    /// Lossily converts the string to UTF-8.
+    /// Returns a UTF-8 `&str` slice if the contents are well-formed in UTF-8.
     ///
     /// Surrogates are replaced with `"\u{FFFD}"` (the replacement character “�”).
     ///
@@ -555,7 +557,7 @@ impl Wtf8 {
         }
     }
 
-    /// Convert the WTF-8 string to potentially ill-formed UTF-16
+    /// Converts the WTF-8 string to potentially ill-formed UTF-16
     /// and return an iterator of 16-bit code units.
     ///
     /// This is lossless:
@@ -567,7 +569,7 @@ impl Wtf8 {
     }
 
     #[inline]
-    fn next_surrogate(&self, mut pos: uint) -> Option<(uint, u16)> {
+    fn next_surrogate(&self, mut pos: usize) -> Option<(usize, u16)> {
         let mut iter = self.bytes[pos..].iter();
         loop {
             let b = match iter.next() {
@@ -635,7 +637,7 @@ impl ops::Index<ops::Range<usize>> for Wtf8 {
     type Output = Wtf8;
 
     #[inline]
-    fn index(&self, range: &ops::Range<usize>) -> &Wtf8 {
+    fn index(&self, range: ops::Range<usize>) -> &Wtf8 {
         // is_code_point_boundary checks that the index is in [0, .len()]
         if range.start <= range.end &&
            is_code_point_boundary(self, range.start) &&
@@ -657,7 +659,7 @@ impl ops::Index<ops::RangeFrom<usize>> for Wtf8 {
     type Output = Wtf8;
 
     #[inline]
-    fn index(&self, range: &ops::RangeFrom<usize>) -> &Wtf8 {
+    fn index(&self, range: ops::RangeFrom<usize>) -> &Wtf8 {
         // is_code_point_boundary checks that the index is in [0, .len()]
         if is_code_point_boundary(self, range.start) {
             unsafe { slice_unchecked(self, range.start, self.len()) }
@@ -677,7 +679,7 @@ impl ops::Index<ops::RangeTo<usize>> for Wtf8 {
     type Output = Wtf8;
 
     #[inline]
-    fn index(&self, range: &ops::RangeTo<usize>) -> &Wtf8 {
+    fn index(&self, range: ops::RangeTo<usize>) -> &Wtf8 {
         // is_code_point_boundary checks that the index is in [0, .len()]
         if is_code_point_boundary(self, range.end) {
             unsafe { slice_unchecked(self, 0, range.end) }
@@ -691,7 +693,7 @@ impl ops::Index<ops::RangeFull> for Wtf8 {
     type Output = Wtf8;
 
     #[inline]
-    fn index(&self, _range: &ops::RangeFull) -> &Wtf8 {
+    fn index(&self, _range: ops::RangeFull) -> &Wtf8 {
         self
     }
 }
@@ -710,7 +712,7 @@ fn decode_surrogate_pair(lead: u16, trail: u16) -> char {
 
 /// Copied from core::str::StrPrelude::is_char_boundary
 #[inline]
-pub fn is_code_point_boundary(slice: &Wtf8, index: uint) -> bool {
+pub fn is_code_point_boundary(slice: &Wtf8, index: usize) -> bool {
     if index == slice.len() { return true; }
     match slice.bytes.get(index) {
         None => false,
@@ -720,16 +722,17 @@ pub fn is_code_point_boundary(slice: &Wtf8, index: uint) -> bool {
 
 /// Copied from core::str::raw::slice_unchecked
 #[inline]
-pub unsafe fn slice_unchecked(s: &Wtf8, begin: uint, end: uint) -> &Wtf8 {
-    mem::transmute(RawSlice {
-        data: s.bytes.as_ptr().offset(begin as int),
-        len: end - begin,
-    })
+pub unsafe fn slice_unchecked(s: &Wtf8, begin: usize, end: usize) -> &Wtf8 {
+    // memory layout of an &[u8] and &Wtf8 are the same
+    mem::transmute(slice::from_raw_parts(
+        s.bytes.as_ptr().offset(begin as isize),
+        end - begin
+    ))
 }
 
 /// Copied from core::str::raw::slice_error_fail
 #[inline(never)]
-pub fn slice_error_fail(s: &Wtf8, begin: uint, end: uint) -> ! {
+pub fn slice_error_fail(s: &Wtf8, begin: usize, end: usize) -> ! {
     assert!(begin <= end);
     panic!("index {} and/or {} in `{:?}` do not lie on character boundary",
           begin, end, s);
@@ -752,7 +755,7 @@ impl<'a> Iterator for Wtf8CodePoints<'a> {
     }
 
     #[inline]
-    fn size_hint(&self) -> (uint, Option<uint>) {
+    fn size_hint(&self) -> (usize, Option<usize>) {
         let (len, _) = self.bytes.size_hint();
         (len.saturating_add(3) / 4, Some(len))
     }
@@ -786,7 +789,7 @@ impl<'a> Iterator for EncodeWide<'a> {
     }
 
     #[inline]
-    fn size_hint(&self) -> (uint, Option<uint>) {
+    fn size_hint(&self) -> (usize, Option<usize>) {
         let (low, high) = self.code_points.size_hint();
         // every code point gets either one u16 or two u16,
         // so this iterator is between 1 or 2 times as
@@ -1030,14 +1033,14 @@ mod tests {
     }
 
     #[test]
-    #[should_fail]
+    #[should_panic]
     fn wtf8buf_truncate_fail_code_point_boundary() {
         let mut string = Wtf8Buf::from_str("aé");
         string.truncate(2);
     }
 
     #[test]
-    #[should_fail]
+    #[should_panic]
     fn wtf8buf_truncate_fail_longer() {
         let mut string = Wtf8Buf::from_str("aé");
         string.truncate(4);
@@ -1133,7 +1136,7 @@ mod tests {
     }
 
     #[test]
-    #[should_fail]
+    #[should_panic]
     fn wtf8_slice_not_code_point_boundary() {
         &Wtf8::from_str("aé 💩")[2.. 4];
     }
@@ -1144,7 +1147,7 @@ mod tests {
     }
 
     #[test]
-    #[should_fail]
+    #[should_panic]
     fn wtf8_slice_from_not_code_point_boundary() {
         &Wtf8::from_str("aé 💩")[2..];
     }
@@ -1155,7 +1158,7 @@ mod tests {
     }
 
     #[test]
-    #[should_fail]
+    #[should_panic]
     fn wtf8_slice_to_not_code_point_boundary() {
         &Wtf8::from_str("aé 💩")[5..];
     }

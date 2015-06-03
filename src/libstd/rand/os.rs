@@ -15,18 +15,16 @@ pub use self::imp::OsRng;
 
 #[cfg(all(unix, not(target_os = "ios")))]
 mod imp {
-    extern crate libc;
-
+    use prelude::v1::*;
     use self::OsRngInner::*;
 
-    use old_io::{IoResult, File};
-    use old_path::Path;
+    use fs::File;
+    use io;
+    use libc;
+    use mem;
     use rand::Rng;
     use rand::reader::ReaderRng;
-    use result::Result::Ok;
-    use slice::SliceExt;
-    use mem;
-    use os::errno;
+    use sys::os::errno;
 
     #[cfg(all(target_os = "linux",
               any(target_arch = "x86_64",
@@ -98,26 +96,25 @@ mod imp {
                   target_arch = "aarch64",
                   target_arch = "powerpc")))]
     fn is_getrandom_available() -> bool {
-        use sync::atomic::{AtomicBool, ATOMIC_BOOL_INIT, Ordering};
+        use sync::atomic::{AtomicBool, Ordering};
+        use sync::Once;
 
-        static GETRANDOM_CHECKED: AtomicBool = ATOMIC_BOOL_INIT;
-        static GETRANDOM_AVAILABLE: AtomicBool = ATOMIC_BOOL_INIT;
+        static CHECKER: Once = Once::new();
+        static AVAILABLE: AtomicBool = AtomicBool::new(false);
 
-        if !GETRANDOM_CHECKED.load(Ordering::Relaxed) {
+        CHECKER.call_once(|| {
             let mut buf: [u8; 0] = [];
             let result = getrandom(&mut buf);
             let available = if result == -1 {
-                let err = errno() as libc::c_int;
-                err != libc::ENOSYS
+                let err = io::Error::last_os_error().raw_os_error();
+                err != Some(libc::ENOSYS)
             } else {
                 true
             };
-            GETRANDOM_AVAILABLE.store(available, Ordering::Relaxed);
-            GETRANDOM_CHECKED.store(true, Ordering::Relaxed);
-            available
-        } else {
-            GETRANDOM_AVAILABLE.load(Ordering::Relaxed)
-        }
+            AVAILABLE.store(available, Ordering::Relaxed);
+        });
+
+        AVAILABLE.load(Ordering::Relaxed)
     }
 
     #[cfg(not(all(target_os = "linux",
@@ -149,12 +146,12 @@ mod imp {
 
     impl OsRng {
         /// Create a new `OsRng`.
-        pub fn new() -> IoResult<OsRng> {
+        pub fn new() -> io::Result<OsRng> {
             if is_getrandom_available() {
                 return Ok(OsRng { inner: OsGetrandomRng });
             }
 
-            let reader = try!(File::open(&Path::new("/dev/urandom")));
+            let reader = try!(File::open("/dev/urandom"));
             let reader_rng = ReaderRng::new(reader);
 
             Ok(OsRng { inner: OsReaderRng(reader_rng) })
@@ -185,15 +182,12 @@ mod imp {
 
 #[cfg(target_os = "ios")]
 mod imp {
-    extern crate libc;
+    use prelude::v1::*;
 
-    use old_io::{IoResult};
+    use io;
     use mem;
-    use os;
     use rand::Rng;
-    use result::Result::{Ok};
-    use self::libc::{c_int, size_t};
-    use slice::SliceExt;
+    use libc::{c_int, size_t};
 
     /// A random number generator that retrieves randomness straight from
     /// the operating system. Platform sources:
@@ -206,7 +200,8 @@ mod imp {
     ///
     /// This does not block.
     pub struct OsRng {
-        // dummy field to ensure that this struct cannot be constructed outside of this module
+        // dummy field to ensure that this struct cannot be constructed outside
+        // of this module
         _dummy: (),
     }
 
@@ -224,7 +219,7 @@ mod imp {
 
     impl OsRng {
         /// Create a new `OsRng`.
-        pub fn new() -> IoResult<OsRng> {
+        pub fn new() -> io::Result<OsRng> {
             Ok(OsRng { _dummy: () })
         }
     }
@@ -242,10 +237,12 @@ mod imp {
         }
         fn fill_bytes(&mut self, v: &mut [u8]) {
             let ret = unsafe {
-                SecRandomCopyBytes(kSecRandomDefault, v.len() as size_t, v.as_mut_ptr())
+                SecRandomCopyBytes(kSecRandomDefault, v.len() as size_t,
+                                   v.as_mut_ptr())
             };
             if ret == -1 {
-                panic!("couldn't generate random bytes: {}", os::last_os_error());
+                panic!("couldn't generate random bytes: {}",
+                       io::Error::last_os_error());
             }
         }
     }
@@ -253,17 +250,13 @@ mod imp {
 
 #[cfg(windows)]
 mod imp {
-    extern crate libc;
+    use prelude::v1::*;
 
-    use old_io::{IoResult, IoError};
+    use io;
     use mem;
-    use ops::Drop;
-    use os;
     use rand::Rng;
-    use result::Result::{Ok, Err};
-    use self::libc::{DWORD, BYTE, LPCSTR, BOOL};
-    use self::libc::types::os::arch::extra::{LONG_PTR};
-    use slice::SliceExt;
+    use libc::types::os::arch::extra::{LONG_PTR};
+    use libc::{DWORD, BYTE, LPCSTR, BOOL};
 
     type HCRYPTPROV = LONG_PTR;
 
@@ -286,6 +279,7 @@ mod imp {
     const CRYPT_VERIFYCONTEXT: DWORD = 0xF0000000;
 
     #[allow(non_snake_case)]
+    #[link(name = "advapi32")]
     extern "system" {
         fn CryptAcquireContextA(phProv: *mut HCRYPTPROV,
                                 pszContainer: LPCSTR,
@@ -300,7 +294,7 @@ mod imp {
 
     impl OsRng {
         /// Create a new `OsRng`.
-        pub fn new() -> IoResult<OsRng> {
+        pub fn new() -> io::Result<OsRng> {
             let mut hcp = 0;
             let ret = unsafe {
                 CryptAcquireContextA(&mut hcp, 0 as LPCSTR, 0 as LPCSTR,
@@ -309,7 +303,7 @@ mod imp {
             };
 
             if ret == 0 {
-                Err(IoError::last_error())
+                Err(io::Error::last_os_error())
             } else {
                 Ok(OsRng { hcryptprov: hcp })
             }
@@ -333,7 +327,8 @@ mod imp {
                                v.as_mut_ptr())
             };
             if ret == 0 {
-                panic!("couldn't generate random bytes: {}", os::last_os_error());
+                panic!("couldn't generate random bytes: {}",
+                       io::Error::last_os_error());
             }
         }
     }
@@ -344,14 +339,15 @@ mod imp {
                 CryptReleaseContext(self.hcryptprov, 0)
             };
             if ret == 0 {
-                panic!("couldn't release context: {}", os::last_os_error());
+                panic!("couldn't release context: {}",
+                       io::Error::last_os_error());
             }
         }
     }
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use prelude::v1::*;
 
     use sync::mpsc::channel;
@@ -379,7 +375,7 @@ mod test {
             txs.push(tx);
 
             thread::spawn(move|| {
-                // wait until all the tasks are ready to go.
+                // wait until all the threads are ready to go.
                 rx.recv().unwrap();
 
                 // deschedule to attempt to interleave things as much
@@ -399,7 +395,7 @@ mod test {
             });
         }
 
-        // start all the tasks
+        // start all the threads
         for tx in &txs {
             tx.send(()).unwrap();
         }

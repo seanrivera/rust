@@ -10,31 +10,31 @@
 
 //! Implementation of `std::os` functionality for unix systems
 
+#![allow(unused_imports)] // lots of cfg code here
+
 use prelude::v1::*;
-use os::unix::*;
+use os::unix::prelude::*;
 
 use error::Error as StdError;
-use ffi::{CString, CStr, OsString, OsStr, AsOsStr};
+use ffi::{CString, CStr, OsString, OsStr};
 use fmt;
 use io;
 use iter;
 use libc::{self, c_int, c_char, c_void};
 use mem;
-use old_io::{IoError, IoResult};
 use ptr;
 use path::{self, PathBuf};
 use slice;
 use str;
 use sys::c;
 use sys::fd;
-use sys::fs::FileDesc;
 use vec;
 
 const BUF_BYTES: usize = 2048;
 const TMPBUF_SZ: usize = 128;
 
 fn bytes2path(b: &[u8]) -> PathBuf {
-    PathBuf::new(<OsStr as OsStrExt>::from_bytes(b))
+    PathBuf::from(<OsStr as OsStrExt>::from_bytes(b))
 }
 
 fn os2path(os: OsString) -> PathBuf {
@@ -84,7 +84,7 @@ pub fn errno() -> i32 {
     }
 }
 
-/// Get a detailed string description for the given error number
+/// Gets a detailed string description for the given error number.
 pub fn error_string(errno: i32) -> String {
     #[cfg(target_os = "linux")]
     extern {
@@ -123,7 +123,8 @@ pub fn getcwd() -> io::Result<PathBuf> {
 }
 
 pub fn chdir(p: &path::Path) -> io::Result<()> {
-    let p = try!(CString::new(p.as_os_str().as_bytes()));
+    let p: &OsStr = p.as_ref();
+    let p = try!(CString::new(p.as_bytes()));
     unsafe {
         match libc::chdir(p.as_ptr()) == (0 as c_int) {
             true => Ok(()),
@@ -156,13 +157,13 @@ impl<'a> Iterator for SplitPaths<'a> {
 pub struct JoinPathsError;
 
 pub fn join_paths<I, T>(paths: I) -> Result<OsString, JoinPathsError>
-    where I: Iterator<Item=T>, T: AsOsStr
+    where I: Iterator<Item=T>, T: AsRef<OsStr>
 {
     let mut joined = Vec::new();
     let sep = b':';
 
     for (i, path) in paths.enumerate() {
-        let path = path.as_os_str().as_bytes();
+        let path = path.as_ref().as_bytes();
         if i > 0 { joined.push(sep) }
         if path.contains(&sep) {
             return Err(JoinPathsError)
@@ -197,14 +198,14 @@ pub fn current_exe() -> io::Result<PathBuf> {
                          0 as libc::size_t);
         if err != 0 { return Err(io::Error::last_os_error()); }
         if sz == 0 { return Err(io::Error::last_os_error()); }
-        let mut v: Vec<u8> = Vec::with_capacity(sz as uint);
+        let mut v: Vec<u8> = Vec::with_capacity(sz as usize);
         let err = sysctl(mib.as_mut_ptr(), mib.len() as ::libc::c_uint,
                          v.as_mut_ptr() as *mut libc::c_void, &mut sz,
                          ptr::null_mut(), 0 as libc::size_t);
         if err != 0 { return Err(io::Error::last_os_error()); }
         if sz == 0 { return Err(io::Error::last_os_error()); }
-        v.set_len(sz as uint - 1); // chop off trailing NUL
-        Ok(PathBuf::new::<OsString>(&OsStringExt::from_vec(v)))
+        v.set_len(sz as usize - 1); // chop off trailing NUL
+        Ok(PathBuf::from(OsString::from_vec(v)))
     }
 }
 
@@ -215,8 +216,8 @@ pub fn current_exe() -> io::Result<PathBuf> {
 
 #[cfg(any(target_os = "bitrig", target_os = "openbsd"))]
 pub fn current_exe() -> io::Result<PathBuf> {
-    use sync::{StaticMutex, MUTEX_INIT};
-    static LOCK: StaticMutex = MUTEX_INIT;
+    use sync::StaticMutex;
+    static LOCK: StaticMutex = StaticMutex::new();
 
     extern {
         fn rust_current_exe() -> *const c_char;
@@ -230,7 +231,7 @@ pub fn current_exe() -> io::Result<PathBuf> {
             Err(io::Error::last_os_error())
         } else {
             let vec = CStr::from_ptr(v).to_bytes().to_vec();
-            Ok(PathBuf::new::<OsString>(&OsStringExt::from_vec(vec)))
+            Ok(PathBuf::from(OsString::from_vec(vec)))
         }
     }
 }
@@ -247,11 +248,11 @@ pub fn current_exe() -> io::Result<PathBuf> {
         let mut sz: u32 = 0;
         _NSGetExecutablePath(ptr::null_mut(), &mut sz);
         if sz == 0 { return Err(io::Error::last_os_error()); }
-        let mut v: Vec<u8> = Vec::with_capacity(sz as uint);
+        let mut v: Vec<u8> = Vec::with_capacity(sz as usize);
         let err = _NSGetExecutablePath(v.as_mut_ptr() as *mut i8, &mut sz);
         if err != 0 { return Err(io::Error::last_os_error()); }
-        v.set_len(sz as uint - 1); // chop off trailing NUL
-        Ok(PathBuf::new::<OsString>(&OsStringExt::from_vec(v)))
+        v.set_len(sz as usize - 1); // chop off trailing NUL
+        Ok(PathBuf::from(OsString::from_vec(v)))
     }
 }
 
@@ -284,7 +285,7 @@ pub fn args() -> Args {
     let vec = unsafe {
         let (argc, argv) = (*_NSGetArgc() as isize,
                             *_NSGetArgv() as *const *const c_char);
-        range(0, argc as isize).map(|i| {
+        (0.. argc as isize).map(|i| {
             let bytes = CStr::from_ptr(*argv.offset(i)).to_bytes().to_vec();
             OsStringExt::from_vec(bytes)
         }).collect::<Vec<_>>()
@@ -304,12 +305,11 @@ pub fn args() -> Args {
 // In general it looks like:
 // res = Vec::new()
 // let args = [[NSProcessInfo processInfo] arguments]
-// for i in range(0, [args count])
+// for i in (0..[args count])
 //      res.push([args objectAtIndex:i])
 // res
 #[cfg(target_os = "ios")]
 pub fn args() -> Args {
-    use iter::range;
     use mem;
 
     #[link(name = "objc")]
@@ -338,13 +338,13 @@ pub fn args() -> Args {
         let info = objc_msgSend(klass, process_info_sel);
         let args = objc_msgSend(info, arguments_sel);
 
-        let cnt: int = mem::transmute(objc_msgSend(args, count_sel));
-        for i in range(0, cnt) {
+        let cnt: usize = mem::transmute(objc_msgSend(args, count_sel));
+        for i in (0..cnt) {
             let tmp = objc_msgSend(args, object_at_sel, i);
             let utf_c_str: *const libc::c_char =
                 mem::transmute(objc_msgSend(tmp, utf8_sel));
             let bytes = CStr::from_ptr(utf_c_str).to_bytes();
-            res.push(OsString::from_str(str::from_utf8(bytes).unwrap()))
+            res.push(OsString::from(str::from_utf8(bytes).unwrap()))
         }
     }
 
@@ -396,7 +396,7 @@ pub fn env() -> Env {
         let mut environ = *environ();
         if environ as usize == 0 {
             panic!("os::env() failure getting env string from OS: {}",
-                   IoError::last_error());
+                   io::Error::last_os_error());
         }
         let mut result = Vec::new();
         while *environ != ptr::null() {
@@ -407,7 +407,7 @@ pub fn env() -> Env {
     };
 
     fn parse(input: &[u8]) -> (OsString, OsString) {
-        let mut it = input.splitn(1, |b| *b == b'=');
+        let mut it = input.splitn(2, |b| *b == b'=');
         let key = it.next().unwrap().to_vec();
         let default: &[u8] = &[];
         let val = it.next().unwrap_or(default).to_vec();
@@ -432,7 +432,7 @@ pub fn setenv(k: &OsStr, v: &OsStr) {
         let k = k.to_cstring().unwrap();
         let v = v.to_cstring().unwrap();
         if libc::funcs::posix01::unistd::setenv(k.as_ptr(), v.as_ptr(), 1) != 0 {
-            panic!("failed setenv: {}", IoError::last_error());
+            panic!("failed setenv: {}", io::Error::last_os_error());
         }
     }
 }
@@ -441,17 +441,8 @@ pub fn unsetenv(n: &OsStr) {
     unsafe {
         let nbuf = n.to_cstring().unwrap();
         if libc::funcs::posix01::unistd::unsetenv(nbuf.as_ptr()) != 0 {
-            panic!("failed unsetenv: {}", IoError::last_error());
+            panic!("failed unsetenv: {}", io::Error::last_os_error());
         }
-    }
-}
-
-pub unsafe fn pipe() -> IoResult<(FileDesc, FileDesc)> {
-    let mut fds = [0; 2];
-    if libc::pipe(fds.as_mut_ptr()) == 0 {
-        Ok((FileDesc::new(fds[0], true), FileDesc::new(fds[1], true)))
-    } else {
-        Err(IoError::last_error())
     }
 }
 
@@ -462,17 +453,17 @@ pub fn page_size() -> usize {
 }
 
 pub fn temp_dir() -> PathBuf {
-    getenv("TMPDIR".as_os_str()).map(os2path).unwrap_or_else(|| {
+    getenv("TMPDIR".as_ref()).map(os2path).unwrap_or_else(|| {
         if cfg!(target_os = "android") {
-            PathBuf::new("/data/local/tmp")
+            PathBuf::from("/data/local/tmp")
         } else {
-            PathBuf::new("/tmp")
+            PathBuf::from("/tmp")
         }
     })
 }
 
 pub fn home_dir() -> Option<PathBuf> {
-    return getenv("HOME".as_os_str()).or_else(|| unsafe {
+    return getenv("HOME".as_ref()).or_else(|| unsafe {
         fallback()
     }).map(os2path);
 
@@ -482,7 +473,7 @@ pub fn home_dir() -> Option<PathBuf> {
     #[cfg(not(any(target_os = "android",
                   target_os = "ios")))]
     unsafe fn fallback() -> Option<OsString> {
-        let mut amt = match libc::sysconf(c::_SC_GETPW_R_SIZE_MAX) {
+        let amt = match libc::sysconf(c::_SC_GETPW_R_SIZE_MAX) {
             n if n < 0 => 512 as usize,
             n => n as usize,
         };
@@ -502,4 +493,8 @@ pub fn home_dir() -> Option<PathBuf> {
             return Some(OsStringExt::from_vec(bytes))
         }
     }
+}
+
+pub fn exit(code: i32) -> ! {
+    unsafe { libc::exit(code as c_int) }
 }

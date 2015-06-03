@@ -10,10 +10,10 @@
 
 use sync::{Mutex, Condvar};
 
-/// A barrier enables multiple tasks to synchronize the beginning
+/// A barrier enables multiple threads to synchronize the beginning
 /// of some computation.
 ///
-/// ```rust
+/// ```
 /// use std::sync::{Arc, Barrier};
 /// use std::thread;
 ///
@@ -49,7 +49,7 @@ struct BarrierState {
 pub struct BarrierWaitResult(bool);
 
 impl Barrier {
-    /// Create a new barrier that can block a given number of threads.
+    /// Creates a new barrier that can block a given number of threads.
     ///
     /// A barrier will block `n`-1 threads which call `wait` and then wake up
     /// all threads at once when the `n`th thread calls `wait`.
@@ -65,7 +65,7 @@ impl Barrier {
         }
     }
 
-    /// Block the current thread until all threads has rendezvoused here.
+    /// Blocks the current thread until all threads has rendezvoused here.
     ///
     /// Barriers are re-usable after all threads have rendezvoused once, and can
     /// be used continuously.
@@ -97,7 +97,7 @@ impl Barrier {
 }
 
 impl BarrierWaitResult {
-    /// Return whether this thread from `wait` is the "leader thread".
+    /// Returns whether this thread from `wait` is the "leader thread".
     ///
     /// Only one thread will have `true` returned from their result, all other
     /// threads will have `false` returned.
@@ -128,7 +128,7 @@ mod tests {
             });
         }
 
-        // At this point, all spawned tasks should be blocked,
+        // At this point, all spawned threads should be blocked,
         // so we shouldn't get anything from the port
         assert!(match rx.try_recv() {
             Err(TryRecvError::Empty) => true,

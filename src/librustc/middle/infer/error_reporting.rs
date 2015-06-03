@@ -79,11 +79,10 @@ use middle::ty::{self, Ty};
 use middle::ty::{Region, ReFree};
 use std::cell::{Cell, RefCell};
 use std::char::from_u32;
-use std::rc::Rc;
 use std::string::String;
 use syntax::ast;
 use syntax::ast_map;
-use syntax::ast_util::{name_to_dummy_lifetime, PostExpansionMethod};
+use syntax::ast_util::name_to_dummy_lifetime;
 use syntax::owned_slice::OwnedSlice;
 use syntax::codemap;
 use syntax::parse::token;
@@ -159,6 +158,7 @@ trait ErrorReportingHelpers<'tcx> {
     fn give_expl_lifetime_param(&self,
                                 decl: &ast::FnDecl,
                                 unsafety: ast::Unsafety,
+                                constness: ast::Constness,
                                 ident: ast::Ident,
                                 opt_explicit_self: Option<&ast::ExplicitSelf_>,
                                 generics: &ast::Generics,
@@ -357,23 +357,9 @@ impl<'a, 'tcx> ErrorReporting<'tcx> for InferCtxt<'a, 'tcx> {
             }
         };
 
-        let message_root_str = match trace.origin {
-            infer::Misc(_) => "mismatched types",
-            infer::MethodCompatCheck(_) => "method not compatible with trait",
-            infer::ExprAssignable(_) => "mismatched types",
-            infer::RelateTraitRefs(_) => "mismatched traits",
-            infer::RelateSelfType(_) => "mismatched types",
-            infer::RelateOutputImplTypes(_) => "mismatched types",
-            infer::MatchExpressionArm(_, _) => "match arms have incompatible types",
-            infer::IfExpression(_) => "if and else have incompatible types",
-            infer::IfExpressionWithNoElse(_) => "if may be missing an else clause",
-            infer::RangeExpression(_) => "start and end of range have incompatible types",
-            infer::EquatePredicate(_) => "equality predicate not satisfied",
-        };
-
         span_err!(self.tcx.sess, trace.origin.span(), E0308,
             "{}: {} ({})",
-                 message_root_str,
+                 trace.origin,
                  expected_found_str,
                  ty::type_err_to_str(self.tcx, terr));
 
@@ -387,8 +373,9 @@ impl<'a, 'tcx> ErrorReporting<'tcx> for InferCtxt<'a, 'tcx> {
     fn report_and_explain_type_error(&self,
                                      trace: TypeTrace<'tcx>,
                                      terr: &ty::type_err<'tcx>) {
+        let span = trace.origin.span();
         self.report_type_error(trace, terr);
-        ty::note_and_explain_type_err(self.tcx, terr);
+        ty::note_and_explain_type_err(self.tcx, terr, span);
     }
 
     /// Returns a string of the form "expected `{}`, found `{}`", or None if this is a derived
@@ -826,7 +813,7 @@ impl<'a, 'tcx> ErrorReporting<'tcx> for InferCtxt<'a, 'tcx> {
         }
         self.give_suggestion(same_regions);
         for &(ref trace, terr) in trace_origins {
-            self.report_type_error(trace.clone(), &terr);
+            self.report_and_explain_type_error(trace.clone(), &terr);
         }
     }
 
@@ -840,34 +827,38 @@ impl<'a, 'tcx> ErrorReporting<'tcx> for InferCtxt<'a, 'tcx> {
             Some(ref node) => match *node {
                 ast_map::NodeItem(ref item) => {
                     match item.node {
-                        ast::ItemFn(ref fn_decl, pur, _, ref gen, _) => {
-                            Some((&**fn_decl, gen, pur, item.ident, None, item.span))
+                        ast::ItemFn(ref fn_decl, unsafety, constness, _, ref gen, _) => {
+                            Some((fn_decl, gen, unsafety, constness,
+                                  item.ident, None, item.span))
                         },
                         _ => None
                     }
                 }
-                ast_map::NodeImplItem(ref item) => {
-                    match **item {
-                        ast::MethodImplItem(ref m) => {
-                            Some((m.pe_fn_decl(),
-                                  m.pe_generics(),
-                                  m.pe_unsafety(),
-                                  m.pe_ident(),
-                                  Some(&m.pe_explicit_self().node),
-                                  m.span))
+                ast_map::NodeImplItem(item) => {
+                    match item.node {
+                        ast::MethodImplItem(ref sig, _) => {
+                            Some((&sig.decl,
+                                  &sig.generics,
+                                  sig.unsafety,
+                                  sig.constness,
+                                  item.ident,
+                                  Some(&sig.explicit_self.node),
+                                  item.span))
                         }
-                        ast::TypeImplItem(_) => None,
+                        ast::MacImplItem(_) => self.tcx.sess.bug("unexpanded macro"),
+                        _ => None,
                     }
                 },
-                ast_map::NodeTraitItem(ref item) => {
-                    match **item {
-                        ast::ProvidedMethod(ref m) => {
-                            Some((m.pe_fn_decl(),
-                                  m.pe_generics(),
-                                  m.pe_unsafety(),
-                                  m.pe_ident(),
-                                  Some(&m.pe_explicit_self().node),
-                                  m.span))
+                ast_map::NodeTraitItem(item) => {
+                    match item.node {
+                        ast::MethodTraitItem(ref sig, Some(_)) => {
+                            Some((&sig.decl,
+                                  &sig.generics,
+                                  sig.unsafety,
+                                  sig.constness,
+                                  item.ident,
+                                  Some(&sig.explicit_self.node),
+                                  item.span))
                         }
                         _ => None
                     }
@@ -876,12 +867,12 @@ impl<'a, 'tcx> ErrorReporting<'tcx> for InferCtxt<'a, 'tcx> {
             },
             None => None
         };
-        let (fn_decl, generics, unsafety, ident, expl_self, span)
+        let (fn_decl, generics, unsafety, constness, ident, expl_self, span)
                                     = node_inner.expect("expect item fn");
         let rebuilder = Rebuilder::new(self.tcx, fn_decl, expl_self,
                                        generics, same_regions, &life_giver);
         let (fn_decl, expl_self, generics) = rebuilder.rebuild();
-        self.give_expl_lifetime_param(&fn_decl, unsafety, ident,
+        self.give_expl_lifetime_param(&fn_decl, unsafety, constness, ident,
                                       expl_self.as_ref(), &generics, span);
     }
 }
@@ -978,7 +969,7 @@ impl<'a, 'tcx> Rebuilder<'a, 'tcx> {
     fn pick_lifetime(&self,
                      region_names: &HashSet<ast::Name>)
                      -> (ast::Lifetime, FreshOrKept) {
-        if region_names.len() > 0 {
+        if !region_names.is_empty() {
             // It's not necessary to convert the set of region names to a
             // vector of string and then sort them. However, it makes the
             // choice of lifetime name deterministic and thus easier to test.
@@ -1253,7 +1244,7 @@ impl<'a, 'tcx> Rebuilder<'a, 'tcx> {
                             let lifetimes =
                                 path.segments.last().unwrap().parameters.lifetimes();
                             let mut insert = Vec::new();
-                            if lifetimes.len() == 0 {
+                            if lifetimes.is_empty() {
                                 let anon = self.cur_anon.get();
                                 for (i, a) in (anon..anon+expected).enumerate() {
                                     if anon_nums.contains(&a) {
@@ -1373,7 +1364,7 @@ impl<'a, 'tcx> Rebuilder<'a, 'tcx> {
 
             ast::AngleBracketedParameters(ref data) => {
                 let mut new_lts = Vec::new();
-                if data.lifetimes.len() == 0 {
+                if data.lifetimes.is_empty() {
                     // traverse once to see if there's a need to insert lifetime
                     let need_insert = (0..expected).any(|i| {
                         indexes.contains(&i)
@@ -1436,12 +1427,13 @@ impl<'a, 'tcx> ErrorReportingHelpers<'tcx> for InferCtxt<'a, 'tcx> {
     fn give_expl_lifetime_param(&self,
                                 decl: &ast::FnDecl,
                                 unsafety: ast::Unsafety,
+                                constness: ast::Constness,
                                 ident: ast::Ident,
                                 opt_explicit_self: Option<&ast::ExplicitSelf_>,
                                 generics: &ast::Generics,
                                 span: codemap::Span) {
-        let suggested_fn = pprust::fun_to_string(decl, unsafety, ident,
-                                              opt_explicit_self, generics);
+        let suggested_fn = pprust::fun_to_string(decl, unsafety, constness, ident,
+                                                 opt_explicit_self, generics);
         let msg = format!("consider using an explicit lifetime \
                            parameter as shown: {}", suggested_fn);
         self.tcx.sess.span_help(span, &msg[..]);
@@ -1494,38 +1486,38 @@ impl<'a, 'tcx> ErrorReportingHelpers<'tcx> for InferCtxt<'a, 'tcx> {
             infer::Subtype(ref trace) => {
                 let desc = match trace.origin {
                     infer::Misc(_) => {
-                        format!("types are compatible")
+                        "types are compatible"
                     }
                     infer::MethodCompatCheck(_) => {
-                        format!("method type is compatible with trait")
+                        "method type is compatible with trait"
                     }
                     infer::ExprAssignable(_) => {
-                        format!("expression is assignable")
+                        "expression is assignable"
                     }
                     infer::RelateTraitRefs(_) => {
-                        format!("traits are compatible")
+                        "traits are compatible"
                     }
                     infer::RelateSelfType(_) => {
-                        format!("self type matches impl self type")
+                        "self type matches impl self type"
                     }
                     infer::RelateOutputImplTypes(_) => {
-                        format!("trait type parameters matches those \
-                                 specified on the impl")
+                        "trait type parameters matches those \
+                                 specified on the impl"
                     }
                     infer::MatchExpressionArm(_, _) => {
-                        format!("match arms have compatible types")
+                        "match arms have compatible types"
                     }
                     infer::IfExpression(_) => {
-                        format!("if and else have compatible types")
+                        "if and else have compatible types"
                     }
                     infer::IfExpressionWithNoElse(_) => {
-                        format!("if may be missing an else clause")
+                        "if may be missing an else clause"
                     }
                     infer::RangeExpression(_) => {
-                        format!("start and end of range have compatible types")
+                        "start and end of range have compatible types"
                     }
                     infer::EquatePredicate(_) => {
-                        format!("equality where clause is satisfied")
+                        "equality where clause is satisfied"
                     }
                 };
 
@@ -1665,8 +1657,8 @@ impl<'a, 'tcx> ErrorReportingHelpers<'tcx> for InferCtxt<'a, 'tcx> {
             infer::RelateRegionParamBound(span) => {
                 self.tcx.sess.span_note(
                     span,
-                    &format!("...so that the declared lifetime parameter bounds \
-                                are satisfied"));
+                    "...so that the declared lifetime parameter bounds \
+                                are satisfied");
             }
             infer::SafeDestructor(span) => {
                 self.tcx.sess.span_note(
@@ -1692,13 +1684,13 @@ impl<'tcx> Resolvable<'tcx> for Ty<'tcx> {
     }
 }
 
-impl<'tcx> Resolvable<'tcx> for Rc<ty::TraitRef<'tcx>> {
+impl<'tcx> Resolvable<'tcx> for ty::TraitRef<'tcx> {
     fn resolve<'a>(&self, infcx: &InferCtxt<'a, 'tcx>)
-                   -> Rc<ty::TraitRef<'tcx>> {
-        Rc::new(infcx.resolve_type_vars_if_possible(&**self))
+                   -> ty::TraitRef<'tcx> {
+        infcx.resolve_type_vars_if_possible(self)
     }
     fn contains_error(&self) -> bool {
-        ty::trait_ref_contains_error(&**self)
+        ty::trait_ref_contains_error(self)
     }
 }
 
@@ -1711,7 +1703,7 @@ impl<'tcx> Resolvable<'tcx> for ty::PolyTraitRef<'tcx> {
     }
 
     fn contains_error(&self) -> bool {
-        ty::trait_ref_contains_error(&*self.0)
+        ty::trait_ref_contains_error(&self.0)
     }
 }
 
@@ -1723,19 +1715,20 @@ fn lifetimes_in_scope(tcx: &ty::ctxt,
     let method_id_opt = match tcx.map.find(parent) {
         Some(node) => match node {
             ast_map::NodeItem(item) => match item.node {
-                ast::ItemFn(_, _, _, ref gen, _) => {
+                ast::ItemFn(_, _, _, _, ref gen, _) => {
                     taken.push_all(&gen.lifetimes);
                     None
                 },
                 _ => None
             },
             ast_map::NodeImplItem(ii) => {
-                match *ii {
-                    ast::MethodImplItem(ref m) => {
-                        taken.push_all(&m.pe_generics().lifetimes);
-                        Some(m.id)
+                match ii.node {
+                    ast::MethodImplItem(ref sig, _) => {
+                        taken.push_all(&sig.generics.lifetimes);
+                        Some(ii.id)
                     }
-                    ast::TypeImplItem(_) => None,
+                    ast::MacImplItem(_) => tcx.sess.bug("unexpanded macro"),
+                    _ => None,
                 }
             }
             _ => None
@@ -1764,7 +1757,7 @@ fn lifetimes_in_scope(tcx: &ty::ctxt,
 // LifeGiver is responsible for generating fresh lifetime names
 struct LifeGiver {
     taken: HashSet<String>,
-    counter: Cell<uint>,
+    counter: Cell<usize>,
     generated: RefCell<Vec<ast::Lifetime>>,
 }
 
@@ -1804,7 +1797,7 @@ impl LifeGiver {
         return lifetime;
 
         // 0 .. 25 generates a .. z, 26 .. 51 generates aa .. zz, and so on
-        fn num_to_string(counter: uint) -> String {
+        fn num_to_string(counter: usize) -> String {
             let mut s = String::new();
             let (n, r) = (counter/26 + 1, counter % 26);
             let letter: char = from_u32((r+97) as u32).unwrap();

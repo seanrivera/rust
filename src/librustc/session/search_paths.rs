@@ -10,6 +10,7 @@
 
 use std::slice;
 use std::path::{Path, PathBuf};
+use session::early_error;
 
 #[derive(Clone, Debug)]
 pub struct SearchPaths {
@@ -50,7 +51,10 @@ impl SearchPaths {
         } else {
             (PathKind::All, path)
         };
-        self.paths.push((kind, PathBuf::new(path)));
+        if path.is_empty() {
+            early_error("empty search path given via `-L`");
+        }
+        self.paths.push((kind, PathBuf::from(path)));
     }
 
     pub fn iter(&self, kind: PathKind) -> Iter {

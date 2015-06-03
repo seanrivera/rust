@@ -8,9 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::old_io::timer;
-use std::time::Duration;
+use std::thread;
 
 fn main() {
-    timer::sleep(Duration::milliseconds(250));
+    thread::sleep_ms(250);
 }

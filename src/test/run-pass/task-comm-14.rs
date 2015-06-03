@@ -8,22 +8,24 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![feature(std_misc)]
+
 use std::sync::mpsc::{channel, Sender};
-use std::thread::Thread;
+use std::thread;
 
 pub fn main() {
     let (tx, rx) = channel();
 
-    // Spawn 10 tasks each sending us back one int.
+    // Spawn 10 threads each sending us back one isize.
     let mut i = 10;
     while (i > 0) {
         println!("{}", i);
         let tx = tx.clone();
-        Thread::spawn({let i = i; move|| { child(i, &tx) }});
+        thread::spawn({let i = i; move|| { child(i, &tx) }});
         i = i - 1;
     }
 
-    // Spawned tasks are likely killed before they get a chance to send
+    // Spawned threads are likely killed before they get a chance to send
     // anything back, so we deadlock here.
 
     i = 10;
@@ -36,7 +38,7 @@ pub fn main() {
     println!("main thread exiting");
 }
 
-fn child(x: int, tx: &Sender<int>) {
+fn child(x: isize, tx: &Sender<isize>) {
     println!("{}", x);
     tx.send(x).unwrap();
 }

@@ -10,40 +10,41 @@
 
 //!
 //
-// Code relating to taking, dropping, etc as well as type descriptors.
+// Code relating to drop glue.
 
 
 use back::abi;
 use back::link::*;
-use llvm::{ValueRef, True, get_param};
 use llvm;
+use llvm::{ValueRef, get_param};
+use metadata::csearch;
 use middle::lang_items::ExchangeFreeFnLangItem;
 use middle::subst;
 use middle::subst::{Subst, Substs};
+use middle::ty::{self, Ty};
 use trans::adt;
+use trans::adt::GetDtorType; // for tcx.dtor_type()
 use trans::base::*;
 use trans::build::*;
 use trans::callee;
 use trans::cleanup;
 use trans::cleanup::CleanupMethods;
-use trans::consts;
 use trans::common::*;
-use trans::datum;
 use trans::debuginfo::DebugLoc;
+use trans::declare;
 use trans::expr;
+use trans::foreign;
+use trans::inline;
 use trans::machine::*;
-use trans::tvec;
+use trans::monomorphize;
+use trans::type_of::{type_of, type_of_dtor, sizing_type_of, align_of};
 use trans::type_::Type;
-use trans::type_of::{self, type_of, sizing_type_of, align_of};
-use middle::ty::{self, Ty};
-use util::ppaux::{ty_to_short_str, Repr};
 use util::ppaux;
+use util::ppaux::{ty_to_short_str, Repr};
 
 use arena::TypedArena;
 use libc::c_uint;
-use std::ffi::CString;
 use syntax::ast;
-use syntax::parse::token;
 
 pub fn trans_exchange_free_dyn<'blk, 'tcx>(cx: Block<'blk, 'tcx>,
                                            v: ValueRef,
@@ -130,14 +131,26 @@ pub fn get_drop_glue_type<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
 pub fn drop_ty<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                            v: ValueRef,
                            t: Ty<'tcx>,
-                           debug_loc: DebugLoc)
-                           -> Block<'blk, 'tcx> {
+                           debug_loc: DebugLoc) -> Block<'blk, 'tcx> {
+    drop_ty_core(bcx, v, t, debug_loc, false)
+}
+
+pub fn drop_ty_core<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
+                                v: ValueRef,
+                                t: Ty<'tcx>,
+                                debug_loc: DebugLoc,
+                                skip_dtor: bool) -> Block<'blk, 'tcx> {
     // NB: v is an *alias* of type t here, not a direct value.
-    debug!("drop_ty(t={})", t.repr(bcx.tcx()));
+    debug!("drop_ty_core(t={}, skip_dtor={})", t.repr(bcx.tcx()), skip_dtor);
     let _icx = push_ctxt("drop_ty");
     if bcx.fcx.type_needs_drop(t) {
         let ccx = bcx.ccx();
-        let glue = get_drop_glue(ccx, t);
+        let g = if skip_dtor {
+            DropGlueKind::TyContents(t)
+        } else {
+            DropGlueKind::Ty(t)
+        };
+        let glue = get_drop_glue_core(ccx, g);
         let glue_type = get_drop_glue_type(ccx, t);
         let ptr = if glue_type != t {
             PointerCast(bcx, v, type_of(ccx, glue_type).ptr_to())
@@ -153,22 +166,64 @@ pub fn drop_ty<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
 pub fn drop_ty_immediate<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                                      v: ValueRef,
                                      t: Ty<'tcx>,
-                                     debug_loc: DebugLoc)
+                                     debug_loc: DebugLoc,
+                                     skip_dtor: bool)
                                      -> Block<'blk, 'tcx> {
     let _icx = push_ctxt("drop_ty_immediate");
     let vp = alloca(bcx, type_of(bcx.ccx(), t), "");
     store_ty(bcx, v, vp, t);
-    drop_ty(bcx, vp, t, debug_loc)
+    drop_ty_core(bcx, vp, t, debug_loc, skip_dtor)
 }
 
 pub fn get_drop_glue<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> ValueRef {
-    debug!("make drop glue for {}", ppaux::ty_to_string(ccx.tcx(), t));
-    let t = get_drop_glue_type(ccx, t);
-    debug!("drop glue type {}", ppaux::ty_to_string(ccx.tcx(), t));
-    match ccx.drop_glues().borrow().get(&t) {
+    get_drop_glue_core(ccx, DropGlueKind::Ty(t))
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum DropGlueKind<'tcx> {
+    /// The normal path; runs the dtor, and then recurs on the contents
+    Ty(Ty<'tcx>),
+    /// Skips the dtor, if any, for ty; drops the contents directly.
+    /// Note that the dtor is only skipped at the most *shallow*
+    /// level, namely, an `impl Drop for Ty` itself. So, for example,
+    /// if Ty is Newtype(S) then only the Drop impl for for Newtype
+    /// itself will be skipped, while the Drop impl for S, if any,
+    /// will be invoked.
+    TyContents(Ty<'tcx>),
+}
+
+impl<'tcx> DropGlueKind<'tcx> {
+    fn ty(&self) -> Ty<'tcx> {
+        match *self { DropGlueKind::Ty(t) | DropGlueKind::TyContents(t) => t }
+    }
+
+    fn map_ty<F>(&self, mut f: F) -> DropGlueKind<'tcx> where F: FnMut(Ty<'tcx>) -> Ty<'tcx>
+    {
+        match *self {
+            DropGlueKind::Ty(t) => DropGlueKind::Ty(f(t)),
+            DropGlueKind::TyContents(t) => DropGlueKind::TyContents(f(t)),
+        }
+    }
+
+    fn to_string<'a>(&self, ccx: &CrateContext<'a, 'tcx>) -> String {
+        let t_str = ppaux::ty_to_string(ccx.tcx(), self.ty());
+        match *self {
+            DropGlueKind::Ty(_) => format!("DropGlueKind::Ty({})", t_str),
+            DropGlueKind::TyContents(_) => format!("DropGlueKind::TyContents({})", t_str),
+        }
+    }
+}
+
+fn get_drop_glue_core<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
+                                g: DropGlueKind<'tcx>) -> ValueRef {
+    debug!("make drop glue for {}", g.to_string(ccx));
+    let g = g.map_ty(|t| get_drop_glue_type(ccx, t));
+    debug!("drop glue type {}", g.to_string(ccx));
+    match ccx.drop_glues().borrow().get(&g) {
         Some(&glue) => return glue,
         _ => { }
     }
+    let t = g.ty();
 
     let llty = if type_is_sized(ccx.tcx(), t) {
         type_of(ccx, t).ptr_to()
@@ -178,51 +233,118 @@ pub fn get_drop_glue<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> Val
 
     let llfnty = Type::glue_fn(ccx, llty);
 
-    let (glue, new_sym) = match ccx.available_drop_glues().borrow().get(&t) {
-        Some(old_sym) => {
-            let glue = decl_cdecl_fn(ccx, &old_sym[..], llfnty, ty::mk_nil(ccx.tcx()));
-            (glue, None)
-        },
-        None => {
-            let (sym, glue) = declare_generic_glue(ccx, t, llfnty, "drop");
-            (glue, Some(sym))
-        },
-    };
-
-    ccx.drop_glues().borrow_mut().insert(t, glue);
-
     // To avoid infinite recursion, don't `make_drop_glue` until after we've
     // added the entry to the `drop_glues` cache.
-    match new_sym {
-        Some(sym) => {
-            ccx.available_drop_glues().borrow_mut().insert(t, sym);
-            // We're creating a new drop glue, so also generate a body.
-            make_generic_glue(ccx, t, glue, make_drop_glue, "drop");
-        },
-        None => {},
-    }
+    if let Some(old_sym) = ccx.available_drop_glues().borrow().get(&g) {
+        let llfn = declare::declare_cfn(ccx, &old_sym, llfnty, ty::mk_nil(ccx.tcx()));
+        ccx.drop_glues().borrow_mut().insert(g, llfn);
+        return llfn;
+    };
 
-    glue
+    let fn_nm = mangle_internal_name_by_type_and_seq(ccx, t, "drop");
+    let llfn = declare::define_cfn(ccx, &fn_nm, llfnty, ty::mk_nil(ccx.tcx())).unwrap_or_else(||{
+       ccx.sess().bug(&format!("symbol `{}` already defined", fn_nm));
+    });
+    ccx.available_drop_glues().borrow_mut().insert(g, fn_nm);
+
+    let _s = StatRecorder::new(ccx, format!("drop {}", ty_to_short_str(ccx.tcx(), t)));
+
+    let empty_substs = ccx.tcx().mk_substs(Substs::trans_empty());
+    let (arena, fcx): (TypedArena<_>, FunctionContext);
+    arena = TypedArena::new();
+    fcx = new_fn_ctxt(ccx, llfn, ast::DUMMY_NODE_ID, false,
+                      ty::FnConverging(ty::mk_nil(ccx.tcx())),
+                      empty_substs, None, &arena);
+
+    let bcx = init_function(&fcx, false, ty::FnConverging(ty::mk_nil(ccx.tcx())));
+
+    update_linkage(ccx, llfn, None, OriginalTranslation);
+
+    ccx.stats().n_glues_created.set(ccx.stats().n_glues_created.get() + 1);
+    // All glue functions take values passed *by alias*; this is a
+    // requirement since in many contexts glue is invoked indirectly and
+    // the caller has no idea if it's dealing with something that can be
+    // passed by value.
+    //
+    // llfn is expected be declared to take a parameter of the appropriate
+    // type, so we don't need to explicitly cast the function parameter.
+
+    let llrawptr0 = get_param(llfn, fcx.arg_pos(0) as c_uint);
+    let bcx = make_drop_glue(bcx, llrawptr0, g);
+    finish_fn(&fcx, bcx, ty::FnConverging(ty::mk_nil(ccx.tcx())), DebugLoc::None);
+
+    llfn
 }
 
 fn trans_struct_drop_flag<'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
                                       t: Ty<'tcx>,
-                                      v0: ValueRef,
+                                      struct_data: ValueRef,
                                       dtor_did: ast::DefId,
                                       class_did: ast::DefId,
                                       substs: &subst::Substs<'tcx>)
                                       -> Block<'blk, 'tcx> {
+    assert!(type_is_sized(bcx.tcx(), t), "Precondition: caller must ensure t is sized");
+
     let repr = adt::represent_type(bcx.ccx(), t);
-    let struct_data = if type_is_sized(bcx.tcx(), t) {
-        v0
-    } else {
-        let llval = GEPi(bcx, v0, &[0, abi::FAT_PTR_ADDR]);
-        Load(bcx, llval)
-    };
     let drop_flag = unpack_datum!(bcx, adt::trans_drop_flag_ptr(bcx, &*repr, struct_data));
-    with_cond(bcx, load_ty(bcx, drop_flag.val, bcx.tcx().types.bool), |cx| {
-        trans_struct_drop(cx, t, v0, dtor_did, class_did, substs)
+    let loaded = load_ty(bcx, drop_flag.val, bcx.tcx().dtor_type());
+    let drop_flag_llty = type_of(bcx.fcx.ccx, bcx.tcx().dtor_type());
+    let init_val = C_integral(drop_flag_llty, adt::DTOR_NEEDED as u64, false);
+
+    let bcx = if !bcx.ccx().check_drop_flag_for_sanity() {
+        bcx
+    } else {
+        let drop_flag_llty = type_of(bcx.fcx.ccx, bcx.tcx().dtor_type());
+        let done_val = C_integral(drop_flag_llty, adt::DTOR_DONE as u64, false);
+        let not_init = ICmp(bcx, llvm::IntNE, loaded, init_val, DebugLoc::None);
+        let not_done = ICmp(bcx, llvm::IntNE, loaded, done_val, DebugLoc::None);
+        let drop_flag_neither_initialized_nor_cleared =
+            And(bcx, not_init, not_done, DebugLoc::None);
+        with_cond(bcx, drop_flag_neither_initialized_nor_cleared, |cx| {
+            let llfn = cx.ccx().get_intrinsic(&("llvm.debugtrap"));
+            Call(cx, llfn, &[], None, DebugLoc::None);
+            cx
+        })
+    };
+
+    let drop_flag_dtor_needed = ICmp(bcx, llvm::IntEQ, loaded, init_val, DebugLoc::None);
+    with_cond(bcx, drop_flag_dtor_needed, |cx| {
+        trans_struct_drop(cx, t, struct_data, dtor_did, class_did, substs)
     })
+}
+
+pub fn get_res_dtor<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
+                              did: ast::DefId,
+                              t: Ty<'tcx>,
+                              parent_id: ast::DefId,
+                              substs: &Substs<'tcx>)
+                              -> ValueRef {
+    let _icx = push_ctxt("trans_res_dtor");
+    let did = inline::maybe_instantiate_inline(ccx, did);
+
+    if !substs.types.is_empty() {
+        assert_eq!(did.krate, ast::LOCAL_CRATE);
+
+        // Since we're in trans we don't care for any region parameters
+        let substs = ccx.tcx().mk_substs(Substs::erased(substs.types.clone()));
+
+        let (val, _, _) = monomorphize::monomorphic_fn(ccx, did, substs, None);
+
+        val
+    } else if did.krate == ast::LOCAL_CRATE {
+        get_item_val(ccx, did.node)
+    } else {
+        let tcx = ccx.tcx();
+        let name = csearch::get_symbol(&ccx.sess().cstore, did);
+        let class_ty = ty::lookup_item_type(tcx, parent_id).ty.subst(tcx, substs);
+        let llty = type_of_dtor(ccx, class_ty);
+        let dtor_ty = ty::mk_ctor_fn(ccx.tcx(),
+                                     did,
+                                     &[get_drop_glue_type(ccx, t)],
+                                     ty::mk_nil(ccx.tcx()));
+        foreign::get_extern_fn(ccx, &mut *ccx.externs().borrow_mut(), &name[..], llvm::CCallConv,
+                               llty, dtor_ty)
+    }
 }
 
 fn trans_struct_drop<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
@@ -233,92 +355,40 @@ fn trans_struct_drop<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                                  substs: &subst::Substs<'tcx>)
                                  -> Block<'blk, 'tcx>
 {
-    let repr = adt::represent_type(bcx.ccx(), t);
+    debug!("trans_struct_drop t: {}", bcx.ty_to_string(t));
 
     // Find and call the actual destructor
-    let dtor_addr = get_res_dtor(bcx.ccx(), dtor_did, t,
-                                 class_did, substs);
+    let dtor_addr = get_res_dtor(bcx.ccx(), dtor_did, t, class_did, substs);
 
-    // The first argument is the "self" argument for drop
+    // Class dtors have no explicit args, so the params should
+    // just consist of the environment (self).
     let params = unsafe {
         let ty = Type::from_ref(llvm::LLVMTypeOf(dtor_addr));
         ty.element_type().func_params()
     };
+    assert_eq!(params.len(), 1);
 
-    let fty = ty::lookup_item_type(bcx.tcx(), dtor_did).ty.subst(bcx.tcx(), substs);
-    let self_ty = match fty.sty {
-        ty::ty_bare_fn(_, ref f) => {
-            let sig = ty::erase_late_bound_regions(bcx.tcx(), &f.sig);
-            assert!(sig.inputs.len() == 1);
-            sig.inputs[0]
-        }
-        _ => bcx.sess().bug(&format!("Expected function type, found {}",
-                                    bcx.ty_to_string(fty)))
-    };
+    // Be sure to put the contents into a scope so we can use an invoke
+    // instruction to call the user destructor but still call the field
+    // destructors if the user destructor panics.
+    //
+    // FIXME (#14875) panic-in-drop semantics might be unsupported; we
+    // might well consider changing below to more direct code.
+    let contents_scope = bcx.fcx.push_custom_cleanup_scope();
 
-    let (struct_data, info) = if type_is_sized(bcx.tcx(), t) {
-        (v0, None)
-    } else {
-        let data = GEPi(bcx, v0, &[0, abi::FAT_PTR_ADDR]);
-        let info = GEPi(bcx, v0, &[0, abi::FAT_PTR_EXTRA]);
-        (Load(bcx, data), Some(Load(bcx, info)))
-    };
+    // Issue #23611: schedule cleanup of contents, re-inspecting the
+    // discriminant (if any) in case of variant swap in drop code.
+    bcx.fcx.schedule_drop_adt_contents(cleanup::CustomScope(contents_scope), v0, t);
 
-    adt::fold_variants(bcx, &*repr, struct_data, |variant_cx, st, value| {
-        // Be sure to put all of the fields into a scope so we can use an invoke
-        // instruction to call the user destructor but still call the field
-        // destructors if the user destructor panics.
-        let field_scope = variant_cx.fcx.push_custom_cleanup_scope();
+    let glue_type = get_drop_glue_type(bcx.ccx(), t);
+    let dtor_ty = ty::mk_ctor_fn(bcx.tcx(), class_did, &[glue_type], ty::mk_nil(bcx.tcx()));
+    let (_, bcx) = invoke(bcx, dtor_addr, &[v0], dtor_ty, DebugLoc::None);
 
-        // Class dtors have no explicit args, so the params should
-        // just consist of the environment (self).
-        assert_eq!(params.len(), 1);
-        let self_arg = if type_is_fat_ptr(bcx.tcx(), self_ty) {
-            // The dtor expects a fat pointer, so make one, even if we have to fake it.
-            let scratch = datum::rvalue_scratch_datum(bcx, t, "__fat_ptr_drop_self");
-            Store(bcx, value, GEPi(bcx, scratch.val, &[0, abi::FAT_PTR_ADDR]));
-            Store(bcx,
-                  // If we just had a thin pointer, make a fat pointer by sticking
-                  // null where we put the unsizing info. This works because t
-                  // is a sized type, so we will only unpack the fat pointer, never
-                  // use the fake info.
-                  info.unwrap_or(C_null(Type::i8p(bcx.ccx()))),
-                  GEPi(bcx, scratch.val, &[0, abi::FAT_PTR_EXTRA]));
-            PointerCast(variant_cx, scratch.val, params[0])
-        } else {
-            PointerCast(variant_cx, value, params[0])
-        };
-        let args = vec!(self_arg);
-
-        // Add all the fields as a value which needs to be cleaned at the end of
-        // this scope. Iterate in reverse order so a Drop impl doesn't reverse
-        // the order in which fields get dropped.
-        for (i, &ty) in st.fields.iter().enumerate().rev() {
-            let llfld_a = adt::struct_field_ptr(variant_cx, &*st, value, i, false);
-
-            let val = if type_is_sized(bcx.tcx(), ty) {
-                llfld_a
-            } else {
-                let scratch = datum::rvalue_scratch_datum(bcx, ty, "__fat_ptr_drop_field");
-                Store(bcx, llfld_a, GEPi(bcx, scratch.val, &[0, abi::FAT_PTR_ADDR]));
-                Store(bcx, info.unwrap(), GEPi(bcx, scratch.val, &[0, abi::FAT_PTR_EXTRA]));
-                scratch.val
-            };
-            variant_cx.fcx.schedule_drop_mem(cleanup::CustomScope(field_scope), val, ty);
-        }
-
-        let dtor_ty = ty::mk_ctor_fn(bcx.tcx(),
-                                     class_did,
-                                     &[get_drop_glue_type(bcx.ccx(), t)],
-                                     ty::mk_nil(bcx.tcx()));
-        let (_, variant_cx) = invoke(variant_cx, dtor_addr, &args[..], dtor_ty, DebugLoc::None);
-
-        variant_cx.fcx.pop_and_trans_custom_cleanup_scope(variant_cx, field_scope)
-    })
+    bcx.fcx.pop_and_trans_custom_cleanup_scope(bcx, contents_scope)
 }
 
-fn size_and_align_of_dst<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, t: Ty<'tcx>, info: ValueRef)
-                                     -> (ValueRef, ValueRef) {
+pub fn size_and_align_of_dst<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, t: Ty<'tcx>, info: ValueRef)
+                                         -> (ValueRef, ValueRef) {
     debug!("calculate size of DST: {}; with lost info: {}",
            bcx.ty_to_string(t), bcx.val_to_string(info));
     if type_is_sized(bcx.tcx(), t) {
@@ -380,63 +450,65 @@ fn size_and_align_of_dst<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, t: Ty<'tcx>, info: 
     }
 }
 
-fn make_drop_glue<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, v0: ValueRef, t: Ty<'tcx>)
+fn make_drop_glue<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, v0: ValueRef, g: DropGlueKind<'tcx>)
                               -> Block<'blk, 'tcx> {
+    let t = g.ty();
+    let skip_dtor = match g { DropGlueKind::Ty(_) => false, DropGlueKind::TyContents(_) => true };
     // NB: v0 is an *alias* of type t here, not a direct value.
     let _icx = push_ctxt("make_drop_glue");
+
+    // Only drop the value when it ... well, we used to check for
+    // non-null, (and maybe we need to continue doing so), but we now
+    // must definitely check for special bit-patterns corresponding to
+    // the special dtor markings.
+
+    let inttype = Type::int(bcx.ccx());
+    let dropped_pattern = C_integral(inttype, adt::dtor_done_usize(bcx.fcx.ccx) as u64, false);
+
     match t.sty {
         ty::ty_uniq(content_ty) => {
-            match content_ty.sty {
-                ty::ty_vec(ty, None) => {
-                    tvec::make_drop_glue_unboxed(bcx, v0, ty, true)
-                }
-                ty::ty_str => {
-                    let unit_ty = ty::sequence_element_type(bcx.tcx(), content_ty);
-                    tvec::make_drop_glue_unboxed(bcx, v0, unit_ty, true)
-                }
-                ty::ty_trait(..) => {
-                    let lluniquevalue = GEPi(bcx, v0, &[0, abi::FAT_PTR_ADDR]);
-                    // Only drop the value when it is non-null
-                    let concrete_ptr = Load(bcx, lluniquevalue);
-                    with_cond(bcx, IsNotNull(bcx, concrete_ptr), |bcx| {
-                        let dtor_ptr = Load(bcx, GEPi(bcx, v0, &[0, abi::FAT_PTR_EXTRA]));
-                        let dtor = Load(bcx, dtor_ptr);
-                        Call(bcx,
-                             dtor,
-                             &[PointerCast(bcx, lluniquevalue, Type::i8p(bcx.ccx()))],
-                             None,
-                             DebugLoc::None);
-                        bcx
-                    })
-                }
-                ty::ty_struct(..) if !type_is_sized(bcx.tcx(), content_ty) => {
-                    let llval = GEPi(bcx, v0, &[0, abi::FAT_PTR_ADDR]);
-                    let llbox = Load(bcx, llval);
-                    let not_null = IsNotNull(bcx, llbox);
-                    with_cond(bcx, not_null, |bcx| {
-                        let bcx = drop_ty(bcx, v0, content_ty, DebugLoc::None);
-                        let info = GEPi(bcx, v0, &[0, abi::FAT_PTR_EXTRA]);
-                        let info = Load(bcx, info);
-                        let (llsize, llalign) = size_and_align_of_dst(bcx, content_ty, info);
+            // Support for ty_uniq is built-in and its drop glue is
+            // special. It may move to library and have Drop impl. As
+            // a safe-guard, assert ty_uniq not used with TyContents.
+            assert!(!skip_dtor);
+            if !type_is_sized(bcx.tcx(), content_ty) {
+                let llval = GEPi(bcx, v0, &[0, abi::FAT_PTR_ADDR]);
+                let llbox = Load(bcx, llval);
+                let llbox_as_usize = PtrToInt(bcx, llbox, Type::int(bcx.ccx()));
+                let drop_flag_not_dropped_already =
+                    ICmp(bcx, llvm::IntNE, llbox_as_usize, dropped_pattern, DebugLoc::None);
+                with_cond(bcx, drop_flag_not_dropped_already, |bcx| {
+                    let bcx = drop_ty(bcx, v0, content_ty, DebugLoc::None);
+                    let info = GEPi(bcx, v0, &[0, abi::FAT_PTR_EXTRA]);
+                    let info = Load(bcx, info);
+                    let (llsize, llalign) = size_and_align_of_dst(bcx, content_ty, info);
+
+                    // `Box<ZeroSizeType>` does not allocate.
+                    let needs_free = ICmp(bcx,
+                                          llvm::IntNE,
+                                          llsize,
+                                          C_uint(bcx.ccx(), 0u64),
+                                          DebugLoc::None);
+                    with_cond(bcx, needs_free, |bcx| {
                         trans_exchange_free_dyn(bcx, llbox, llsize, llalign, DebugLoc::None)
                     })
-                }
-                _ => {
-                    assert!(type_is_sized(bcx.tcx(), content_ty));
-                    let llval = v0;
-                    let llbox = Load(bcx, llval);
-                    let not_null = IsNotNull(bcx, llbox);
-                    with_cond(bcx, not_null, |bcx| {
-                        let bcx = drop_ty(bcx, llbox, content_ty, DebugLoc::None);
-                        trans_exchange_free_ty(bcx, llbox, content_ty, DebugLoc::None)
-                    })
-                }
+                })
+            } else {
+                let llval = v0;
+                let llbox = Load(bcx, llval);
+                let llbox_as_usize = PtrToInt(bcx, llbox, inttype);
+                let drop_flag_not_dropped_already =
+                    ICmp(bcx, llvm::IntNE, llbox_as_usize, dropped_pattern, DebugLoc::None);
+                with_cond(bcx, drop_flag_not_dropped_already, |bcx| {
+                    let bcx = drop_ty(bcx, llbox, content_ty, DebugLoc::None);
+                    trans_exchange_free_ty(bcx, llbox, content_ty, DebugLoc::None)
+                })
             }
         }
         ty::ty_struct(did, substs) | ty::ty_enum(did, substs) => {
             let tcx = bcx.tcx();
-            match ty::ty_dtor(tcx, did) {
-                ty::TraitDtor(dtor, true) => {
+            match (ty::ty_dtor(tcx, did), skip_dtor) {
+                (ty::TraitDtor(dtor, true), false) => {
                     // FIXME(16758) Since the struct is unsized, it is hard to
                     // find the drop flag (which is at the end of the struct).
                     // Lets just ignore the flag and pretend everything will be
@@ -453,43 +525,32 @@ fn make_drop_glue<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, v0: ValueRef, t: Ty<'tcx>)
                         trans_struct_drop(bcx, t, v0, dtor, did, substs)
                     }
                 }
-                ty::TraitDtor(dtor, false) => {
+                (ty::TraitDtor(dtor, false), false) => {
                     trans_struct_drop(bcx, t, v0, dtor, did, substs)
                 }
-                ty::NoDtor => {
+                (ty::NoDtor, _) | (_, true) => {
                     // No dtor? Just the default case
                     iter_structural_ty(bcx, v0, t, |bb, vv, tt| drop_ty(bb, vv, tt, DebugLoc::None))
                 }
             }
         }
-        ty::ty_closure(..) => {
-            iter_structural_ty(bcx,
-                               v0,
-                               t,
-                               |bb, vv, tt| drop_ty(bb, vv, tt, DebugLoc::None))
-        }
         ty::ty_trait(..) => {
-            // No need to do a null check here (as opposed to the Box<trait case
-            // above), because this happens for a trait field in an unsized
-            // struct. If anything is null, it is the whole struct and we won't
-            // get here.
-            let lluniquevalue = GEPi(bcx, v0, &[0, abi::FAT_PTR_ADDR]);
-            let dtor_ptr = Load(bcx, GEPi(bcx, v0, &[0, abi::FAT_PTR_EXTRA]));
-            let dtor = Load(bcx, dtor_ptr);
+            // No support in vtable for distinguishing destroying with
+            // versus without calling Drop::drop. Assert caller is
+            // okay with always calling the Drop impl, if any.
+            assert!(!skip_dtor);
+            let data_ptr = GEPi(bcx, v0, &[0, abi::FAT_PTR_ADDR]);
+            let vtable_ptr = Load(bcx, GEPi(bcx, v0, &[0, abi::FAT_PTR_EXTRA]));
+            let dtor = Load(bcx, vtable_ptr);
             Call(bcx,
                  dtor,
-                 &[PointerCast(bcx, Load(bcx, lluniquevalue), Type::i8p(bcx.ccx()))],
+                 &[PointerCast(bcx, Load(bcx, data_ptr), Type::i8p(bcx.ccx()))],
                  None,
                  DebugLoc::None);
             bcx
-        },
-        ty::ty_vec(_, None) | ty::ty_str => {
-            let unit_ty = ty::sequence_element_type(bcx.tcx(), t);
-            tvec::make_drop_glue_unboxed(bcx, v0, unit_ty, false)
-        },
+        }
         _ => {
-            assert!(type_is_sized(bcx.tcx(), t));
-            if bcx.fcx.type_needs_drop(t) && ty::type_is_structural(t) {
+            if bcx.fcx.type_needs_drop(t) {
                 iter_structural_ty(bcx,
                                    v0,
                                    t,
@@ -499,125 +560,4 @@ fn make_drop_glue<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, v0: ValueRef, t: Ty<'tcx>)
             }
         }
     }
-}
-
-// Generates the declaration for (but doesn't emit) a type descriptor.
-pub fn declare_tydesc<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>)
-                                -> tydesc_info<'tcx> {
-    // If emit_tydescs already ran, then we shouldn't be creating any new
-    // tydescs.
-    assert!(!ccx.finished_tydescs().get());
-
-    // This really shouldn't be like this, size/align will be wrong for
-    // unsized types (i.e. [T] will have the size/align of T).
-    // But we need it until we split this out into a "type name" intrinsic.
-    let llty = type_of::in_memory_type_of(ccx, t);
-
-    if ccx.sess().count_type_sizes() {
-        println!("{}\t{}", llsize_of_real(ccx, llty),
-                 ppaux::ty_to_string(ccx.tcx(), t));
-    }
-
-    let llsize = llsize_of(ccx, llty);
-    let llalign = llalign_of(ccx, llty);
-    let name = mangle_internal_name_by_type_and_seq(ccx, t, "tydesc");
-    debug!("+++ declare_tydesc {} {}", ppaux::ty_to_string(ccx.tcx(), t), name);
-    let buf = CString::new(name.clone()).unwrap();
-    let gvar = unsafe {
-        llvm::LLVMAddGlobal(ccx.llmod(), ccx.tydesc_type().to_ref(),
-                            buf.as_ptr())
-    };
-    note_unique_llvm_symbol(ccx, name);
-
-    let ty_name = token::intern_and_get_ident(
-        &ppaux::ty_to_string(ccx.tcx(), t));
-    let ty_name = C_str_slice(ccx, ty_name);
-
-    debug!("--- declare_tydesc {}", ppaux::ty_to_string(ccx.tcx(), t));
-    tydesc_info {
-        ty: t,
-        tydesc: gvar,
-        size: llsize,
-        align: llalign,
-        name: ty_name,
-    }
-}
-
-fn declare_generic_glue<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>,
-                                  llfnty: Type, name: &str) -> (String, ValueRef) {
-    let _icx = push_ctxt("declare_generic_glue");
-    let fn_nm = mangle_internal_name_by_type_and_seq(
-        ccx,
-        t,
-        &format!("glue_{}", name));
-    let llfn = decl_cdecl_fn(ccx, &fn_nm[..], llfnty, ty::mk_nil(ccx.tcx()));
-    note_unique_llvm_symbol(ccx, fn_nm.clone());
-    return (fn_nm, llfn);
-}
-
-fn make_generic_glue<'a, 'tcx, F>(ccx: &CrateContext<'a, 'tcx>,
-                                  t: Ty<'tcx>,
-                                  llfn: ValueRef,
-                                  helper: F,
-                                  name: &str)
-                                  -> ValueRef where
-    F: for<'blk> FnOnce(Block<'blk, 'tcx>, ValueRef, Ty<'tcx>) -> Block<'blk, 'tcx>,
-{
-    let _icx = push_ctxt("make_generic_glue");
-    let glue_name = format!("glue {} {}", name, ty_to_short_str(ccx.tcx(), t));
-    let _s = StatRecorder::new(ccx, glue_name);
-
-    let empty_substs = ccx.tcx().mk_substs(Substs::trans_empty());
-    let (arena, fcx): (TypedArena<_>, FunctionContext);
-    arena = TypedArena::new();
-    fcx = new_fn_ctxt(ccx, llfn, ast::DUMMY_NODE_ID, false,
-                      ty::FnConverging(ty::mk_nil(ccx.tcx())),
-                      empty_substs, None, &arena);
-
-    let bcx = init_function(&fcx, false, ty::FnConverging(ty::mk_nil(ccx.tcx())));
-
-    update_linkage(ccx, llfn, None, OriginalTranslation);
-
-    ccx.stats().n_glues_created.set(ccx.stats().n_glues_created.get() + 1);
-    // All glue functions take values passed *by alias*; this is a
-    // requirement since in many contexts glue is invoked indirectly and
-    // the caller has no idea if it's dealing with something that can be
-    // passed by value.
-    //
-    // llfn is expected be declared to take a parameter of the appropriate
-    // type, so we don't need to explicitly cast the function parameter.
-
-    let llrawptr0 = get_param(llfn, fcx.arg_pos(0) as c_uint);
-    let bcx = helper(bcx, llrawptr0, t);
-    finish_fn(&fcx, bcx, ty::FnConverging(ty::mk_nil(ccx.tcx())), DebugLoc::None);
-
-    llfn
-}
-
-pub fn emit_tydescs(ccx: &CrateContext) {
-    let _icx = push_ctxt("emit_tydescs");
-    // As of this point, allow no more tydescs to be created.
-    ccx.finished_tydescs().set(true);
-    let glue_fn_ty = Type::generic_glue_fn(ccx).ptr_to();
-    for (_, ti) in &*ccx.tydescs().borrow() {
-        // Each of the glue functions needs to be cast to a generic type
-        // before being put into the tydesc because we only have a singleton
-        // tydesc type. Then we'll recast each function to its real type when
-        // calling it.
-        let drop_glue = consts::ptrcast(get_drop_glue(ccx, ti.ty), glue_fn_ty);
-        ccx.stats().n_real_glues.set(ccx.stats().n_real_glues.get() + 1);
-
-        let tydesc = C_named_struct(ccx.tydesc_type(),
-                                    &[ti.size, // size
-                                      ti.align, // align
-                                      drop_glue, // drop_glue
-                                      ti.name]); // name
-
-        unsafe {
-            let gvar = ti.tydesc;
-            llvm::LLVMSetInitializer(gvar, tydesc);
-            llvm::LLVMSetGlobalConstant(gvar, True);
-            llvm::SetLinkage(gvar, llvm::InternalLinkage);
-        }
-    };
 }

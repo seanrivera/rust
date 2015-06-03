@@ -11,29 +11,21 @@
 #![unstable(feature = "std_misc")]
 
 use prelude::v1::*;
+use io::prelude::*;
 
 use any::Any;
 use cell::RefCell;
-use old_io::IoResult;
 use rt::{backtrace, unwind};
-use rt::util::{Stderr, Stdio};
-use thread;
+use sys::stdio::Stderr;
+use sys_common::thread_info;
 
-// Defined in this module instead of old_io::stdio so that the unwinding
 thread_local! {
-    pub static LOCAL_STDERR: RefCell<Option<Box<Writer + Send>>> = {
+    pub static LOCAL_STDERR: RefCell<Option<Box<Write + Send>>> = {
         RefCell::new(None)
     }
 }
 
-impl Writer for Stdio {
-    fn write_all(&mut self, bytes: &[u8]) -> IoResult<()> {
-        let _ = self.write_bytes(bytes);
-        Ok(())
-    }
-}
-
-pub fn on_panic(obj: &(Any+Send), file: &'static str, line: uint) {
+pub fn on_panic(obj: &(Any+Send), file: &'static str, line: u32) {
     let msg = match obj.downcast_ref::<&'static str>() {
         Some(s) => *s,
         None => match obj.downcast_ref::<String>() {
@@ -41,9 +33,9 @@ pub fn on_panic(obj: &(Any+Send), file: &'static str, line: uint) {
             None => "Box<Any>",
         }
     };
-    let mut err = Stderr;
-    let thread = thread::current();
-    let name = thread.name().unwrap_or("<unnamed>");
+    let mut err = Stderr::new();
+    let thread = thread_info::current_thread();
+    let name = thread.as_ref().and_then(|t| t.name()).unwrap_or("<unnamed>");
     let prev = LOCAL_STDERR.with(|s| s.borrow_mut().take());
     match prev {
         Some(mut stderr) => {

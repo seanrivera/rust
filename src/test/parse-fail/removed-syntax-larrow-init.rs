@@ -8,8 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+// compile-flags: -Z parse-only
+
 fn removed_moves() {
     let mut x = 0;
     let y <- x;
-    //~^ ERROR expected one of `!`, `:`, `;`, `=`, or `@`, found `<-`
+    //~^ ERROR expected one of `:`, `;`, `=`, or `@`, found `<-`
 }

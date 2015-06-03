@@ -32,7 +32,7 @@ use std::env;
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
-use std::sync::atomic::{AtomicBool, Ordering, ATOMIC_BOOL_INIT};
+use std::sync::atomic::{AtomicBool, Ordering};
 use syntax::ast;
 
 fn print_help_message() {
@@ -69,14 +69,14 @@ pub fn maybe_print_constraints_for<'a, 'tcx>(region_vars: &RegionVarBindings<'a,
         return;
     }
 
-    let requested_output = env::var("RUST_REGION_GRAPH").ok();
+    let requested_output = env::var("RUST_REGION_GRAPH");
     debug!("requested_output: {:?} requested_node: {:?}",
            requested_output, requested_node);
 
     let output_path = {
         let output_template = match requested_output {
-            Some(ref s) if &**s == "help" => {
-                static PRINTED_YET: AtomicBool = ATOMIC_BOOL_INIT;
+            Ok(ref s) if &**s == "help" => {
+                static PRINTED_YET: AtomicBool = AtomicBool::new(false);
                 if !PRINTED_YET.load(Ordering::SeqCst) {
                     print_help_message();
                     PRINTED_YET.store(true, Ordering::SeqCst);
@@ -84,11 +84,11 @@ pub fn maybe_print_constraints_for<'a, 'tcx>(region_vars: &RegionVarBindings<'a,
                 return;
             }
 
-            Some(other_path) => other_path,
-            None => "/tmp/constraints.node%.dot".to_string(),
+            Ok(other_path) => other_path,
+            Err(_) => "/tmp/constraints.node%.dot".to_string(),
         };
 
-        if output_template.len() == 0 {
+        if output_template.is_empty() {
             tcx.sess.bug("empty string provided as RUST_REGION_GRAPH");
         }
 
@@ -121,7 +121,7 @@ struct ConstraintGraph<'a, 'tcx: 'a> {
     tcx: &'a ty::ctxt<'tcx>,
     graph_name: String,
     map: &'a FnvHashMap<Constraint, SubregionOrigin<'tcx>>,
-    node_ids: FnvHashMap<Node, uint>,
+    node_ids: FnvHashMap<Node, usize>,
 }
 
 #[derive(Clone, Hash, PartialEq, Eq, Debug, Copy)]
@@ -171,7 +171,7 @@ impl<'a, 'tcx> ConstraintGraph<'a, 'tcx> {
 
 impl<'a, 'tcx> dot::Labeller<'a, Node, Edge> for ConstraintGraph<'a, 'tcx> {
     fn graph_id(&self) -> dot::Id {
-        dot::Id::new(&*self.graph_name).ok().unwrap()
+        dot::Id::new(&*self.graph_name).unwrap()
     }
     fn node_id(&self, n: &Node) -> dot::Id {
         let node_id = match self.node_ids.get(n) {

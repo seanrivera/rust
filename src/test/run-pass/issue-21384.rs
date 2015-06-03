@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 use ::std::ops::RangeFull;
 
 fn test<T : Clone>(arg: T) -> T {
@@ -15,7 +16,7 @@ fn test<T : Clone>(arg: T) -> T {
 }
 
 #[derive(PartialEq)]
-struct Test(int);
+struct Test(isize);
 
 fn main() {
     // Check that ranges implement clone

@@ -8,15 +8,13 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// aux-build:issue-9906.rs
-
 pub use other::FooBar;
 pub use other::foo;
 
 mod other {
-    pub struct FooBar{value: int}
+    pub struct FooBar{value: isize}
     impl FooBar{
-        pub fn new(val: int) -> FooBar {
+        pub fn new(val: isize) -> FooBar {
             FooBar{value: val}
         }
     }

@@ -9,12 +9,13 @@
 // except according to those terms.
 
 
+
 fn f(arg: &mut A) {
     arg.a = 100;
 }
 
-#[derive(Copy)]
-struct A { a: int }
+#[derive(Copy, Clone)]
+struct A { a: isize }
 
 pub fn main() {
     let mut x = A {a: 10};

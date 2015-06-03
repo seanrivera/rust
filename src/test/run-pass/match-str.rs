@@ -10,6 +10,7 @@
 
 // Issue #53
 
+
 pub fn main() {
     match "test" { "not-test" => panic!(), "test" => (), _ => panic!() }
 

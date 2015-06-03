@@ -20,18 +20,21 @@ pub struct Mutex(imp::Mutex);
 
 unsafe impl Sync for Mutex {}
 
-/// Constant initializer for statically allocated mutexes.
-pub const MUTEX_INIT: Mutex = Mutex(imp::MUTEX_INIT);
-
 impl Mutex {
-    /// Lock the mutex blocking the current thread until it is available.
+    /// Creates a new mutex for use.
+    ///
+    /// Behavior is undefined if the mutex is moved after it is
+    /// first used with any of the functions below.
+    pub const fn new() -> Mutex { Mutex(imp::Mutex::new()) }
+
+    /// Locks the mutex blocking the current thread until it is available.
     ///
     /// Behavior is undefined if the mutex has been moved between this and any
     /// previous function call.
     #[inline]
     pub unsafe fn lock(&self) { self.0.lock() }
 
-    /// Attempt to lock the mutex without blocking, returning whether it was
+    /// Attempts to lock the mutex without blocking, returning whether it was
     /// successfully acquired or not.
     ///
     /// Behavior is undefined if the mutex has been moved between this and any
@@ -39,14 +42,14 @@ impl Mutex {
     #[inline]
     pub unsafe fn try_lock(&self) -> bool { self.0.try_lock() }
 
-    /// Unlock the mutex.
+    /// Unlocks the mutex.
     ///
     /// Behavior is undefined if the current thread does not actually hold the
     /// mutex.
     #[inline]
     pub unsafe fn unlock(&self) { self.0.unlock() }
 
-    /// Deallocate all resources associated with this mutex.
+    /// Deallocates all resources associated with this mutex.
     ///
     /// Behavior is undefined if there are current or will be future users of
     /// this mutex.

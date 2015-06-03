@@ -8,10 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+// compile-flags: -Z parse-only
+
 fn main() {
     let a = Vec::new();
     match a {
-        [1, tail.., tail..] => {}, //~ ERROR: expected one of `!`, `,`, or `@`, found `..`
+        [1, tail.., tail..] => {}, //~ ERROR: expected one of `,` or `@`, found `..`
         _ => ()
     }
 }

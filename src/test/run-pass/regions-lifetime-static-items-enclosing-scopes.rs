@@ -11,6 +11,7 @@
 // This test verifies that temporary lifetime is correctly computed
 // for static objects in enclosing scopes.
 
+
 use std::cmp::PartialEq;
 
 fn f<T:PartialEq>(o: &mut Option<T>) {
@@ -23,5 +24,5 @@ pub fn main() {
         static C: E = E::V;
     }
 
-    f::<int>(&mut None);
+    f::<isize>(&mut None);
 }

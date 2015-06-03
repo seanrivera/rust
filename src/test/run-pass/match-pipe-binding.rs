@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 fn test1() {
     // from issue 6338
     match ((1, "a".to_string()), (2, "b".to_string())) {

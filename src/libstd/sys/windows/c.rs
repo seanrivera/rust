@@ -44,14 +44,22 @@ pub const WSA_WAIT_TIMEOUT: libc::DWORD = libc::consts::os::extra::WAIT_TIMEOUT;
 pub const WSA_WAIT_EVENT_0: libc::DWORD = libc::consts::os::extra::WAIT_OBJECT_0;
 pub const WSA_WAIT_FAILED: libc::DWORD = libc::consts::os::extra::WAIT_FAILED;
 pub const WSAESHUTDOWN: libc::c_int = 10058;
+pub const WSA_FLAG_OVERLAPPED: libc::DWORD = 0x01;
+pub const WSA_FLAG_NO_HANDLE_INHERIT: libc::DWORD = 0x80;
 
 pub const ERROR_NO_MORE_FILES: libc::DWORD = 18;
 pub const TOKEN_READ: libc::DWORD = 0x20008;
+pub const FILE_FLAG_OPEN_REPARSE_POINT: libc::DWORD = 0x00200000;
+pub const MAXIMUM_REPARSE_DATA_BUFFER_SIZE: usize = 16 * 1024;
+pub const FSCTL_GET_REPARSE_POINT: libc::DWORD = 0x900a8;
+pub const IO_REPARSE_TAG_SYMLINK: libc::DWORD = 0xa000000c;
+
+pub const SYMBOLIC_LINK_FLAG_DIRECTORY: libc::DWORD = 0x1;
 
 // Note that these are not actually HANDLEs, just values to pass to GetStdHandle
-pub const STD_INPUT_HANDLE: libc::DWORD = -10;
-pub const STD_OUTPUT_HANDLE: libc::DWORD = -11;
-pub const STD_ERROR_HANDLE: libc::DWORD = -12;
+pub const STD_INPUT_HANDLE: libc::DWORD = -10i32 as libc::DWORD;
+pub const STD_OUTPUT_HANDLE: libc::DWORD = -11i32 as libc::DWORD;
+pub const STD_ERROR_HANDLE: libc::DWORD = -12i32 as libc::DWORD;
 
 #[repr(C)]
 #[cfg(target_arch = "x86")]
@@ -89,7 +97,6 @@ pub type LPWSANETWORKEVENTS = *mut WSANETWORKEVENTS;
 pub type WSAEVENT = libc::HANDLE;
 
 #[repr(C)]
-#[derive(Copy)]
 pub struct WSAPROTOCOL_INFO {
     pub dwServiceFlags1: libc::DWORD,
     pub dwServiceFlags2: libc::DWORD,
@@ -215,6 +222,24 @@ pub struct FILE_END_OF_FILE_INFO {
     pub EndOfFile: libc::LARGE_INTEGER,
 }
 
+#[repr(C)]
+pub struct REPARSE_DATA_BUFFER {
+    pub ReparseTag: libc::c_uint,
+    pub ReparseDataLength: libc::c_ushort,
+    pub Reserved: libc::c_ushort,
+    pub rest: (),
+}
+
+#[repr(C)]
+pub struct SYMBOLIC_LINK_REPARSE_BUFFER {
+    pub SubstituteNameOffset: libc::c_ushort,
+    pub SubstituteNameLength: libc::c_ushort,
+    pub PrintNameOffset: libc::c_ushort,
+    pub PrintNameLength: libc::c_ushort,
+    pub Flags: libc::c_ulong,
+    pub PathBuffer: libc::WCHAR,
+}
+
 #[link(name = "ws2_32")]
 extern "system" {
     pub fn WSAStartup(wVersionRequested: libc::WORD,
@@ -300,7 +325,7 @@ pub mod compat {
 
     /// Macro for creating a compatibility fallback for a Windows function
     ///
-    /// # Example
+    /// # Examples
     /// ```
     /// compat_fn!(adll32::SomeFunctionW(_arg: LPCWSTR) {
     ///     // Fallback implementation
@@ -315,10 +340,10 @@ pub mod compat {
                                       -> $rettype:ty { $fallback:expr }) => (
             #[inline(always)]
             pub unsafe fn $symbol($($argname: $argtype),*) -> $rettype {
-                use sync::atomic::{AtomicUsize, ATOMIC_USIZE_INIT, Ordering};
+                use sync::atomic::{AtomicUsize, Ordering};
                 use mem;
 
-                static PTR: AtomicUsize = ATOMIC_USIZE_INIT;
+                static PTR: AtomicUsize = AtomicUsize::new(0);
 
                 fn load() -> usize {
                     ::sys::c::compat::store_func(&PTR,
@@ -433,6 +458,31 @@ extern "system" {
                             TokenHandle: *mut libc::HANDLE) -> libc::BOOL;
     pub fn GetCurrentProcess() -> libc::HANDLE;
     pub fn GetStdHandle(which: libc::DWORD) -> libc::HANDLE;
+    pub fn ExitProcess(uExitCode: libc::c_uint) -> !;
+    pub fn DeviceIoControl(hDevice: libc::HANDLE,
+                           dwIoControlCode: libc::DWORD,
+                           lpInBuffer: libc::LPVOID,
+                           nInBufferSize: libc::DWORD,
+                           lpOutBuffer: libc::LPVOID,
+                           nOutBufferSize: libc::DWORD,
+                           lpBytesReturned: libc::LPDWORD,
+                           lpOverlapped: libc::LPOVERLAPPED) -> libc::BOOL;
+    pub fn CreatePipe(hReadPipe: libc::LPHANDLE,
+                      hWritePipe: libc::LPHANDLE,
+                      lpPipeAttributes: libc::LPSECURITY_ATTRIBUTES,
+                      nSize: libc::DWORD) -> libc::BOOL;
+    pub fn CreateThread(lpThreadAttributes: libc::LPSECURITY_ATTRIBUTES,
+                        dwStackSize: libc::SIZE_T,
+                        lpStartAddress: extern "system" fn(*mut libc::c_void)
+                                                           -> libc::DWORD,
+                        lpParameter: libc::LPVOID,
+                        dwCreationFlags: libc::DWORD,
+                        lpThreadId: libc::LPDWORD) -> libc::HANDLE;
+    pub fn WaitForSingleObject(hHandle: libc::HANDLE,
+                               dwMilliseconds: libc::DWORD) -> libc::DWORD;
+    pub fn SwitchToThread() -> libc::BOOL;
+    pub fn Sleep(dwMilliseconds: libc::DWORD);
+    pub fn GetProcessId(handle: libc::HANDLE) -> libc::DWORD;
 }
 
 #[link(name = "userenv")]

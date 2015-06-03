@@ -9,6 +9,7 @@
 // except according to those terms.
 
 // aux-build:cci_class_6.rs
+
 extern crate cci_class_6;
 use cci_class_6::kitties::cat;
 

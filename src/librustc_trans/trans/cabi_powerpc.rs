@@ -10,28 +10,27 @@
 
 use libc::c_uint;
 use llvm;
-use llvm::{Integer, Pointer, Float, Double, Struct, Array};
-use llvm::{StructRetAttribute, ZExtAttribute};
+use llvm::{Integer, Pointer, Float, Double, Struct, Array, Attribute};
 use trans::cabi::{FnType, ArgType};
 use trans::context::CrateContext;
 use trans::type_::Type;
 
 use std::cmp;
 
-fn align_up_to(off: uint, a: uint) -> uint {
+fn align_up_to(off: usize, a: usize) -> usize {
     return (off + a - 1) / a * a;
 }
 
-fn align(off: uint, ty: Type) -> uint {
+fn align(off: usize, ty: Type) -> usize {
     let a = ty_align(ty);
     return align_up_to(off, a);
 }
 
-fn ty_align(ty: Type) -> uint {
+fn ty_align(ty: Type) -> usize {
     match ty.kind() {
         Integer => {
             unsafe {
-                ((llvm::LLVMGetIntTypeWidth(ty.to_ref()) as uint) + 7) / 8
+                ((llvm::LLVMGetIntTypeWidth(ty.to_ref()) as usize) + 7) / 8
             }
         }
         Pointer => 4,
@@ -53,11 +52,11 @@ fn ty_align(ty: Type) -> uint {
     }
 }
 
-fn ty_size(ty: Type) -> uint {
+fn ty_size(ty: Type) -> usize {
     match ty.kind() {
         Integer => {
             unsafe {
-                ((llvm::LLVMGetIntTypeWidth(ty.to_ref()) as uint) + 7) / 8
+                ((llvm::LLVMGetIntTypeWidth(ty.to_ref()) as usize) + 7) / 8
             }
         }
         Pointer => 4,
@@ -85,14 +84,14 @@ fn ty_size(ty: Type) -> uint {
 
 fn classify_ret_ty(ccx: &CrateContext, ty: Type) -> ArgType {
     if is_reg_ty(ty) {
-        let attr = if ty == Type::i1(ccx) { Some(ZExtAttribute) } else { None };
+        let attr = if ty == Type::i1(ccx) { Some(Attribute::ZExt) } else { None };
         ArgType::direct(ty, None, None, attr)
     } else {
-        ArgType::indirect(ty, Some(StructRetAttribute))
+        ArgType::indirect(ty, Some(Attribute::StructRet))
     }
 }
 
-fn classify_arg_ty(ccx: &CrateContext, ty: Type, offset: &mut uint) -> ArgType {
+fn classify_arg_ty(ccx: &CrateContext, ty: Type, offset: &mut usize) -> ArgType {
     let orig_offset = *offset;
     let size = ty_size(ty) * 8;
     let mut align = ty_align(ty);
@@ -102,7 +101,7 @@ fn classify_arg_ty(ccx: &CrateContext, ty: Type, offset: &mut uint) -> ArgType {
     *offset += align_up_to(size, align * 8) / 8;
 
     if is_reg_ty(ty) {
-        let attr = if ty == Type::i1(ccx) { Some(ZExtAttribute) } else { None };
+        let attr = if ty == Type::i1(ccx) { Some(Attribute::ZExt) } else { None };
         ArgType::direct(ty, None, None, attr)
     } else {
         ArgType::direct(
@@ -124,7 +123,7 @@ fn is_reg_ty(ty: Type) -> bool {
     };
 }
 
-fn padding_ty(ccx: &CrateContext, align: uint, offset: uint) -> Option<Type> {
+fn padding_ty(ccx: &CrateContext, align: usize, offset: usize) -> Option<Type> {
     if ((align - 1 ) & offset) > 0 {
         Some(Type::i32(ccx))
     } else {
@@ -132,7 +131,7 @@ fn padding_ty(ccx: &CrateContext, align: uint, offset: uint) -> Option<Type> {
     }
 }
 
-fn coerce_to_int(ccx: &CrateContext, size: uint) -> Vec<Type> {
+fn coerce_to_int(ccx: &CrateContext, size: usize) -> Vec<Type> {
     let int_ty = Type::i32(ccx);
     let mut args = Vec::new();
 

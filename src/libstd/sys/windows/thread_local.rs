@@ -15,7 +15,7 @@ use libc::types::os::arch::extra::{DWORD, LPVOID, BOOL};
 use boxed;
 use ptr;
 use rt;
-use sys_common::mutex::{MUTEX_INIT, Mutex};
+use sys_common::mutex::Mutex;
 
 pub type Key = DWORD;
 pub type Dtor = unsafe extern fn(*mut u8);
@@ -32,7 +32,7 @@ pub type Dtor = unsafe extern fn(*mut u8);
 // somewhere to run arbitrary code on thread termination. With this in place
 // we'll be able to run anything we like, including all TLS destructors!
 //
-// To accomplish this feat, we perform a number of tasks, all contained
+// To accomplish this feat, we perform a number of threads, all contained
 // within this module:
 //
 // * All TLS destructors are tracked by *us*, not the windows runtime. This
@@ -58,7 +58,7 @@ pub type Dtor = unsafe extern fn(*mut u8);
 // on poisoning and this module needs to operate at a lower level than requiring
 // the thread infrastructure to be in place (useful on the borders of
 // initialization/destruction).
-static DTOR_LOCK: Mutex = MUTEX_INIT;
+static DTOR_LOCK: Mutex = Mutex::new();
 static mut DTORS: *mut Vec<(Key, Dtor)> = 0 as *mut _;
 
 // -------------------------------------------------------------------------
@@ -133,21 +133,28 @@ unsafe fn init_dtors() {
     if !DTORS.is_null() { return }
 
     let dtors = box Vec::<(Key, Dtor)>::new();
-    DTORS = boxed::into_raw(dtors);
 
-    rt::at_exit(move|| {
+    let res = rt::at_exit(move|| {
         DTOR_LOCK.lock();
         let dtors = DTORS;
-        DTORS = ptr::null_mut();
+        DTORS = 1 as *mut _;
         Box::from_raw(dtors);
-        assert!(DTORS.is_null()); // can't re-init after destructing
+        assert!(DTORS as usize == 1); // can't re-init after destructing
         DTOR_LOCK.unlock();
     });
+    if res.is_ok() {
+        DTORS = boxed::into_raw(dtors);
+    } else {
+        DTORS = 1 as *mut _;
+    }
 }
 
 unsafe fn register_dtor(key: Key, dtor: Dtor) {
     DTOR_LOCK.lock();
     init_dtors();
+    assert!(DTORS as usize != 0);
+    assert!(DTORS as usize != 1,
+            "cannot create new TLS keys after the main thread has exited");
     (*DTORS).push((key, dtor));
     DTOR_LOCK.unlock();
 }
@@ -155,6 +162,9 @@ unsafe fn register_dtor(key: Key, dtor: Dtor) {
 unsafe fn unregister_dtor(key: Key) -> bool {
     DTOR_LOCK.lock();
     init_dtors();
+    assert!(DTORS as usize != 0);
+    assert!(DTORS as usize != 1,
+            "cannot unregister destructors after the main thread has exited");
     let ret = {
         let dtors = &mut *DTORS;
         let before = dtors.len();
@@ -241,7 +251,7 @@ unsafe fn run_dtors() {
         any_run = false;
         let dtors = {
             DTOR_LOCK.lock();
-            let ret = if DTORS.is_null() {
+            let ret = if DTORS as usize <= 1 {
                 Vec::new()
             } else {
                 (*DTORS).iter().map(|s| *s).collect()

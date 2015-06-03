@@ -8,13 +8,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
+#![feature(hash)]
+
 use std::hash::{Hash, SipHasher};
 
 #[derive(Hash)]
 struct Person {
-    id: uint,
+    id: usize,
     name: String,
-    phone: uint,
+    phone: usize,
 }
 
 fn hash<T: Hash>(t: &T) -> u64 {

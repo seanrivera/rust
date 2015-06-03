@@ -14,6 +14,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 #![allow(dead_code)]
+#![allow(trivial_casts)]
 
 #![crate_name = "rustc_llvm"]
 #![unstable(feature = "rustc_private")]
@@ -21,18 +22,15 @@
 #![crate_type = "dylib"]
 #![crate_type = "rlib"]
 #![doc(html_logo_url = "http://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-       html_favicon_url = "http://www.rust-lang.org/favicon.ico",
+       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
        html_root_url = "http://doc.rust-lang.org/nightly/")]
 
+#![feature(associated_consts)]
 #![feature(box_syntax)]
 #![feature(collections)]
-#![feature(core)]
-#![feature(int_uint)]
 #![feature(libc)]
 #![feature(link_args)]
 #![feature(staged_api)]
-#![feature(path)]
-#![cfg_attr(unix, feature(std_misc))]
 
 extern crate libc;
 #[macro_use] #[no_link] extern crate rustc_bitflags;
@@ -45,6 +43,7 @@ pub use self::RealPredicate::*;
 pub use self::TypeKind::*;
 pub use self::AtomicBinOp::*;
 pub use self::AtomicOrdering::*;
+pub use self::SynchronizationScope::*;
 pub use self::FileType::*;
 pub use self::MetadataType::*;
 pub use self::AsmDialect::*;
@@ -56,10 +55,11 @@ pub use self::CallConv::*;
 pub use self::Visibility::*;
 pub use self::DiagnosticSeverity::*;
 pub use self::Linkage::*;
+pub use self::DLLStorageClassTypes::*;
 
 use std::ffi::CString;
 use std::cell::RefCell;
-use std::{raw, mem};
+use std::{slice, mem};
 use libc::{c_uint, c_ushort, uint64_t, c_int, size_t, c_char};
 use libc::{c_longlong, c_ulonglong, c_void};
 use debuginfo::{DIBuilderRef, DIDescriptor,
@@ -77,9 +77,9 @@ pub type Bool = c_uint;
 pub const True: Bool = 1 as Bool;
 pub const False: Bool = 0 as Bool;
 
-// Consts for the LLVM CallConv type, pre-cast to uint.
+// Consts for the LLVM CallConv type, pre-cast to usize.
 
-#[derive(Copy, PartialEq)]
+#[derive(Copy, Clone, PartialEq)]
 pub enum CallConv {
     CCallConv = 0,
     FastCallConv = 8,
@@ -89,7 +89,7 @@ pub enum CallConv {
     X86_64_Win64 = 79,
 }
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub enum Visibility {
     LLVMDefaultVisibility = 0,
     HiddenVisibility = 1,
@@ -100,7 +100,7 @@ pub enum Visibility {
 // DLLExportLinkage, GhostLinkage and LinkOnceODRAutoHideLinkage.
 // LinkerPrivateLinkage and LinkerPrivateWeakLinkage are not included either;
 // they've been removed in upstream LLVM commit r203866.
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub enum Linkage {
     ExternalLinkage = 0,
     AvailableExternallyLinkage = 1,
@@ -116,7 +116,7 @@ pub enum Linkage {
 }
 
 #[repr(C)]
-#[derive(Copy, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum DiagnosticSeverity {
     Error,
     Warning,
@@ -124,43 +124,52 @@ pub enum DiagnosticSeverity {
     Note,
 }
 
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub enum DLLStorageClassTypes {
+    DefaultStorageClass = 0,
+    DLLImportStorageClass = 1,
+    DLLExportStorageClass = 2,
+}
+
 bitflags! {
     flags Attribute : u32 {
-        const ZExtAttribute = 1 << 0,
-        const SExtAttribute = 1 << 1,
-        const NoReturnAttribute = 1 << 2,
-        const InRegAttribute = 1 << 3,
-        const StructRetAttribute = 1 << 4,
-        const NoUnwindAttribute = 1 << 5,
-        const NoAliasAttribute = 1 << 6,
-        const ByValAttribute = 1 << 7,
-        const NestAttribute = 1 << 8,
-        const ReadNoneAttribute = 1 << 9,
-        const ReadOnlyAttribute = 1 << 10,
-        const NoInlineAttribute = 1 << 11,
-        const AlwaysInlineAttribute = 1 << 12,
-        const OptimizeForSizeAttribute = 1 << 13,
-        const StackProtectAttribute = 1 << 14,
-        const StackProtectReqAttribute = 1 << 15,
-        const AlignmentAttribute = 31 << 16,
-        const NoCaptureAttribute = 1 << 21,
-        const NoRedZoneAttribute = 1 << 22,
-        const NoImplicitFloatAttribute = 1 << 23,
-        const NakedAttribute = 1 << 24,
-        const InlineHintAttribute = 1 << 25,
-        const StackAttribute = 7 << 26,
-        const ReturnsTwiceAttribute = 1 << 29,
-        const UWTableAttribute = 1 << 30,
-        const NonLazyBindAttribute = 1 << 31,
+        const ZExt            = 1 << 0,
+        const SExt            = 1 << 1,
+        const NoReturn        = 1 << 2,
+        const InReg           = 1 << 3,
+        const StructRet       = 1 << 4,
+        const NoUnwind        = 1 << 5,
+        const NoAlias         = 1 << 6,
+        const ByVal           = 1 << 7,
+        const Nest            = 1 << 8,
+        const ReadNone        = 1 << 9,
+        const ReadOnly        = 1 << 10,
+        const NoInline        = 1 << 11,
+        const AlwaysInline    = 1 << 12,
+        const OptimizeForSize = 1 << 13,
+        const StackProtect    = 1 << 14,
+        const StackProtectReq = 1 << 15,
+        const Alignment       = 1 << 16,
+        const NoCapture       = 1 << 21,
+        const NoRedZone       = 1 << 22,
+        const NoImplicitFloat = 1 << 23,
+        const Naked           = 1 << 24,
+        const InlineHint      = 1 << 25,
+        const Stack           = 7 << 26,
+        const ReturnsTwice    = 1 << 29,
+        const UWTable         = 1 << 30,
+        const NonLazyBind     = 1 << 31,
     }
 }
 
 
 #[repr(u64)]
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub enum OtherAttribute {
     // The following are not really exposed in
-    // the LLVM c api so instead to add these
+    // the LLVM C api so instead to add these
     // we call a wrapper function in RustWrapper
     // that uses the C++ api.
     SanitizeAddressAttribute = 1 << 32,
@@ -178,13 +187,13 @@ pub enum OtherAttribute {
     NonNullAttribute = 1 << 44,
 }
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub enum SpecialAttribute {
     DereferenceableAttribute(u64)
 }
 
 #[repr(C)]
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub enum AttributeSet {
     ReturnIndex = 0,
     FunctionIndex = !0
@@ -242,7 +251,7 @@ impl AttrHelper for SpecialAttribute {
 }
 
 pub struct AttrBuilder {
-    attrs: Vec<(uint, Box<AttrHelper+'static>)>
+    attrs: Vec<(usize, Box<AttrHelper+'static>)>
 }
 
 impl AttrBuilder {
@@ -252,13 +261,13 @@ impl AttrBuilder {
         }
     }
 
-    pub fn arg<'a, T: AttrHelper + 'static>(&'a mut self, idx: uint, a: T) -> &'a mut AttrBuilder {
+    pub fn arg<'a, T: AttrHelper + 'static>(&'a mut self, idx: usize, a: T) -> &'a mut AttrBuilder {
         self.attrs.push((idx, box a as Box<AttrHelper+'static>));
         self
     }
 
     pub fn ret<'a, T: AttrHelper + 'static>(&'a mut self, a: T) -> &'a mut AttrBuilder {
-        self.attrs.push((ReturnIndex as uint, box a as Box<AttrHelper+'static>));
+        self.attrs.push((ReturnIndex as usize, box a as Box<AttrHelper+'static>));
         self
     }
 
@@ -276,7 +285,7 @@ impl AttrBuilder {
 }
 
 // enum for the LLVM IntPredicate type
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub enum IntPredicate {
     IntEQ = 32,
     IntNE = 33,
@@ -291,7 +300,7 @@ pub enum IntPredicate {
 }
 
 // enum for the LLVM RealPredicate type
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub enum RealPredicate {
     RealPredicateFalse = 0,
     RealOEQ = 1,
@@ -313,7 +322,7 @@ pub enum RealPredicate {
 
 // The LLVM TypeKind type - must stay in sync with the def of
 // LLVMTypeKind in llvm/include/llvm-c/Core.h
-#[derive(Copy, PartialEq, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
 pub enum TypeKind {
     Void      = 0,
@@ -335,7 +344,7 @@ pub enum TypeKind {
 }
 
 #[repr(C)]
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub enum AtomicBinOp {
     AtomicXchg = 0,
     AtomicAdd  = 1,
@@ -351,7 +360,7 @@ pub enum AtomicBinOp {
 }
 
 #[repr(C)]
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub enum AtomicOrdering {
     NotAtomic = 0,
     Unordered = 1,
@@ -363,15 +372,22 @@ pub enum AtomicOrdering {
     SequentiallyConsistent = 7
 }
 
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub enum SynchronizationScope {
+    SingleThread = 0,
+    CrossThread = 1
+}
+
 // Consts for the LLVMCodeGenFileType type (in include/llvm/c/TargetMachine.h)
 #[repr(C)]
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub enum FileType {
     AssemblyFileType = 0,
     ObjectFileType = 1
 }
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub enum MetadataType {
     MD_dbg = 0,
     MD_tbaa = 1,
@@ -388,13 +404,13 @@ pub enum MetadataType {
 }
 
 // Inline Asm Dialect
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub enum AsmDialect {
     AD_ATT   = 0,
     AD_Intel = 1
 }
 
-#[derive(Copy, PartialEq, Clone)]
+#[derive(Copy, Clone, PartialEq)]
 #[repr(C)]
 pub enum CodeGenOptLevel {
     CodeGenLevelNone = 0,
@@ -403,7 +419,7 @@ pub enum CodeGenOptLevel {
     CodeGenLevelAggressive = 3,
 }
 
-#[derive(Copy, PartialEq)]
+#[derive(Copy, Clone, PartialEq)]
 #[repr(C)]
 pub enum RelocMode {
     RelocDefault = 0,
@@ -413,7 +429,7 @@ pub enum RelocMode {
 }
 
 #[repr(C)]
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub enum CodeGenModel {
     CodeModelDefault = 0,
     CodeModelJITDefault = 1,
@@ -424,7 +440,7 @@ pub enum CodeGenModel {
 }
 
 #[repr(C)]
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub enum DiagnosticKind {
     DK_InlineAsm = 0,
     DK_StackSize,
@@ -491,9 +507,12 @@ pub type PassRef = *mut Pass_opaque;
 #[allow(missing_copy_implementations)]
 pub enum TargetMachine_opaque {}
 pub type TargetMachineRef = *mut TargetMachine_opaque;
-#[allow(missing_copy_implementations)]
 pub enum Archive_opaque {}
 pub type ArchiveRef = *mut Archive_opaque;
+pub enum ArchiveIterator_opaque {}
+pub type ArchiveIteratorRef = *mut ArchiveIterator_opaque;
+pub enum ArchiveChild_opaque {}
+pub type ArchiveChildRef = *mut ArchiveChild_opaque;
 #[allow(missing_copy_implementations)]
 pub enum Twine_opaque {}
 pub type TwineRef = *mut Twine_opaque;
@@ -536,7 +555,7 @@ pub mod debuginfo {
     pub type DIEnumerator = DIDescriptor;
     pub type DITemplateTypeParameter = DIDescriptor;
 
-    #[derive(Copy)]
+    #[derive(Copy, Clone)]
     pub enum DIDescriptorFlags {
       FlagPrivate            = 1 << 0,
       FlagProtected          = 1 << 1,
@@ -693,7 +712,7 @@ extern {
                          -> ValueRef;
     pub fn LLVMConstFCmp(Pred: c_ushort, V1: ValueRef, V2: ValueRef)
                          -> ValueRef;
-    /* only for int/vector */
+    /* only for isize/vector */
     pub fn LLVMGetUndef(Ty: TypeRef) -> ValueRef;
     pub fn LLVMIsConstant(Val: ValueRef) -> Bool;
     pub fn LLVMIsNull(Val: ValueRef) -> Bool;
@@ -915,6 +934,7 @@ extern {
                                        AddressSpace: c_uint)
                                        -> ValueRef;
     pub fn LLVMGetNamedGlobal(M: ModuleRef, Name: *const c_char) -> ValueRef;
+    pub fn LLVMGetOrInsertGlobal(M: ModuleRef, Name: *const c_char, T: TypeRef) -> ValueRef;
     pub fn LLVMGetFirstGlobal(M: ModuleRef) -> ValueRef;
     pub fn LLVMGetLastGlobal(M: ModuleRef) -> ValueRef;
     pub fn LLVMGetNextGlobal(GlobalVar: ValueRef) -> ValueRef;
@@ -927,6 +947,7 @@ extern {
     pub fn LLVMSetThreadLocal(GlobalVar: ValueRef, IsThreadLocal: Bool);
     pub fn LLVMIsGlobalConstant(GlobalVar: ValueRef) -> Bool;
     pub fn LLVMSetGlobalConstant(GlobalVar: ValueRef, IsConstant: Bool);
+    pub fn LLVMGetNamedValue(M: ModuleRef, Name: *const c_char) -> ValueRef;
 
     /* Operations on aliases */
     pub fn LLVMAddAlias(M: ModuleRef,
@@ -960,6 +981,7 @@ extern {
     pub fn LLVMAddFunctionAttrString(Fn: ValueRef, index: c_uint, Name: *const c_char);
     pub fn LLVMRemoveFunctionAttrString(Fn: ValueRef, index: c_uint, Name: *const c_char);
     pub fn LLVMGetFunctionAttr(Fn: ValueRef) -> c_ulonglong;
+    pub fn LLVMRemoveFunctionAttr(Fn: ValueRef, val: c_ulonglong);
 
     /* Operations on parameters */
     pub fn LLVMCountParams(Fn: ValueRef) -> c_uint;
@@ -1530,7 +1552,9 @@ extern {
                               SingleThreaded: Bool)
                               -> ValueRef;
 
-    pub fn LLVMBuildAtomicFence(B: BuilderRef, Order: AtomicOrdering);
+    pub fn LLVMBuildAtomicFence(B: BuilderRef,
+                                Order: AtomicOrdering,
+                                Scope: SynchronizationScope);
 
 
     /* Selected entries from the downcasts. */
@@ -1747,7 +1771,7 @@ extern {
                          Dialect: c_uint)
                          -> ValueRef;
 
-    pub static LLVMRustDebugMetadataVersion: u32;
+    pub fn LLVMRustDebugMetadataVersion() -> u32;
 
     pub fn LLVMRustAddModuleFlag(M: ModuleRef,
                                  name: *const c_char,
@@ -1978,6 +2002,7 @@ extern {
     pub fn LLVMIsAArgument(value_ref: ValueRef) -> ValueRef;
 
     pub fn LLVMIsAAllocaInst(value_ref: ValueRef) -> ValueRef;
+    pub fn LLVMIsAConstantInt(value_ref: ValueRef) -> ValueRef;
 
     pub fn LLVMInitializeX86TargetInfo();
     pub fn LLVMInitializeX86Target();
@@ -2050,13 +2075,18 @@ extern {
     pub fn LLVMRustMarkAllFunctionsNounwind(M: ModuleRef);
 
     pub fn LLVMRustOpenArchive(path: *const c_char) -> ArchiveRef;
-    pub fn LLVMRustArchiveReadSection(AR: ArchiveRef, name: *const c_char,
-                                      out_len: *mut size_t) -> *const c_char;
+    pub fn LLVMRustArchiveIteratorNew(AR: ArchiveRef) -> ArchiveIteratorRef;
+    pub fn LLVMRustArchiveIteratorNext(AIR: ArchiveIteratorRef);
+    pub fn LLVMRustArchiveIteratorCurrent(AIR: ArchiveIteratorRef) -> ArchiveChildRef;
+    pub fn LLVMRustArchiveChildName(ACR: ArchiveChildRef,
+                                    size: *mut size_t) -> *const c_char;
+    pub fn LLVMRustArchiveChildData(ACR: ArchiveChildRef,
+                                    size: *mut size_t) -> *const c_char;
+    pub fn LLVMRustArchiveIteratorFree(AIR: ArchiveIteratorRef);
     pub fn LLVMRustDestroyArchive(AR: ArchiveRef);
 
-    pub fn LLVMRustSetDLLExportStorageClass(V: ValueRef);
-    pub fn LLVMVersionMajor() -> c_int;
-    pub fn LLVMVersionMinor() -> c_int;
+    pub fn LLVMRustSetDLLStorageClass(V: ValueRef,
+                                      C: DLLStorageClassTypes);
 
     pub fn LLVMRustGetSectionName(SI: SectionIteratorRef,
                                   data: *mut *const c_char) -> c_int;
@@ -2103,6 +2133,12 @@ pub fn SetFunctionCallConv(fn_: ValueRef, cc: CallConv) {
 pub fn SetLinkage(global: ValueRef, link: Linkage) {
     unsafe {
         LLVMSetLinkage(global, link as c_uint);
+    }
+}
+
+pub fn SetDLLStorageClass(global: ValueRef, class: DLLStorageClassTypes) {
+    unsafe {
+        LLVMRustSetDLLStorageClass(global, class);
     }
 }
 
@@ -2167,7 +2203,7 @@ impl ObjectFile {
     pub fn new(llmb: MemoryBufferRef) -> Option<ObjectFile> {
         unsafe {
             let llof = LLVMCreateObjectFile(llmb);
-            if llof as int == 0 {
+            if llof as isize == 0 {
                 // LLVMCreateObjectFile took ownership of llmb
                 return None
             }
@@ -2227,10 +2263,7 @@ type RustStringRepr = *mut RefCell<Vec<u8>>;
 pub unsafe extern "C" fn rust_llvm_string_write_impl(sr: RustStringRef,
                                                      ptr: *const c_char,
                                                      size: size_t) {
-    let slice: &[u8] = mem::transmute(raw::Slice {
-        data: ptr as *const u8,
-        len: size as uint,
-    });
+    let slice = slice::from_raw_parts(ptr as *const u8, size as usize);
 
     let sr: RustStringRepr = mem::transmute(sr);
     (*sr).borrow_mut().push_all(slice);

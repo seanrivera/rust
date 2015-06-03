@@ -10,6 +10,7 @@
 
 // aux-build:inner_static.rs
 
+
 extern crate inner_static;
 
 pub fn main() {

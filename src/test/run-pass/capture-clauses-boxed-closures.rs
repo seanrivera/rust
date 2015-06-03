@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 fn each<T, F>(x: &[T], mut f: F) where F: FnMut(&T) {
     for val in x {
         f(val)
@@ -20,4 +21,3 @@ fn main() {
     each(&elems, |val| sum += *val);
     assert_eq!(sum, 15);
 }
-

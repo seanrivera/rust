@@ -35,17 +35,17 @@ use syntax::codemap;
 use syntax::fold::{self, Folder};
 use syntax::print::{pp, pprust};
 use syntax::ptr::P;
+use syntax::util::small_vector::SmallVector;
 
 use graphviz as dot;
 
 use std::fs::File;
 use std::io::{self, Write};
-use std::old_io;
 use std::option;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-#[derive(Copy, PartialEq, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum PpSourceMode {
     PpmNormal,
     PpmEveryBodyLoops,
@@ -57,7 +57,7 @@ pub enum PpSourceMode {
 }
 
 
-#[derive(Copy, PartialEq, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum PpFlowGraphMode {
     Default,
     /// Drops the labels from the edges in the flowgraph output. This
@@ -66,7 +66,7 @@ pub enum PpFlowGraphMode {
     /// have become a pain to maintain.
     UnlabelledEdges,
 }
-#[derive(Copy, PartialEq, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum PpMode {
     PpmSource(PpSourceMode),
     PpmFlowGraph(PpFlowGraphMode),
@@ -75,7 +75,7 @@ pub enum PpMode {
 pub fn parse_pretty(sess: &Session,
                     name: &str,
                     extended: bool) -> (PpMode, Option<UserIdentifiedItem>) {
-    let mut split = name.splitn(1, '=');
+    let mut split = name.splitn(2, '=');
     let first = split.next().unwrap();
     let opt_second = split.next();
     let first = match (first, extended) {
@@ -226,6 +226,10 @@ impl<'ast> pprust::PpAnn for IdentifiedAnnotation<'ast> {
             pprust::NodeItem(item) => {
                 try!(pp::space(&mut s.s));
                 s.synth_comment(item.id.to_string())
+            }
+            pprust::NodeSubItem(id) => {
+                try!(pp::space(&mut s.s));
+                s.synth_comment(id.to_string())
             }
             pprust::NodeBlock(blk) => {
                 try!(pp::space(&mut s.s));
@@ -472,6 +476,29 @@ impl fold::Folder for ReplaceBodyWithLoop {
         }
     }
 
+    fn fold_trait_item(&mut self, i: P<ast::TraitItem>) -> SmallVector<P<ast::TraitItem>> {
+        match i.node {
+            ast::ConstTraitItem(..) => {
+                self.within_static_or_const = true;
+                let ret = fold::noop_fold_trait_item(i, self);
+                self.within_static_or_const = false;
+                return ret;
+            }
+            _ => fold::noop_fold_trait_item(i, self),
+        }
+    }
+
+    fn fold_impl_item(&mut self, i: P<ast::ImplItem>) -> SmallVector<P<ast::ImplItem>> {
+        match i.node {
+            ast::ConstImplItem(..) => {
+                self.within_static_or_const = true;
+                let ret = fold::noop_fold_impl_item(i, self);
+                self.within_static_or_const = false;
+                return ret;
+            }
+            _ => fold::noop_fold_impl_item(i, self),
+        }
+    }
 
     fn fold_block(&mut self, b: P<ast::Block>) -> P<ast::Block> {
         fn expr_to_block(rules: ast::BlockCheckMode,
@@ -615,7 +642,7 @@ pub fn pretty_print_input(sess: Session,
             });
 
             let code = blocks::Code::from_node(node);
-            let out: &mut Writer = &mut out;
+            let out: &mut Write = &mut out;
             match code {
                 Some(code) => {
                     let variants = gather_flowgraph_variants(&sess);
@@ -654,11 +681,11 @@ pub fn pretty_print_input(sess: Session,
     }
 }
 
-fn print_flowgraph<W:old_io::Writer>(variants: Vec<borrowck_dot::Variant>,
-                                 analysis: ty::CrateAnalysis,
-                                 code: blocks::Code,
-                                 mode: PpFlowGraphMode,
-                                 mut out: W) -> io::Result<()> {
+fn print_flowgraph<W: Write>(variants: Vec<borrowck_dot::Variant>,
+                             analysis: ty::CrateAnalysis,
+                             code: blocks::Code,
+                             mode: PpFlowGraphMode,
+                             mut out: W) -> io::Result<()> {
     let ty_cx = &analysis.ty_cx;
     let cfg = match code {
         blocks::BlockCode(block) => cfg::CFG::new(ty_cx, &*block),
@@ -673,7 +700,7 @@ fn print_flowgraph<W:old_io::Writer>(variants: Vec<borrowck_dot::Variant>,
     };
 
     match code {
-        _ if variants.len() == 0 => {
+        _ if variants.is_empty() => {
             let r = dot::render(&lcfg, &mut out);
             return expand_err_details(r);
         }
@@ -698,10 +725,10 @@ fn print_flowgraph<W:old_io::Writer>(variants: Vec<borrowck_dot::Variant>,
         }
     }
 
-    fn expand_err_details(r: old_io::IoResult<()>) -> io::Result<()> {
+    fn expand_err_details(r: io::Result<()>) -> io::Result<()> {
         r.map_err(|ioerr| {
-            io::Error::new(io::ErrorKind::Other, "graphviz::render failed",
-                           Some(ioerr.to_string()))
+            io::Error::new(io::ErrorKind::Other,
+                           &format!("graphviz::render failed: {}", ioerr)[..])
         })
     }
 }

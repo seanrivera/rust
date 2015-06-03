@@ -13,24 +13,26 @@
 // insufficient type propagation caused the type of the iterator to be
 // incorrectly unified with the `*const` type to which it is coerced.
 
+// pretty-expanded FIXME #23616
+
 use std::ptr;
 
 trait IntoIterator {
     type Iter: Iterator;
 
-    fn into_iter(self) -> Self::Iter;
+    fn into_iter2(self) -> Self::Iter;
 }
 
 impl<I> IntoIterator for I where I: Iterator {
     type Iter = I;
 
-    fn into_iter(self) -> I {
+    fn into_iter2(self) -> I {
         self
     }
 }
 
 fn desugared_for_loop_bad<T>(v: Vec<T>) {
-    match IntoIterator::into_iter(v.iter()) {
+    match IntoIterator::into_iter2(v.iter()) {
         mut iter => {
             loop {
                 match ::std::iter::Iterator::next(&mut iter) {

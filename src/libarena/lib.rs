@@ -27,7 +27,7 @@
 #![crate_type = "rlib"]
 #![crate_type = "dylib"]
 #![doc(html_logo_url = "http://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-       html_favicon_url = "http://www.rust-lang.org/favicon.ico",
+       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
        html_root_url = "http://doc.rust-lang.org/nightly/")]
 
 #![feature(alloc)]
@@ -35,18 +35,15 @@
 #![feature(core)]
 #![feature(staged_api)]
 #![feature(unboxed_closures)]
-#![feature(unsafe_destructor)]
 #![cfg_attr(test, feature(test))]
 
 extern crate alloc;
 
 use std::cell::{Cell, RefCell};
 use std::cmp;
-use std::intrinsics::{TyDesc, get_tydesc};
 use std::intrinsics;
 use std::marker;
 use std::mem;
-use std::num::{Int, UnsignedInt};
 use std::ptr;
 use std::rc::Rc;
 use std::rt::heap::{allocate, deallocate};
@@ -126,7 +123,6 @@ fn chunk(size: usize, is_copy: bool) -> Chunk {
     }
 }
 
-#[unsafe_destructor]
 impl<'longer_than_self> Drop for Arena<'longer_than_self> {
     fn drop(&mut self) {
         unsafe {
@@ -183,6 +179,28 @@ fn bitpack_tydesc_ptr(p: *const TyDesc, is_done: bool) -> usize {
 #[inline]
 fn un_bitpack_tydesc_ptr(p: usize) -> (*const TyDesc, bool) {
     ((p & !1) as *const TyDesc, p & 1 == 1)
+}
+
+// HACK(eddyb) TyDesc replacement using a trait object vtable.
+// This could be replaced in the future with a custom DST layout,
+// or `&'static (drop_glue, size, align)` created by a `const fn`.
+struct TyDesc {
+    drop_glue: fn(*const i8),
+    size: usize,
+    align: usize
+}
+
+trait AllTypes { fn dummy(&self) { } }
+impl<T:?Sized> AllTypes for T { }
+
+unsafe fn get_tydesc<T>() -> *const TyDesc {
+    use std::raw::TraitObject;
+
+    let ptr = &*(1 as *const T);
+
+    // Can use any trait that is implemented for all types.
+    let obj = mem::transmute::<&AllTypes, TraitObject>(ptr);
+    obj.vtable as *const TyDesc
 }
 
 impl<'longer_than_self> Arena<'longer_than_self> {
@@ -323,7 +341,7 @@ fn test_arena_destructors() {
 }
 
 #[test]
-#[should_fail]
+#[should_panic]
 fn test_arena_destructors_fail() {
     let arena = Arena::new();
     // Put some stuff in the arena.
@@ -342,10 +360,6 @@ fn test_arena_destructors_fail() {
 }
 
 /// A faster arena that can hold objects of only one type.
-///
-/// Safety note: Modifying objects in the arena that have already had their
-/// `drop` destructors run can cause leaks, because the destructor will not
-/// run again for these objects.
 pub struct TypedArena<T> {
     /// A pointer to the next object to be allocated.
     ptr: Cell<*const T>,
@@ -412,7 +426,8 @@ impl<T> TypedArenaChunk<T> {
         // Destroy the next chunk.
         let next = self.next;
         let size = calculate_size::<T>(self.capacity);
-        deallocate(self as *mut TypedArenaChunk<T> as *mut u8, size,
+        let self_ptr: *mut TypedArenaChunk<T> = self;
+        deallocate(self_ptr as *mut u8, size,
                    mem::min_align_of::<TypedArenaChunk<T>>());
         if !next.is_null() {
             let capacity = (*next).capacity;
@@ -493,7 +508,6 @@ impl<T> TypedArena<T> {
     }
 }
 
-#[unsafe_destructor]
 impl<T> Drop for TypedArena<T> {
     fn drop(&mut self) {
         unsafe {

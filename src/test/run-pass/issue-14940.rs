@@ -8,13 +8,15 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 use std::env;
-use std::old_io::{stdio, Command};
+use std::process::Command;
+use std::io::{self, Write};
 
 fn main() {
     let mut args = env::args();
     if args.len() > 1 {
-        let mut out = stdio::stdout();
+        let mut out = io::stdout();
         out.write(&['a' as u8; 128 * 1024]).unwrap();
     } else {
         let out = Command::new(&args.next().unwrap()).arg("child").output();

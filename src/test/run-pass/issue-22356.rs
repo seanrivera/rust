@@ -8,7 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::marker::{PhantomData, PhantomFn};
+// pretty-expanded FIXME #23616
+
+use std::marker::PhantomData;
 
 pub struct Handle<T, I>(T, I);
 
@@ -32,7 +34,7 @@ impl<D: Device, T> BufferHandle<D, T> {
 
 pub type RawBufferHandle<D: Device> = Handle<<D as Device>::Buffer, String>;
 
-pub trait Device: PhantomFn<Self> {
+pub trait Device {
     type Buffer;
 }
 

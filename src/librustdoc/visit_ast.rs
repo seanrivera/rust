@@ -12,6 +12,7 @@
 //! usable for clean
 
 use std::collections::HashSet;
+use std::mem;
 
 use syntax::abi;
 use syntax::ast;
@@ -40,6 +41,7 @@ pub struct RustdocVisitor<'a, 'tcx: 'a> {
     pub cx: &'a core::DocContext<'tcx>,
     pub analysis: Option<&'a core::CrateAnalysis>,
     view_item_stack: HashSet<ast::NodeId>,
+    inlining_from_glob: bool,
 }
 
 impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
@@ -54,11 +56,13 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
             cx: cx,
             analysis: analysis,
             view_item_stack: stack,
+            inlining_from_glob: false,
         }
     }
 
     fn stability(&self, id: ast::NodeId) -> Option<attr::Stability> {
-        self.cx.tcx_opt().and_then(|tcx| stability::lookup(tcx, ast_util::local_def(id)))
+        self.cx.tcx_opt().and_then(
+            |tcx| stability::lookup(tcx, ast_util::local_def(id)).map(|x| x.clone()))
     }
 
     pub fn visit(&mut self, krate: &ast::Crate) {
@@ -120,7 +124,9 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
 
     pub fn visit_fn(&mut self, item: &ast::Item,
                     name: ast::Ident, fd: &ast::FnDecl,
-                    unsafety: &ast::Unsafety, _abi: &abi::Abi,
+                    unsafety: &ast::Unsafety,
+                    constness: ast::Constness,
+                    abi: &abi::Abi,
                     gen: &ast::Generics) -> Function {
         debug!("Visiting fn");
         Function {
@@ -133,6 +139,8 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
             whence: item.span,
             generics: gen.clone(),
             unsafety: *unsafety,
+            constness: constness,
+            abi: *abi,
         }
     }
 
@@ -171,7 +179,7 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
                                      please_inline)
                 }).collect::<Vec<ast::PathListItem>>();
 
-                if mine.len() == 0 {
+                if mine.is_empty() {
                     None
                 } else {
                     Some(ast::ViewPathList(p, mine))
@@ -196,7 +204,7 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
             Some(tcx) => tcx,
             None => return false
         };
-        let def = tcx.def_map.borrow()[id].def_id();
+        let def = tcx.def_map.borrow()[&id].def_id();
         if !ast_util::is_local(def) { return false }
         let analysis = match self.analysis {
             Some(analysis) => analysis, None => return false
@@ -209,6 +217,7 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
         let ret = match tcx.map.get(def.node) {
             ast_map::NodeItem(it) => {
                 if glob {
+                    let prev = mem::replace(&mut self.inlining_from_glob, true);
                     match it.node {
                         ast::ItemMod(ref m) => {
                             for i in &m.items {
@@ -218,6 +227,7 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
                         ast::ItemEnum(..) => {}
                         _ => { panic!("glob not mapped to a module or enum"); }
                     }
+                    self.inlining_from_glob = prev;
                 } else {
                     self.visit_item(it, renamed, om);
                 }
@@ -237,7 +247,7 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
             ast::ItemExternCrate(ref p) => {
                 let path = match *p {
                     None => None,
-                    Some((ref x, _)) => Some(x.to_string()),
+                    Some(x) => Some(x.to_string()),
                 };
                 om.extern_crates.push(ExternCrate {
                     name: name,
@@ -285,8 +295,9 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
                 om.enums.push(self.visit_enum_def(item, name, ed, gen)),
             ast::ItemStruct(ref sd, ref gen) =>
                 om.structs.push(self.visit_struct_def(item, name, &**sd, gen)),
-            ast::ItemFn(ref fd, ref pur, ref abi, ref gen, _) =>
-                om.fns.push(self.visit_fn(item, name, &**fd, pur, abi, gen)),
+            ast::ItemFn(ref fd, ref unsafety, constness, ref abi, ref gen, _) =>
+                om.fns.push(self.visit_fn(item, name, &**fd, unsafety,
+                                          constness, abi, gen)),
             ast::ItemTy(ref ty, ref gen) => {
                 let t = Typedef {
                     ty: ty.clone(),
@@ -356,15 +367,24 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
                     vis: item.vis,
                     stab: self.stability(item.id),
                 };
-                om.impls.push(i);
+                // Don't duplicate impls when inlining glob imports, we'll pick
+                // them up regardless of where they're located.
+                if !self.inlining_from_glob {
+                    om.impls.push(i);
+                }
             },
             ast::ItemDefaultImpl(unsafety, ref trait_ref) => {
                 let i = DefaultImpl {
                     unsafety: unsafety,
                     trait_: trait_ref.clone(),
-                    id: item.id
+                    id: item.id,
+                    attrs: item.attrs.clone(),
+                    whence: item.span,
                 };
-                om.def_traits.push(i);
+                // see comment above about ItemImpl
+                if !self.inlining_from_glob {
+                    om.def_traits.push(i);
+                }
             }
             ast::ItemForeignMod(ref fm) => {
                 om.foreigns.push(fm.clone());
@@ -383,6 +403,7 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
             name: def.ident,
             whence: def.span,
             stab: self.stability(def.id),
+            imported_from: def.imported_from,
         }
     }
 }

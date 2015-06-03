@@ -8,10 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-trait TraitNotAStruct : ::std::marker::MarkerTrait { }
+trait TraitNotAStruct {}
 
 fn main() {
     TraitNotAStruct{ value: 0 };
     //~^ ERROR: use of trait `TraitNotAStruct` as a struct constructor [E0159]
 }
-

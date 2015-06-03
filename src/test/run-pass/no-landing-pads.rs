@@ -10,6 +10,7 @@
 
 // compile-flags: -Z no-landing-pads
 
+
 use std::thread;
 
 static mut HIT: bool = false;

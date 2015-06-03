@@ -8,13 +8,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// ignore-test FIXME #11820: & is unreliable in deriving
-
 use std::cmp::Ordering::{Less,Equal,Greater};
 
-#[derive(Eq,Ord)]
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
 struct A<'a> {
-    x: &'a int
+    x: &'a isize
 }
 pub fn main() {
     let (a, b) = (A { x: &1 }, A { x: &2 });

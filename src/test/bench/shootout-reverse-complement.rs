@@ -38,29 +38,29 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
 // OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// ignore-android see #10393 #13206
+// ignore-android: FIXME(#10393) hangs without output
 
-#![feature(unboxed_closures)]
+#![feature(libc, scoped)]
 
 extern crate libc;
 
-use std::old_io::stdio::{stdin_raw, stdout_raw};
-use std::old_io::{IoResult, EndOfFile};
-use std::ptr::{copy_memory, Unique};
+use std::io;
+use std::io::prelude::*;
+use std::ptr::copy;
 use std::thread;
 
 struct Tables {
-    table8: [u8;1 << 8],
-    table16: [u16;1 << 16]
+    table8: Box<[u8; 1 << 8]>,
+    table16: Box<[u16; 1 << 16]>,
 }
 
 impl Tables {
     fn new() -> Tables {
-        let mut table8 = [0;1 << 8];
+        let mut table8 = Box::new([0;1 << 8]);
         for (i, v) in table8.iter_mut().enumerate() {
             *v = Tables::computed_cpl8(i as u8);
         }
-        let mut table16 = [0;1 << 16];
+        let mut table16 = Box::new([0;1 << 16]);
         for (i, v) in table16.iter_mut().enumerate() {
             *v = (table8[i & 255] as u16) << 8 |
                  table8[i >> 8]  as u16;
@@ -92,47 +92,17 @@ impl Tables {
 
     /// Retrieves the complement for `i`.
     fn cpl8(&self, i: u8) -> u8 {
-        self.table8[i as uint]
+        self.table8[i as usize]
     }
 
     /// Retrieves the complement for `i`.
     fn cpl16(&self, i: u16) -> u16 {
-        self.table16[i as uint]
+        self.table16[i as usize]
     }
-}
-
-/// Reads all remaining bytes from the stream.
-fn read_to_end<R: Reader>(r: &mut R) -> IoResult<Vec<u8>> {
-    // As reading the input stream in memory is a bottleneck, we tune
-    // Reader::read_to_end() with a fast growing policy to limit
-    // recopies.  If MREMAP_RETAIN is implemented in the linux kernel
-    // and jemalloc use it, this trick will become useless.
-    const CHUNK: uint = 64 * 1024;
-
-    let mut vec = Vec::with_capacity(CHUNK);
-    loop {
-        // workaround: very fast growing
-        let len = vec.len();
-        if vec.capacity() - len < CHUNK {
-            let cap = vec.capacity();
-            let mult = if cap < 256 * 1024 * 1024 {
-                16
-            } else {
-                2
-            };
-            vec.reserve_exact(mult * cap - len);
-        }
-        match r.push_at_least(1, CHUNK, &mut vec) {
-            Ok(_) => {}
-            Err(ref e) if e.kind == EndOfFile => break,
-            Err(e) => return Err(e)
-        }
-    }
-    Ok(vec)
 }
 
 /// Finds the first position at which `b` occurs in `s`.
-fn memchr(h: &[u8], n: u8) -> Option<uint> {
+fn memchr(h: &[u8], n: u8) -> Option<usize> {
     use libc::{c_void, c_int, size_t};
     let res = unsafe {
         libc::memchr(h.as_ptr() as *const c_void, n as c_int, h.len() as size_t)
@@ -140,7 +110,7 @@ fn memchr(h: &[u8], n: u8) -> Option<uint> {
     if res.is_null() {
         None
     } else {
-        Some(res as uint - h.as_ptr() as uint)
+        Some(res as usize - h.as_ptr() as usize)
     }
 }
 
@@ -171,18 +141,19 @@ impl<'a> Iterator for MutDnaSeqs<'a> {
 }
 
 /// Length of a normal line without the terminating \n.
-const LINE_LEN: uint = 60;
+const LINE_LEN: usize = 60;
 
 /// Compute the reverse complement.
 fn reverse_complement(seq: &mut [u8], tables: &Tables) {
-    let seq = seq.init_mut();// Drop the last newline
+    let len = seq.len();
+    let seq = &mut seq[..len - 1]; // Drop the last newline
     let len = seq.len();
     let off = LINE_LEN - len % (LINE_LEN + 1);
     let mut i = LINE_LEN;
     while i < len {
         unsafe {
-            copy_memory(seq.as_mut_ptr().offset((i - off + 1) as int),
-                        seq.as_ptr().offset((i - off) as int), off);
+            copy(seq.as_ptr().offset((i - off) as isize),
+                 seq.as_mut_ptr().offset((i - off + 1) as isize), off);
             *seq.get_unchecked_mut(i - off) = b'\n';
         }
         i += LINE_LEN + 1;
@@ -193,8 +164,8 @@ fn reverse_complement(seq: &mut [u8], tables: &Tables) {
     unsafe {
         let mut left = seq.as_mut_ptr() as *mut u16;
         // This is slow if len % 2 != 0 but still faster than bytewise operations.
-        let mut right = seq.as_mut_ptr().offset(len as int - 2) as *mut u16;
-        let end = left.offset(div as int);
+        let mut right = seq.as_mut_ptr().offset(len as isize - 2) as *mut u16;
+        let end = left.offset(div as isize);
         while left != end {
             let tmp = tables.cpl16(*left);
             *left = tables.cpl16(*right);
@@ -222,26 +193,20 @@ fn reverse_complement(seq: &mut [u8], tables: &Tables) {
     }
 }
 
-
-struct Racy<T>(T);
-
-unsafe impl<T: 'static> Send for Racy<T> {}
-
 /// Executes a closure in parallel over the given iterator over mutable slice.
 /// The closure `f` is run in parallel with an element of `iter`.
-fn parallel<'a, I: Iterator, F>(iter: I, ref f: F)
-        where I::Item: Send + 'a,
-              F: Fn(I::Item) + Sync + 'a {
+fn parallel<I: Iterator, F>(iter: I, ref f: F)
+        where I::Item: Send,
+              F: Fn(I::Item) + Sync, {
     iter.map(|x| {
-        thread::scoped(move|| {
-            f(x)
-        })
+        thread::scoped(move || f(x))
     }).collect::<Vec<_>>();
 }
 
 fn main() {
-    let mut data = read_to_end(&mut stdin_raw()).unwrap();
+    let mut data = Vec::with_capacity(1024 * 1024);
+    io::stdin().read_to_end(&mut data).unwrap();
     let tables = &Tables::new();
     parallel(mut_dna_seqs(&mut data), |seq| reverse_complement(seq, tables));
-    stdout_raw().write(&data).unwrap();
+    io::stdout().write_all(&data).unwrap();
 }

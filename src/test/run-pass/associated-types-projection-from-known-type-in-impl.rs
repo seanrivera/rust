@@ -10,6 +10,7 @@
 
 // Test where the impl self type uses a projection from a constant type.
 
+
 trait Int
 {
     type T;

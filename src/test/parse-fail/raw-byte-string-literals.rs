@@ -8,10 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+// compile-flags: -Z parse-only
+
 
 pub fn main() {
     br"é";  //~ raw byte string must be ASCII
     br##~"a"~##;  //~ only `#` is allowed in raw string delimitation
 }
-
-

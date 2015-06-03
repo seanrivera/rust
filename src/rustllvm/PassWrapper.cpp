@@ -14,6 +14,7 @@
 
 #include "llvm/Support/CBindingWrapping.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Host.h"
 #include "llvm/Target/TargetLibraryInfo.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 
@@ -83,12 +84,14 @@ LLVMRustCreateTargetMachine(const char *triple,
         return NULL;
     }
 
+    StringRef real_cpu = cpu;
+    if (real_cpu == "native") {
+        real_cpu = sys::getHostCPUName();
+    }
+
     TargetOptions Options;
     Options.PositionIndependentExecutable = PositionIndependentExecutable;
     Options.NoFramePointerElim = NoFramePointerElim;
-#if LLVM_VERSION_MINOR < 5
-    Options.EnableSegmentedStacks = EnableSegmentedStacks;
-#endif
     Options.FloatABIType = FloatABI::Default;
     Options.UseSoftFloat = UseSoftFloat;
     if (UseSoftFloat) {
@@ -96,7 +99,7 @@ LLVMRustCreateTargetMachine(const char *triple,
     }
 
     TargetMachine *TM = TheTarget->createTargetMachine(Trip.getTriple(),
-                                                       cpu,
+                                                       real_cpu,
                                                        feature,
                                                        Options,
                                                        RM,
@@ -122,10 +125,8 @@ LLVMRustAddAnalysisPasses(LLVMTargetMachineRef TM,
     PassManagerBase *PM = unwrap(PMR);
 #if LLVM_VERSION_MINOR >= 6
     PM->add(new DataLayoutPass());
-#elif LLVM_VERSION_MINOR == 5
-    PM->add(new DataLayoutPass(unwrap(M)));
 #else
-    PM->add(new DataLayout(unwrap(M)));
+    PM->add(new DataLayoutPass(unwrap(M)));
 #endif
     unwrap(TM)->addAnalysisPasses(*PM);
 }
@@ -196,10 +197,8 @@ LLVMRustWriteOutputFile(LLVMTargetMachineRef Target,
   raw_fd_ostream OS(path, EC, sys::fs::F_None);
   if (EC)
     ErrorInfo = EC.message();
-#elif LLVM_VERSION_MINOR >= 4
-  raw_fd_ostream OS(path, ErrorInfo, sys::fs::F_None);
 #else
-  raw_fd_ostream OS(path, ErrorInfo, raw_fd_ostream::F_Binary);
+  raw_fd_ostream OS(path, ErrorInfo, sys::fs::F_None);
 #endif
   if (ErrorInfo != "") {
     LLVMRustSetLastError(ErrorInfo.c_str());
@@ -224,19 +223,13 @@ LLVMRustPrintModule(LLVMPassManagerRef PMR,
   raw_fd_ostream OS(path, EC, sys::fs::F_None);
   if (EC)
     ErrorInfo = EC.message();
-#elif LLVM_VERSION_MINOR >= 4
-  raw_fd_ostream OS(path, ErrorInfo, sys::fs::F_None);
 #else
-  raw_fd_ostream OS(path, ErrorInfo, raw_fd_ostream::F_Binary);
+  raw_fd_ostream OS(path, ErrorInfo, sys::fs::F_None);
 #endif
 
   formatted_raw_ostream FOS(OS);
 
-#if LLVM_VERSION_MINOR >= 5
   PM->add(createPrintModulePass(FOS));
-#else
-  PM->add(createPrintModulePass(&FOS));
-#endif
 
   PM->run(*unwrap(M));
 }

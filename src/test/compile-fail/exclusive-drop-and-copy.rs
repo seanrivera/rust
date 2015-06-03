@@ -8,21 +8,18 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(unsafe_destructor)]
-
 // issue #20126
 
-#[derive(Copy)] //~ ERROR the trait `Copy` may not be implemented
+#[derive(Copy, Clone)] //~ ERROR the trait `Copy` may not be implemented
 struct Foo;
 
 impl Drop for Foo {
     fn drop(&mut self) {}
 }
 
-#[derive(Copy)] //~ ERROR the trait `Copy` may not be implemented
+#[derive(Copy, Clone)] //~ ERROR the trait `Copy` may not be implemented
 struct Bar<T>(::std::marker::PhantomData<T>);
 
-#[unsafe_destructor]
 impl<T> Drop for Bar<T> {
     fn drop(&mut self) {}
 }

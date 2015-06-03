@@ -12,12 +12,13 @@
 #![cfg_attr(stage0, feature(custom_attribute))]
 #![crate_name = "libc"]
 #![crate_type = "rlib"]
-#![cfg_attr(not(feature = "cargo-build"), unstable(feature = "libc"))]
+#![cfg_attr(not(feature = "cargo-build"), unstable(feature = "libc",
+                                                   reason = "use `libc` from crates.io"))]
 #![cfg_attr(not(feature = "cargo-build"), feature(staged_api, core, no_std))]
 #![cfg_attr(not(feature = "cargo-build"), staged_api)]
 #![cfg_attr(not(feature = "cargo-build"), no_std)]
 #![doc(html_logo_url = "http://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-       html_favicon_url = "http://www.rust-lang.org/favicon.ico",
+       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
        html_root_url = "http://doc.rust-lang.org/nightly/",
        html_playground_url = "http://play.rust-lang.org/")]
 #![cfg_attr(test, feature(test))]
@@ -76,7 +77,7 @@
 
 #![allow(bad_style, raw_pointer_derive)]
 #![cfg_attr(target_os = "nacl", allow(unused_imports))]
-#[cfg(feature = "cargo-build")] extern crate "std" as core;
+#[cfg(feature = "cargo-build")] extern crate std as core;
 #[cfg(not(feature = "cargo-build"))] extern crate core;
 
 #[cfg(test)] extern crate std;
@@ -131,6 +132,7 @@ pub use funcs::bsd43::*;
 #[cfg(unix)] pub use funcs::posix88::net::*;
 #[cfg(unix)] pub use funcs::posix01::stat_::*;
 #[cfg(unix)] pub use funcs::posix01::unistd::*;
+#[cfg(unix)] pub use funcs::posix01::resource::*;
 
 
 #[cfg(windows)] pub use funcs::extra::kernel32::*;
@@ -139,9 +141,19 @@ pub use funcs::bsd43::*;
 
 // On NaCl, these libraries are static. Thus it would be a Bad Idea to link them
 // in when creating a test crate.
-#[cfg(not(any(windows, all(target_os = "nacl", test))))]
+#[cfg(not(any(windows, target_env = "musl", all(target_os = "nacl", test))))]
 #[link(name = "c")]
 #[link(name = "m")]
+extern {}
+
+#[cfg(all(target_env = "musl", not(test)))]
+#[link(name = "c", kind = "static")]
+extern {}
+
+#[cfg(all(windows, target_env = "msvc"))]
+#[link(name = "kernel32")]
+#[link(name = "shell32")]
+#[link(name = "msvcrt")]
 extern {}
 
 // libnacl provides functions that require a trip through the IRT to work.
@@ -223,9 +235,10 @@ pub mod types {
                 pub type pthread_t = c_ulong;
                 #[cfg(target_os = "nacl")]
                 pub type pthread_t = *mut c_void;
+                pub type rlim_t = u64;
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct glob_t {
+                #[derive(Copy, Clone)] pub struct glob_t {
                     pub gl_pathc: size_t,
                     pub gl_pathv: *mut *mut c_char,
                     pub gl_offs:  size_t,
@@ -238,21 +251,56 @@ pub mod types {
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct timeval {
+                #[derive(Copy, Clone)] pub struct timeval {
                     pub tv_sec: time_t,
                     pub tv_usec: suseconds_t,
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct timespec {
+                #[derive(Copy, Clone)] pub struct timespec {
                     pub tv_sec: time_t,
                     pub tv_nsec: c_long,
                 }
 
-                #[derive(Copy)] pub enum timezone {}
+                pub enum timezone {}
 
                 pub type sighandler_t = size_t;
+
+                #[repr(C)]
+                #[derive(Copy, Clone)]
+                pub struct rlimit {
+                    pub rlim_cur: rlim_t,
+                    pub rlim_max: rlim_t,
+                }
             }
+
+            pub mod bsd43 {
+                use types::os::common::posix01::timeval;
+                use types::os::arch::c95::c_long;
+                // This is also specified in POSIX 2001, but only has two fields. All implementors
+                // implement BSD 4.3 version.
+                #[repr(C)]
+                #[derive(Copy, Clone)]
+                pub struct rusage {
+                    pub ru_utime: timeval,
+                    pub ru_stime: timeval,
+                    pub ru_maxrss: c_long,
+                    pub ru_ixrss: c_long,
+                    pub ru_idrss: c_long,
+                    pub ru_isrss: c_long,
+                    pub ru_minflt: c_long,
+                    pub ru_majflt: c_long,
+                    pub ru_nswap: c_long,
+                    pub ru_inblock: c_long,
+                    pub ru_oublock: c_long,
+                    pub ru_msgsnd: c_long,
+                    pub ru_msgrcv: c_long,
+                    pub ru_nsignals: c_long,
+                    pub ru_nvcsw: c_long,
+                    pub ru_nivcsw: c_long
+                }
+            }
+
             pub mod bsd44 {
                 use types::common::c95::{c_void};
                 use types::os::arch::c95::{c_char, c_int, c_uint};
@@ -262,29 +310,35 @@ pub mod types {
                 pub type in_port_t = u16;
                 pub type in_addr_t = u32;
                 #[repr(C)]
-                #[derive(Copy)] pub struct sockaddr {
+                #[derive(Copy, Clone)] pub struct sockaddr {
                     pub sa_family: sa_family_t,
                     pub sa_data: [u8; 14],
                 }
                 #[repr(C)]
                 #[derive(Copy)] pub struct sockaddr_storage {
                     pub ss_family: sa_family_t,
-                    pub __ss_align: i64,
-                    pub __ss_pad2: [u8; 112],
+                    pub __ss_align: isize,
+                    #[cfg(target_pointer_width = "32")]
+                    pub __ss_pad2: [u8; 128 - 2 * 4],
+                    #[cfg(target_pointer_width = "64")]
+                    pub __ss_pad2: [u8; 128 - 2 * 8],
+                }
+                impl ::core::clone::Clone for sockaddr_storage {
+                    fn clone(&self) -> sockaddr_storage { *self }
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct sockaddr_in {
+                #[derive(Copy, Clone)] pub struct sockaddr_in {
                     pub sin_family: sa_family_t,
                     pub sin_port: in_port_t,
                     pub sin_addr: in_addr,
                     pub sin_zero: [u8; 8],
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct in_addr {
+                #[derive(Copy, Clone)] pub struct in_addr {
                     pub s_addr: in_addr_t,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct sockaddr_in6 {
+                #[derive(Copy, Clone)] pub struct sockaddr_in6 {
                     pub sin6_family: sa_family_t,
                     pub sin6_port: in_port_t,
                     pub sin6_flowinfo: u32,
@@ -292,21 +346,21 @@ pub mod types {
                     pub sin6_scope_id: u32,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct in6_addr {
+                #[derive(Copy, Clone)] pub struct in6_addr {
                     pub s6_addr: [u16; 8]
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct ip_mreq {
+                #[derive(Copy, Clone)] pub struct ip_mreq {
                     pub imr_multiaddr: in_addr,
                     pub imr_interface: in_addr,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct ip6_mreq {
+                #[derive(Copy, Clone)] pub struct ip6_mreq {
                     pub ipv6mr_multiaddr: in6_addr,
                     pub ipv6mr_interface: c_uint,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct addrinfo {
+                #[derive(Copy, Clone)] pub struct addrinfo {
                     pub ai_flags: c_int,
                     pub ai_family: c_int,
                     pub ai_socktype: c_int,
@@ -332,9 +386,12 @@ pub mod types {
                     pub sun_family: sa_family_t,
                     pub sun_path: [c_char; 108]
                 }
+                impl ::core::clone::Clone for sockaddr_un {
+                    fn clone(&self) -> sockaddr_un { *self }
+                }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct ifaddrs {
+                #[derive(Copy, Clone)] pub struct ifaddrs {
                     pub ifa_next: *mut ifaddrs,
                     pub ifa_name: *mut c_char,
                     pub ifa_flags: c_uint,
@@ -425,7 +482,7 @@ pub mod types {
                 pub type blkcnt_t = i32;
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct stat {
+                #[derive(Copy, Clone)] pub struct stat {
                     pub st_dev: dev_t,
                     pub __pad1: c_short,
                     pub st_ino: ino_t,
@@ -449,13 +506,13 @@ pub mod types {
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct utimbuf {
+                #[derive(Copy, Clone)] pub struct utimbuf {
                     pub actime: time_t,
                     pub modtime: time_t,
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct pthread_attr_t {
+                #[derive(Copy, Clone)] pub struct pthread_attr_t {
                     pub __size: [u32; 9]
                 }
             }
@@ -470,7 +527,7 @@ pub mod types {
                 pub type blkcnt_t = u32;
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct stat {
+                #[derive(Copy, Clone)] pub struct stat {
                     pub st_dev: c_ulonglong,
                     pub __pad0: [c_uchar; 4],
                     pub __st_ino: ino_t,
@@ -493,13 +550,13 @@ pub mod types {
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct utimbuf {
+                #[derive(Copy, Clone)] pub struct utimbuf {
                     pub actime: time_t,
                     pub modtime: time_t,
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct pthread_attr_t {
+                #[derive(Copy, Clone)] pub struct pthread_attr_t {
                     pub __size: [u32; 9]
                 }
             }
@@ -516,7 +573,7 @@ pub mod types {
                 pub type blkcnt_t = i32;
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct stat {
+                #[derive(Copy, Clone)] pub struct stat {
                     pub st_dev: c_ulong,
                     pub st_pad1: [c_long; 3],
                     pub st_ino: ino_t,
@@ -540,13 +597,13 @@ pub mod types {
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct utimbuf {
+                #[derive(Copy, Clone)] pub struct utimbuf {
                     pub actime: time_t,
                     pub modtime: time_t,
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct pthread_attr_t {
+                #[derive(Copy, Clone)] pub struct pthread_attr_t {
                     pub __size: [u32; 9]
                 }
             }
@@ -555,7 +612,7 @@ pub mod types {
             pub mod extra {
                 use types::os::arch::c95::{c_ushort, c_int, c_uchar};
                 #[repr(C)]
-                #[derive(Copy)] pub struct sockaddr_ll {
+                #[derive(Copy, Clone)] pub struct sockaddr_ll {
                     pub sll_family: c_ushort,
                     pub sll_protocol: c_ushort,
                     pub sll_ifindex: c_int,
@@ -627,7 +684,7 @@ pub mod types {
                 pub type blkcnt_t = i64;
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct stat {
+                #[derive(Copy, Clone)] pub struct stat {
                     pub st_dev: dev_t,
                     pub st_ino: ino_t,
                     pub st_nlink: nlink_t,
@@ -649,13 +706,13 @@ pub mod types {
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct utimbuf {
+                #[derive(Copy, Clone)] pub struct utimbuf {
                     pub actime: time_t,
                     pub modtime: time_t,
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct pthread_attr_t {
+                #[derive(Copy, Clone)] pub struct pthread_attr_t {
                     pub __size: [u64; 7]
                 }
             }
@@ -671,7 +728,7 @@ pub mod types {
                 pub type blkcnt_t = i64;
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct stat {
+                #[derive(Copy, Clone)] pub struct stat {
                     pub st_dev: dev_t,
                     pub st_ino: ino_t,
                     pub st_mode: mode_t,
@@ -694,13 +751,13 @@ pub mod types {
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct utimbuf {
+                #[derive(Copy, Clone)] pub struct utimbuf {
                     pub actime: time_t,
                     pub modtime: time_t,
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct pthread_attr_t {
+                #[derive(Copy, Clone)] pub struct pthread_attr_t {
                     pub __size: [u64; 8]
                 }
             }
@@ -710,7 +767,7 @@ pub mod types {
             }
             pub mod extra {
                 use types::os::arch::c95::{c_ushort, c_int, c_uchar};
-                #[derive(Copy)] pub struct sockaddr_ll {
+                #[derive(Copy, Clone)] pub struct sockaddr_ll {
                     pub sll_family: c_ushort,
                     pub sll_protocol: c_ushort,
                     pub sll_ifindex: c_int,
@@ -734,9 +791,10 @@ pub mod types {
                 use types::os::arch::c99::{uintptr_t};
 
                 pub type pthread_t = uintptr_t;
+                pub type rlim_t = i64;
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct glob_t {
+                #[derive(Copy, Clone)] pub struct glob_t {
                     pub gl_pathc:  size_t,
                     pub __unused1: size_t,
                     pub gl_offs:   size_t,
@@ -753,21 +811,54 @@ pub mod types {
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct timeval {
+                #[derive(Copy, Clone)] pub struct timeval {
                     pub tv_sec: time_t,
                     pub tv_usec: suseconds_t,
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct timespec {
+                #[derive(Copy, Clone)] pub struct timespec {
                     pub tv_sec: time_t,
                     pub tv_nsec: c_long,
                 }
 
-                #[derive(Copy)] pub enum timezone {}
+                pub enum timezone {}
 
                 pub type sighandler_t = size_t;
+
+                #[repr(C)]
+                #[derive(Copy, Clone)]
+                pub struct rlimit {
+                    pub rlim_cur: rlim_t,
+                    pub rlim_max: rlim_t,
+                }
             }
+
+            pub mod bsd43 {
+                use types::os::common::posix01::timeval;
+                use types::os::arch::c95::c_long;
+                #[repr(C)]
+                #[derive(Copy, Clone)]
+                pub struct rusage {
+                    pub ru_utime: timeval,
+                    pub ru_stime: timeval,
+                    pub ru_maxrss: c_long,
+                    pub ru_ixrss: c_long,
+                    pub ru_idrss: c_long,
+                    pub ru_isrss: c_long,
+                    pub ru_minflt: c_long,
+                    pub ru_majflt: c_long,
+                    pub ru_nswap: c_long,
+                    pub ru_inblock: c_long,
+                    pub ru_oublock: c_long,
+                    pub ru_msgsnd: c_long,
+                    pub ru_msgrcv: c_long,
+                    pub ru_nsignals: c_long,
+                    pub ru_nvcsw: c_long,
+                    pub ru_nivcsw: c_long
+                }
+            }
+
             pub mod bsd44 {
                 use types::common::c95::{c_void};
                 use types::os::arch::c95::{c_char, c_int, c_uint};
@@ -777,7 +868,7 @@ pub mod types {
                 pub type in_port_t = u16;
                 pub type in_addr_t = u32;
                 #[repr(C)]
-                #[derive(Copy)] pub struct sockaddr {
+                #[derive(Copy, Clone)] pub struct sockaddr {
                     pub sa_len: u8,
                     pub sa_family: sa_family_t,
                     pub sa_data: [u8; 14],
@@ -790,8 +881,11 @@ pub mod types {
                     pub __ss_align: i64,
                     pub __ss_pad2: [u8; 112],
                 }
+                impl ::core::clone::Clone for sockaddr_storage {
+                    fn clone(&self) -> sockaddr_storage { *self }
+                }
                 #[repr(C)]
-                #[derive(Copy)] pub struct sockaddr_in {
+                #[derive(Copy, Clone)] pub struct sockaddr_in {
                     pub sin_len: u8,
                     pub sin_family: sa_family_t,
                     pub sin_port: in_port_t,
@@ -799,11 +893,11 @@ pub mod types {
                     pub sin_zero: [u8; 8],
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct in_addr {
+                #[derive(Copy, Clone)] pub struct in_addr {
                     pub s_addr: in_addr_t,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct sockaddr_in6 {
+                #[derive(Copy, Clone)] pub struct sockaddr_in6 {
                     pub sin6_len: u8,
                     pub sin6_family: sa_family_t,
                     pub sin6_port: in_port_t,
@@ -812,21 +906,21 @@ pub mod types {
                     pub sin6_scope_id: u32,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct in6_addr {
+                #[derive(Copy, Clone)] pub struct in6_addr {
                     pub s6_addr: [u16; 8]
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct ip_mreq {
+                #[derive(Copy, Clone)] pub struct ip_mreq {
                     pub imr_multiaddr: in_addr,
                     pub imr_interface: in_addr,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct ip6_mreq {
+                #[derive(Copy, Clone)] pub struct ip6_mreq {
                     pub ipv6mr_multiaddr: in6_addr,
                     pub ipv6mr_interface: c_uint,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct addrinfo {
+                #[derive(Copy, Clone)] pub struct addrinfo {
                     pub ai_flags: c_int,
                     pub ai_family: c_int,
                     pub ai_socktype: c_int,
@@ -842,8 +936,11 @@ pub mod types {
                     pub sun_family: sa_family_t,
                     pub sun_path: [c_char; 104]
                 }
+                impl ::core::clone::Clone for sockaddr_un {
+                    fn clone(&self) -> sockaddr_un { *self }
+                }
                 #[repr(C)]
-                #[derive(Copy)] pub struct ifaddrs {
+                #[derive(Copy, Clone)] pub struct ifaddrs {
                     pub ifa_next: *mut ifaddrs,
                     pub ifa_name: *mut c_char,
                     pub ifa_flags: c_uint,
@@ -910,7 +1007,7 @@ pub mod types {
                 pub type blkcnt_t = i64;
                 pub type fflags_t = u32;
                 #[repr(C)]
-                #[derive(Copy)] pub struct stat {
+                #[derive(Copy, Clone)] pub struct stat {
                     pub st_dev: dev_t,
                     pub st_ino: ino_t,
                     pub st_mode: mode_t,
@@ -936,7 +1033,7 @@ pub mod types {
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct utimbuf {
+                #[derive(Copy, Clone)] pub struct utimbuf {
                     pub actime: time_t,
                     pub modtime: time_t,
                 }
@@ -962,9 +1059,10 @@ pub mod types {
                 use types::os::arch::c99::{uintptr_t};
 
                 pub type pthread_t = uintptr_t;
+                pub type rlim_t = i64;
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct glob_t {
+                #[derive(Copy, Clone)] pub struct glob_t {
                     pub gl_pathc:  size_t,
                     pub __unused1: size_t,
                     pub gl_offs:   size_t,
@@ -981,21 +1079,54 @@ pub mod types {
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct timeval {
+                #[derive(Copy, Clone)] pub struct timeval {
                     pub tv_sec: time_t,
                     pub tv_usec: suseconds_t,
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct timespec {
+                #[derive(Copy, Clone)] pub struct timespec {
                     pub tv_sec: time_t,
                     pub tv_nsec: c_long,
                 }
 
-                #[derive(Copy)] pub enum timezone {}
+                pub enum timezone {}
 
                 pub type sighandler_t = size_t;
+
+                #[repr(C)]
+                #[derive(Copy, Clone)]
+                pub struct rlimit {
+                    pub rlim_cur: rlim_t,
+                    pub rlim_max: rlim_t,
+                }
             }
+
+            pub mod bsd43 {
+                use types::os::common::posix01::timeval;
+                use types::os::arch::c95::c_long;
+                #[repr(C)]
+                #[derive(Copy, Clone)]
+                pub struct rusage {
+                    pub ru_utime: timeval,
+                    pub ru_stime: timeval,
+                    pub ru_maxrss: c_long,
+                    pub ru_ixrss: c_long,
+                    pub ru_idrss: c_long,
+                    pub ru_isrss: c_long,
+                    pub ru_minflt: c_long,
+                    pub ru_majflt: c_long,
+                    pub ru_nswap: c_long,
+                    pub ru_inblock: c_long,
+                    pub ru_oublock: c_long,
+                    pub ru_msgsnd: c_long,
+                    pub ru_msgrcv: c_long,
+                    pub ru_nsignals: c_long,
+                    pub ru_nvcsw: c_long,
+                    pub ru_nivcsw: c_long
+                }
+            }
+
             pub mod bsd44 {
                 use types::common::c95::{c_void};
                 use types::os::arch::c95::{c_char, c_int, c_uint};
@@ -1005,7 +1136,7 @@ pub mod types {
                 pub type in_port_t = u16;
                 pub type in_addr_t = u32;
                 #[repr(C)]
-                #[derive(Copy)] pub struct sockaddr {
+                #[derive(Copy, Clone)] pub struct sockaddr {
                     pub sa_len: u8,
                     pub sa_family: sa_family_t,
                     pub sa_data: [u8; 14],
@@ -1018,8 +1149,11 @@ pub mod types {
                     pub __ss_align: i64,
                     pub __ss_pad2: [u8; 112],
                 }
+                impl ::core::clone::Clone for sockaddr_storage {
+                    fn clone(&self) -> sockaddr_storage { *self }
+                }
                 #[repr(C)]
-                #[derive(Copy)] pub struct sockaddr_in {
+                #[derive(Copy, Clone)] pub struct sockaddr_in {
                     pub sin_len: u8,
                     pub sin_family: sa_family_t,
                     pub sin_port: in_port_t,
@@ -1027,11 +1161,11 @@ pub mod types {
                     pub sin_zero: [u8; 8],
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct in_addr {
+                #[derive(Copy, Clone)] pub struct in_addr {
                     pub s_addr: in_addr_t,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct sockaddr_in6 {
+                #[derive(Copy, Clone)] pub struct sockaddr_in6 {
                     pub sin6_len: u8,
                     pub sin6_family: sa_family_t,
                     pub sin6_port: in_port_t,
@@ -1040,21 +1174,21 @@ pub mod types {
                     pub sin6_scope_id: u32,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct in6_addr {
+                #[derive(Copy, Clone)] pub struct in6_addr {
                     pub s6_addr: [u16; 8]
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct ip_mreq {
+                #[derive(Copy, Clone)] pub struct ip_mreq {
                     pub imr_multiaddr: in_addr,
                     pub imr_interface: in_addr,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct ip6_mreq {
+                #[derive(Copy, Clone)] pub struct ip6_mreq {
                     pub ipv6mr_multiaddr: in6_addr,
                     pub ipv6mr_interface: c_uint,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct addrinfo {
+                #[derive(Copy, Clone)] pub struct addrinfo {
                     pub ai_flags: c_int,
                     pub ai_family: c_int,
                     pub ai_socktype: c_int,
@@ -1070,8 +1204,11 @@ pub mod types {
                     pub sun_family: sa_family_t,
                     pub sun_path: [c_char; 104]
                 }
+                impl ::core::clone::Clone for sockaddr_un {
+                    fn clone(&self) -> sockaddr_un { *self }
+                }
                 #[repr(C)]
-                #[derive(Copy)] pub struct ifaddrs {
+                #[derive(Copy, Clone)] pub struct ifaddrs {
                     pub ifa_next: *mut ifaddrs,
                     pub ifa_name: *mut c_char,
                     pub ifa_flags: c_uint,
@@ -1138,7 +1275,7 @@ pub mod types {
                 pub type fflags_t = u32;
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct stat {
+                #[derive(Copy, Clone)] pub struct stat {
                     pub st_ino: ino_t,
                     pub st_nlink: nlink_t,
                     pub st_dev: dev_t,
@@ -1163,7 +1300,7 @@ pub mod types {
                     pub st_qspare2: int64_t,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct utimbuf {
+                #[derive(Copy, Clone)] pub struct utimbuf {
                     pub actime: time_t,
                     pub modtime: time_t,
                 }
@@ -1189,10 +1326,11 @@ pub mod types {
                 use types::os::arch::c99::{uintptr_t};
 
                 pub type pthread_t = uintptr_t;
+                pub type rlim_t = u64;
 
                 #[cfg(target_os = "bitrig")]
                 #[repr(C)]
-                #[derive(Copy)] pub struct glob_t {
+                #[derive(Copy, Clone)] pub struct glob_t {
                     pub gl_pathc:  c_int,
                     pub gl_matchc: c_int,
                     pub gl_offs:   c_int,
@@ -1209,7 +1347,7 @@ pub mod types {
 
                 #[cfg(target_os = "openbsd")]
                 #[repr(C)]
-                #[derive(Copy)] pub struct glob_t {
+                #[derive(Copy, Clone)] pub struct glob_t {
                     pub gl_pathc:  c_int,
                     pub __unused1: c_int,
                     pub gl_offs:   c_int,
@@ -1227,21 +1365,54 @@ pub mod types {
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct timeval {
+                #[derive(Copy, Clone)] pub struct timeval {
                     pub tv_sec: time_t,
                     pub tv_usec: suseconds_t,
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct timespec {
+                #[derive(Copy, Clone)] pub struct timespec {
                     pub tv_sec: time_t,
                     pub tv_nsec: c_long,
                 }
 
-                #[derive(Copy)] pub enum timezone {}
+                pub enum timezone {}
 
                 pub type sighandler_t = size_t;
+
+                #[repr(C)]
+                #[derive(Copy, Clone)]
+                pub struct rlimit {
+                    pub rlim_cur: rlim_t,
+                    pub rlim_max: rlim_t,
+                }
             }
+
+            pub mod bsd43 {
+                use types::os::common::posix01::timeval;
+                use types::os::arch::c95::c_long;
+                #[repr(C)]
+                #[derive(Copy, Clone)]
+                pub struct rusage {
+                    pub ru_utime: timeval,
+                    pub ru_stime: timeval,
+                    pub ru_maxrss: c_long,
+                    pub ru_ixrss: c_long,
+                    pub ru_idrss: c_long,
+                    pub ru_isrss: c_long,
+                    pub ru_minflt: c_long,
+                    pub ru_majflt: c_long,
+                    pub ru_nswap: c_long,
+                    pub ru_inblock: c_long,
+                    pub ru_oublock: c_long,
+                    pub ru_msgsnd: c_long,
+                    pub ru_msgrcv: c_long,
+                    pub ru_nsignals: c_long,
+                    pub ru_nvcsw: c_long,
+                    pub ru_nivcsw: c_long
+                }
+            }
+
             pub mod bsd44 {
                 use types::common::c95::{c_void};
                 use types::os::arch::c95::{c_char, c_int, c_uint};
@@ -1251,7 +1422,7 @@ pub mod types {
                 pub type in_port_t = u16;
                 pub type in_addr_t = u32;
                 #[repr(C)]
-                #[derive(Copy)] pub struct sockaddr {
+                #[derive(Copy, Clone)] pub struct sockaddr {
                     pub sa_len: u8,
                     pub sa_family: sa_family_t,
                     pub sa_data: [u8; 14],
@@ -1264,8 +1435,11 @@ pub mod types {
                     pub __ss_pad2: i64,
                     pub __ss_pad3: [u8; 240],
                 }
+                impl ::core::clone::Clone for sockaddr_storage {
+                    fn clone(&self) -> sockaddr_storage { *self }
+                }
                 #[repr(C)]
-                #[derive(Copy)] pub struct sockaddr_in {
+                #[derive(Copy, Clone)] pub struct sockaddr_in {
                     pub sin_len: u8,
                     pub sin_family: sa_family_t,
                     pub sin_port: in_port_t,
@@ -1273,11 +1447,11 @@ pub mod types {
                     pub sin_zero: [u8; 8],
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct in_addr {
+                #[derive(Copy, Clone)] pub struct in_addr {
                     pub s_addr: in_addr_t,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct sockaddr_in6 {
+                #[derive(Copy, Clone)] pub struct sockaddr_in6 {
                     pub sin6_len: u8,
                     pub sin6_family: sa_family_t,
                     pub sin6_port: in_port_t,
@@ -1286,21 +1460,21 @@ pub mod types {
                     pub sin6_scope_id: u32,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct in6_addr {
+                #[derive(Copy, Clone)] pub struct in6_addr {
                     pub s6_addr: [u16; 8]
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct ip_mreq {
+                #[derive(Copy, Clone)] pub struct ip_mreq {
                     pub imr_multiaddr: in_addr,
                     pub imr_interface: in_addr,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct ip6_mreq {
+                #[derive(Copy, Clone)] pub struct ip6_mreq {
                     pub ipv6mr_multiaddr: in6_addr,
                     pub ipv6mr_interface: c_uint,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct addrinfo {
+                #[derive(Copy, Clone)] pub struct addrinfo {
                     pub ai_flags: c_int,
                     pub ai_family: c_int,
                     pub ai_socktype: c_int,
@@ -1316,8 +1490,11 @@ pub mod types {
                     pub sun_family: sa_family_t,
                     pub sun_path: [c_char; 104]
                 }
+                impl ::core::clone::Clone for sockaddr_un {
+                    fn clone(&self) -> sockaddr_un { *self }
+                }
                 #[repr(C)]
-                #[derive(Copy)] pub struct ifaddrs {
+                #[derive(Copy, Clone)] pub struct ifaddrs {
                     pub ifa_next: *mut ifaddrs,
                     pub ifa_name: *mut c_char,
                     pub ifa_flags: c_uint,
@@ -1384,7 +1561,7 @@ pub mod types {
                 pub type fflags_t = u32; // type not declared, but struct stat have u_int32_t
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct stat {
+                #[derive(Copy, Clone)] pub struct stat {
                     pub st_mode: mode_t,
                     pub st_dev: dev_t,
                     pub st_ino: ino_t,
@@ -1407,7 +1584,7 @@ pub mod types {
                     pub st_birthtime_nsec: c_long,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct utimbuf {
+                #[derive(Copy, Clone)] pub struct utimbuf {
                     pub actime: time_t,
                     pub modtime: time_t,
                 }
@@ -1434,7 +1611,7 @@ pub mod types {
                 // pub Note: this is the struct called stat64 in Windows. Not stat,
                 // nor stati64.
                 #[repr(C)]
-                #[derive(Copy)] pub struct stat {
+                #[derive(Copy, Clone)] pub struct stat {
                     pub st_dev: dev_t,
                     pub st_ino: ino_t,
                     pub st_mode: u16,
@@ -1450,24 +1627,24 @@ pub mod types {
 
                 // note that this is called utimbuf64 in Windows
                 #[repr(C)]
-                #[derive(Copy)] pub struct utimbuf {
+                #[derive(Copy, Clone)] pub struct utimbuf {
                     pub actime: time64_t,
                     pub modtime: time64_t,
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct timeval {
+                #[derive(Copy, Clone)] pub struct timeval {
                     pub tv_sec: c_long,
                     pub tv_usec: c_long,
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct timespec {
+                #[derive(Copy, Clone)] pub struct timespec {
                     pub tv_sec: time_t,
                     pub tv_nsec: c_long,
                 }
 
-                #[derive(Copy)] pub enum timezone {}
+                pub enum timezone {}
             }
 
             pub mod bsd44 {
@@ -1480,7 +1657,7 @@ pub mod types {
                 pub type in_port_t = u16;
                 pub type in_addr_t = u32;
                 #[repr(C)]
-                #[derive(Copy)] pub struct sockaddr {
+                #[derive(Copy, Clone)] pub struct sockaddr {
                     pub sa_family: sa_family_t,
                     pub sa_data: [u8; 14],
                 }
@@ -1491,19 +1668,22 @@ pub mod types {
                     pub __ss_align: i64,
                     pub __ss_pad2: [u8; 112],
                 }
+                impl ::core::clone::Clone for sockaddr_storage {
+                    fn clone(&self) -> sockaddr_storage { *self }
+                }
                 #[repr(C)]
-                #[derive(Copy)] pub struct sockaddr_in {
+                #[derive(Copy, Clone)] pub struct sockaddr_in {
                     pub sin_family: sa_family_t,
                     pub sin_port: in_port_t,
                     pub sin_addr: in_addr,
                     pub sin_zero: [u8; 8],
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct in_addr {
+                #[derive(Copy, Clone)] pub struct in_addr {
                     pub s_addr: in_addr_t,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct sockaddr_in6 {
+                #[derive(Copy, Clone)] pub struct sockaddr_in6 {
                     pub sin6_family: sa_family_t,
                     pub sin6_port: in_port_t,
                     pub sin6_flowinfo: u32,
@@ -1511,21 +1691,21 @@ pub mod types {
                     pub sin6_scope_id: u32,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct in6_addr {
+                #[derive(Copy, Clone)] pub struct in6_addr {
                     pub s6_addr: [u16; 8]
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct ip_mreq {
+                #[derive(Copy, Clone)] pub struct ip_mreq {
                     pub imr_multiaddr: in_addr,
                     pub imr_interface: in_addr,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct ip6_mreq {
+                #[derive(Copy, Clone)] pub struct ip6_mreq {
                     pub ipv6mr_multiaddr: in6_addr,
                     pub ipv6mr_interface: c_uint,
                 }
                 #[repr(C)]
-                #[derive(Copy)] pub struct addrinfo {
+                #[derive(Copy, Clone)] pub struct addrinfo {
                     pub ai_flags: c_int,
                     pub ai_family: c_int,
                     pub ai_socktype: c_int,
@@ -1539,6 +1719,9 @@ pub mod types {
                 #[derive(Copy)] pub struct sockaddr_un {
                     pub sun_family: sa_family_t,
                     pub sun_path: [c_char; 108]
+                }
+                impl ::core::clone::Clone for sockaddr_un {
+                    fn clone(&self) -> sockaddr_un { *self }
                 }
             }
         }
@@ -1665,7 +1848,7 @@ pub mod types {
                 pub type LPCH = *mut CHAR;
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct SECURITY_ATTRIBUTES {
+                #[derive(Copy, Clone)] pub struct SECURITY_ATTRIBUTES {
                     pub nLength: DWORD,
                     pub lpSecurityDescriptor: LPVOID,
                     pub bInheritHandle: BOOL,
@@ -1689,7 +1872,7 @@ pub mod types {
                 pub type int64 = i64;
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct STARTUPINFO {
+                #[derive(Copy, Clone)] pub struct STARTUPINFO {
                     pub cb: DWORD,
                     pub lpReserved: LPWSTR,
                     pub lpDesktop: LPWSTR,
@@ -1712,7 +1895,7 @@ pub mod types {
                 pub type LPSTARTUPINFO = *mut STARTUPINFO;
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct PROCESS_INFORMATION {
+                #[derive(Copy, Clone)] pub struct PROCESS_INFORMATION {
                     pub hProcess: HANDLE,
                     pub hThread: HANDLE,
                     pub dwProcessId: DWORD,
@@ -1721,7 +1904,7 @@ pub mod types {
                 pub type LPPROCESS_INFORMATION = *mut PROCESS_INFORMATION;
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct SYSTEM_INFO {
+                #[derive(Copy, Clone)] pub struct SYSTEM_INFO {
                     pub wProcessorArchitecture: WORD,
                     pub wReserved: WORD,
                     pub dwPageSize: DWORD,
@@ -1737,7 +1920,7 @@ pub mod types {
                 pub type LPSYSTEM_INFO = *mut SYSTEM_INFO;
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct MEMORY_BASIC_INFORMATION {
+                #[derive(Copy, Clone)] pub struct MEMORY_BASIC_INFORMATION {
                     pub BaseAddress: LPVOID,
                     pub AllocationBase: LPVOID,
                     pub AllocationProtect: DWORD,
@@ -1749,7 +1932,7 @@ pub mod types {
                 pub type LPMEMORY_BASIC_INFORMATION = *mut MEMORY_BASIC_INFORMATION;
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct OVERLAPPED {
+                #[derive(Copy, Clone)] pub struct OVERLAPPED {
                     pub Internal: *mut c_ulong,
                     pub InternalHigh: *mut c_ulong,
                     pub Offset: DWORD,
@@ -1760,7 +1943,7 @@ pub mod types {
                 pub type LPOVERLAPPED = *mut OVERLAPPED;
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct FILETIME {
+                #[derive(Copy, Clone)] pub struct FILETIME {
                     pub dwLowDateTime: DWORD,
                     pub dwHighDateTime: DWORD,
                 }
@@ -1768,7 +1951,7 @@ pub mod types {
                 pub type LPFILETIME = *mut FILETIME;
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct GUID {
+                #[derive(Copy, Clone)] pub struct GUID {
                     pub Data1: DWORD,
                     pub Data2: WORD,
                     pub Data3: WORD,
@@ -1776,7 +1959,7 @@ pub mod types {
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct WSAPROTOCOLCHAIN {
+                #[derive(Copy, Clone)] pub struct WSAPROTOCOLCHAIN {
                     pub ChainLen: c_int,
                     pub ChainEntries: [DWORD; MAX_PROTOCOL_CHAIN as usize],
                 }
@@ -1806,6 +1989,9 @@ pub mod types {
                     pub dwProviderReserved: DWORD,
                     pub szProtocol: [u8; WSAPROTOCOL_LEN as usize + 1],
                 }
+                impl ::core::clone::Clone for WSAPROTOCOL_INFO {
+                    fn clone(&self) -> WSAPROTOCOL_INFO { *self }
+                }
 
                 pub type LPWSAPROTOCOL_INFO = *mut WSAPROTOCOL_INFO;
 
@@ -1824,6 +2010,9 @@ pub mod types {
                     pub cFileName: [wchar_t; 260], // #define MAX_PATH 260
                     pub cAlternateFileName: [wchar_t; 14],
                 }
+                impl ::core::clone::Clone for WIN32_FIND_DATAW {
+                    fn clone(&self) -> WIN32_FIND_DATAW { *self }
+                }
 
                 pub type LPWIN32_FIND_DATAW = *mut WIN32_FIND_DATAW;
             }
@@ -1840,9 +2029,10 @@ pub mod types {
                 use types::os::arch::c99::{uintptr_t};
 
                 pub type pthread_t = uintptr_t;
+                pub type rlim_t = u64;
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct glob_t {
+                #[derive(Copy, Clone)] pub struct glob_t {
                     pub gl_pathc:  size_t,
                     pub __unused1: c_int,
                     pub gl_offs:   size_t,
@@ -1859,20 +2049,52 @@ pub mod types {
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct timeval {
+                #[derive(Copy, Clone)] pub struct timeval {
                     pub tv_sec: time_t,
                     pub tv_usec: suseconds_t,
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct timespec {
+                #[derive(Copy, Clone)] pub struct timespec {
                     pub tv_sec: time_t,
                     pub tv_nsec: c_long,
                 }
 
-                #[derive(Copy)] pub enum timezone {}
+                pub enum timezone {}
 
                 pub type sighandler_t = size_t;
+
+                #[repr(C)]
+                #[derive(Copy, Clone)]
+                pub struct rlimit {
+                    pub rlim_cur: rlim_t,
+                    pub rlim_max: rlim_t,
+                }
+            }
+
+            pub mod bsd43 {
+                use types::os::common::posix01::timeval;
+                use types::os::arch::c95::c_long;
+                #[repr(C)]
+                #[derive(Copy, Clone)]
+                pub struct rusage {
+                    pub ru_utime: timeval,
+                    pub ru_stime: timeval,
+                    pub ru_maxrss: c_long,
+                    pub ru_ixrss: c_long,
+                    pub ru_idrss: c_long,
+                    pub ru_isrss: c_long,
+                    pub ru_minflt: c_long,
+                    pub ru_majflt: c_long,
+                    pub ru_nswap: c_long,
+                    pub ru_inblock: c_long,
+                    pub ru_oublock: c_long,
+                    pub ru_msgsnd: c_long,
+                    pub ru_msgrcv: c_long,
+                    pub ru_nsignals: c_long,
+                    pub ru_nvcsw: c_long,
+                    pub ru_nivcsw: c_long
+                }
             }
 
             pub mod bsd44 {
@@ -1884,7 +2106,7 @@ pub mod types {
                 pub type in_port_t = u16;
                 pub type in_addr_t = u32;
                 #[repr(C)]
-                #[derive(Copy)] pub struct sockaddr {
+                #[derive(Copy, Clone)] pub struct sockaddr {
                     pub sa_len: u8,
                     pub sa_family: sa_family_t,
                     pub sa_data: [u8; 14],
@@ -1898,9 +2120,12 @@ pub mod types {
                     pub __ss_align: i64,
                     pub __ss_pad2: [u8; 112],
                 }
+                impl ::core::clone::Clone for sockaddr_storage {
+                    fn clone(&self) -> sockaddr_storage { *self }
+                }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct sockaddr_in {
+                #[derive(Copy, Clone)] pub struct sockaddr_in {
                     pub sin_len: u8,
                     pub sin_family: sa_family_t,
                     pub sin_port: in_port_t,
@@ -1909,12 +2134,12 @@ pub mod types {
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct in_addr {
+                #[derive(Copy, Clone)] pub struct in_addr {
                     pub s_addr: in_addr_t,
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct sockaddr_in6 {
+                #[derive(Copy, Clone)] pub struct sockaddr_in6 {
                     pub sin6_len: u8,
                     pub sin6_family: sa_family_t,
                     pub sin6_port: in_port_t,
@@ -1924,24 +2149,24 @@ pub mod types {
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct in6_addr {
+                #[derive(Copy, Clone)] pub struct in6_addr {
                     pub s6_addr: [u16; 8]
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct ip_mreq {
+                #[derive(Copy, Clone)] pub struct ip_mreq {
                     pub imr_multiaddr: in_addr,
                     pub imr_interface: in_addr,
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct ip6_mreq {
+                #[derive(Copy, Clone)] pub struct ip6_mreq {
                     pub ipv6mr_multiaddr: in6_addr,
                     pub ipv6mr_interface: c_uint,
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct addrinfo {
+                #[derive(Copy, Clone)] pub struct addrinfo {
                     pub ai_flags: c_int,
                     pub ai_family: c_int,
                     pub ai_socktype: c_int,
@@ -1958,9 +2183,12 @@ pub mod types {
                     pub sun_family: sa_family_t,
                     pub sun_path: [c_char; 104]
                 }
+                impl ::core::clone::Clone for sockaddr_un {
+                    fn clone(&self) -> sockaddr_un { *self }
+                }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct ifaddrs {
+                #[derive(Copy, Clone)] pub struct ifaddrs {
                     pub ifa_next: *mut ifaddrs,
                     pub ifa_name: *mut c_char,
                     pub ifa_flags: c_uint,
@@ -2025,7 +2253,7 @@ pub mod types {
                 pub type blkcnt_t = i64;
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct stat {
+                #[derive(Copy, Clone)] pub struct stat {
                     pub st_dev: dev_t,
                     pub st_mode: mode_t,
                     pub st_nlink: nlink_t,
@@ -2051,7 +2279,7 @@ pub mod types {
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct utimbuf {
+                #[derive(Copy, Clone)] pub struct utimbuf {
                     pub actime: time_t,
                     pub modtime: time_t,
                 }
@@ -2061,6 +2289,9 @@ pub mod types {
                     pub __sig: c_long,
                     pub __opaque: [c_char; 36]
                 }
+                impl ::core::clone::Clone for pthread_attr_t {
+                    fn clone(&self) -> pthread_attr_t { *self }
+                }
             }
             pub mod posix08 {
             }
@@ -2068,7 +2299,7 @@ pub mod types {
             }
             pub mod extra {
                 #[repr(C)]
-                #[derive(Copy)] pub struct mach_timebase_info {
+                #[derive(Copy, Clone)] pub struct mach_timebase_info {
                     pub numer: u32,
                     pub denom: u32,
                 }
@@ -2131,7 +2362,7 @@ pub mod types {
                 pub type blkcnt_t = i64;
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct stat {
+                #[derive(Copy, Clone)] pub struct stat {
                     pub st_dev: dev_t,
                     pub st_mode: mode_t,
                     pub st_nlink: nlink_t,
@@ -2157,7 +2388,7 @@ pub mod types {
                 }
 
                 #[repr(C)]
-                #[derive(Copy)] pub struct utimbuf {
+                #[derive(Copy, Clone)] pub struct utimbuf {
                     pub actime: time_t,
                     pub modtime: time_t,
                 }
@@ -2167,6 +2398,9 @@ pub mod types {
                     pub __sig: c_long,
                     pub __opaque: [c_char; 56]
                 }
+                impl ::core::clone::Clone for pthread_attr_t {
+                    fn clone(&self) -> pthread_attr_t { *self }
+                }
             }
             pub mod posix08 {
             }
@@ -2174,7 +2408,7 @@ pub mod types {
             }
             pub mod extra {
                 #[repr(C)]
-                #[derive(Copy)] pub struct mach_timebase_info {
+                #[derive(Copy, Clone)] pub struct mach_timebase_info {
                     pub numer: u32,
                     pub denom: u32,
                 }
@@ -2267,6 +2501,7 @@ pub mod consts {
         }
         pub mod posix88 {
             use types::os::arch::c95::c_int;
+            use types::os::arch::posix88::mode_t;
 
             pub const O_RDONLY : c_int = 0;
             pub const O_WRONLY : c_int = 1;
@@ -2289,6 +2524,14 @@ pub mod consts {
             pub const S_IXUSR : c_int = 64;
             pub const S_IWUSR : c_int = 128;
             pub const S_IRUSR : c_int = 256;
+            pub const S_IRWXG : mode_t = 56;
+            pub const S_IXGRP : mode_t = 8;
+            pub const S_IWGRP : mode_t = 16;
+            pub const S_IRGRP : mode_t = 32;
+            pub const S_IRWXO : mode_t = 7;
+            pub const S_IXOTH : mode_t = 1;
+            pub const S_IWOTH : mode_t = 2;
+            pub const S_IROTH : mode_t = 4;
             pub const F_OK : c_int = 0;
             pub const R_OK : c_int = 4;
             pub const W_OK : c_int = 2;
@@ -2323,10 +2566,24 @@ pub mod consts {
 
             pub const TCP_NODELAY: c_int = 0x0001;
             pub const SOL_SOCKET: c_int = 0xffff;
-            pub const SO_KEEPALIVE: c_int = 8;
-            pub const SO_BROADCAST: c_int = 32;
-            pub const SO_REUSEADDR: c_int = 4;
+
+            pub const SO_DEBUG: c_int = 0x0001;
+            pub const SO_ACCEPTCONN: c_int = 0x0002;
+            pub const SO_REUSEADDR: c_int = 0x0004;
+            pub const SO_KEEPALIVE: c_int = 0x0008;
+            pub const SO_DONTROUTE: c_int = 0x0010;
+            pub const SO_BROADCAST: c_int = 0x0020;
+            pub const SO_USELOOPBACK: c_int = 0x0040;
+            pub const SO_LINGER: c_int = 0x0080;
+            pub const SO_OOBINLINE: c_int = 0x0100;
+            pub const SO_SNDBUF: c_int = 0x1001;
+            pub const SO_RCVBUF: c_int = 0x1002;
+            pub const SO_SNDLOWAT: c_int = 0x1003;
+            pub const SO_RCVLOWAT: c_int = 0x1004;
+            pub const SO_SNDTIMEO: c_int = 0x1005;
+            pub const SO_RCVTIMEO: c_int = 0x1006;
             pub const SO_ERROR: c_int = 0x1007;
+            pub const SO_TYPE: c_int = 0x1008;
 
             pub const IFF_LOOPBACK: c_int = 4;
 
@@ -2366,7 +2623,7 @@ pub mod consts {
             pub const ERROR_IO_PENDING: c_int = 997;
             pub const ERROR_FILE_INVALID : c_int = 1006;
             pub const ERROR_NOT_FOUND: c_int = 1168;
-            pub const INVALID_HANDLE_VALUE: HANDLE = -1 as HANDLE;
+            pub const INVALID_HANDLE_VALUE: HANDLE = !0 as HANDLE;
 
             pub const DELETE : DWORD = 0x00010000;
             pub const READ_CONTROL : DWORD = 0x00020000;
@@ -2404,12 +2661,12 @@ pub mod consts {
             pub const WAIT_ABANDONED : DWORD = 0x00000080;
             pub const WAIT_OBJECT_0 : DWORD = 0x00000000;
             pub const WAIT_TIMEOUT : DWORD = 0x00000102;
-            pub const WAIT_FAILED : DWORD = -1;
+            pub const WAIT_FAILED : DWORD = !0;
 
             pub const DUPLICATE_CLOSE_SOURCE : DWORD = 0x00000001;
             pub const DUPLICATE_SAME_ACCESS : DWORD = 0x00000002;
 
-            pub const INFINITE : DWORD = -1;
+            pub const INFINITE : DWORD = !0;
             pub const STILL_ACTIVE : DWORD = 259;
 
             pub const MEM_COMMIT : DWORD = 0x00001000;
@@ -2610,6 +2867,7 @@ pub mod consts {
             pub const O_APPEND : c_int = 1024;
             pub const O_CREAT : c_int = 64;
             pub const O_EXCL : c_int = 128;
+            pub const O_NOCTTY : c_int = 256;
             pub const O_TRUNC : c_int = 512;
             pub const S_IFIFO : mode_t = 4096;
             pub const S_IFCHR : mode_t = 8192;
@@ -2625,6 +2883,14 @@ pub mod consts {
             pub const S_IXUSR : mode_t = 64;
             pub const S_IWUSR : mode_t = 128;
             pub const S_IRUSR : mode_t = 256;
+            pub const S_IRWXG : mode_t = 56;
+            pub const S_IXGRP : mode_t = 8;
+            pub const S_IWGRP : mode_t = 16;
+            pub const S_IRGRP : mode_t = 32;
+            pub const S_IRWXO : mode_t = 7;
+            pub const S_IXOTH : mode_t = 1;
+            pub const S_IWOTH : mode_t = 2;
+            pub const S_IROTH : mode_t = 4;
             pub const F_OK : c_int = 0;
             pub const R_OK : c_int = 4;
             pub const W_OK : c_int = 2;
@@ -2659,7 +2925,7 @@ pub mod consts {
             pub const MAP_FIXED : c_int = 0x0010;
             pub const MAP_ANON : c_int = 0x0020;
 
-            pub const MAP_FAILED : *mut c_void = -1 as *mut c_void;
+            pub const MAP_FAILED : *mut c_void = !0 as *mut c_void;
 
             pub const MCL_CURRENT : c_int = 0x0001;
             pub const MCL_FUTURE : c_int = 0x0002;
@@ -2823,6 +3089,7 @@ pub mod consts {
             pub const O_APPEND : c_int = 8;
             pub const O_CREAT : c_int = 256;
             pub const O_EXCL : c_int = 1024;
+            pub const O_NOCTTY : c_int = 2048;
             pub const O_TRUNC : c_int = 512;
             pub const S_IFIFO : mode_t = 4096;
             pub const S_IFCHR : mode_t = 8192;
@@ -2838,6 +3105,14 @@ pub mod consts {
             pub const S_IXUSR : mode_t = 64;
             pub const S_IWUSR : mode_t = 128;
             pub const S_IRUSR : mode_t = 256;
+            pub const S_IRWXG : mode_t = 56;
+            pub const S_IXGRP : mode_t = 8;
+            pub const S_IWGRP : mode_t = 16;
+            pub const S_IRGRP : mode_t = 32;
+            pub const S_IRWXO : mode_t = 7;
+            pub const S_IXOTH : mode_t = 1;
+            pub const S_IWOTH : mode_t = 2;
+            pub const S_IROTH : mode_t = 4;
             pub const F_OK : c_int = 0;
             pub const R_OK : c_int = 4;
             pub const W_OK : c_int = 2;
@@ -2872,7 +3147,7 @@ pub mod consts {
             pub const MAP_FIXED : c_int = 0x0010;
             pub const MAP_ANON : c_int = 0x0800;
 
-            pub const MAP_FAILED : *mut c_void = -1 as *mut c_void;
+            pub const MAP_FAILED : *mut c_void = !0 as *mut c_void;
 
             pub const MCL_CURRENT : c_int = 0x0001;
             pub const MCL_FUTURE : c_int = 0x0002;
@@ -3024,12 +3299,15 @@ pub mod consts {
         #[cfg(not(target_os = "nacl"))]
         pub mod posix01 {
             use types::os::arch::c95::{c_int, size_t};
+            use types::os::common::posix01::rlim_t;
 
             pub const F_DUPFD : c_int = 0;
             pub const F_GETFD : c_int = 1;
             pub const F_SETFD : c_int = 2;
             pub const F_GETFL : c_int = 3;
             pub const F_SETFL : c_int = 4;
+
+            pub const O_ACCMODE : c_int = 3;
 
             pub const SIGTRAP : c_int = 5;
             pub const SIG_IGN: size_t = 1;
@@ -3081,6 +3359,8 @@ pub mod consts {
             pub const _SC_XOPEN_REALTIME : c_int = 130;
             pub const _SC_XOPEN_REALTIME_THREADS : c_int = 131;
 
+
+
             pub const PTHREAD_CREATE_JOINABLE: c_int = 0;
             pub const PTHREAD_CREATE_DETACHED: c_int = 1;
 
@@ -3102,10 +3382,36 @@ pub mod consts {
 
             pub const CLOCK_REALTIME: c_int = 0;
             pub const CLOCK_MONOTONIC: c_int = 1;
+
+            pub const RLIMIT_CPU: c_int = 0;
+            pub const RLIMIT_FSIZE: c_int = 1;
+            pub const RLIMIT_DATA: c_int = 2;
+            pub const RLIMIT_STACK: c_int = 3;
+            pub const RLIMIT_CORE: c_int = 4;
+            pub const RLIMIT_RSS: c_int = 5;
+            pub const RLIMIT_NOFILE: c_int = 7;
+            pub const RLIMIT_AS: c_int = 9;
+            pub const RLIMIT_NPROC: c_int = 6;
+            pub const RLIMIT_MEMLOCK: c_int = 8;
+            pub const RLIMIT_LOCKS: c_int = 10;
+            pub const RLIMIT_SIGPENDING: c_int = 11;
+            pub const RLIMIT_MSGQUEUE: c_int = 12;
+            pub const RLIMIT_NICE: c_int = 13;
+            pub const RLIMIT_RTPRIO: c_int = 14;
+            pub const RLIMIT_RTTIME: c_int = 15;
+            pub const RLIMIT_NLIMITS: c_int = 16;
+            pub const RLIM_INFINITY: rlim_t = 0xffff_ffff_ffff_ffff;
+            pub const RLIM_SAVED_MAX: rlim_t = RLIM_INFINITY;
+            pub const RLIM_SAVED_CUR: rlim_t = RLIM_INFINITY;
+
+            pub const RUSAGE_SELF: c_int = 0;
+            pub const RUSAGE_CHILDREN: c_int = -1;
+            pub const RUSAGE_THREAD: c_int = 1;
         }
         #[cfg(target_os = "nacl")]
         pub mod posix01 {
             use types::os::arch::c95::{c_int, size_t};
+            use types::os::common::posix01::rlim_t;
 
             pub const F_DUPFD : c_int = 0;
             pub const F_GETFD : c_int = 1;
@@ -3170,6 +3476,32 @@ pub mod consts {
 
             pub const CLOCK_REALTIME: c_int = 0;
             pub const CLOCK_MONOTONIC: c_int = 1;
+
+            pub const RLIMIT_CPU: c_int = 0;
+            pub const RLIMIT_FSIZE: c_int = 1;
+            pub const RLIMIT_DATA: c_int = 2;
+            pub const RLIMIT_STACK: c_int = 3;
+            pub const RLIMIT_CORE: c_int = 4;
+            pub const RLIMIT_RSS: c_int = 5;
+            pub const RLIMIT_NOFILE: c_int = 7;
+            pub const RLIMIT_AS: c_int = 9;
+            pub const RLIMIT_NPROC: c_int = 6;
+            pub const RLIMIT_MEMLOCK: c_int = 8;
+            pub const RLIMIT_LOCKS: c_int = 10;
+            pub const RLIMIT_SIGPENDING: c_int = 11;
+            pub const RLIMIT_MSGQUEUE: c_int = 12;
+            pub const RLIMIT_NICE: c_int = 13;
+            pub const RLIMIT_RTPRIO: c_int = 14;
+            pub const RLIMIT_RTTIME: c_int = 15;
+            pub const RLIMIT_NLIMITS: c_int = 16;
+
+            pub const RLIM_INFINITY: rlim_t = 0xffff_ffff_ffff_ffff;
+            pub const RLIM_SAVED_MAX: rlim_t = RLIM_INFINITY;
+            pub const RLIM_SAVED_CUR: rlim_t = RLIM_INFINITY;
+
+            pub const RUSAGE_SELF: c_int = 0;
+            pub const RUSAGE_CHILDREN: c_int = -1;
+            pub const RUSAGE_THREAD: c_int = 1;
         }
         pub mod posix08 {
         }
@@ -3215,11 +3547,49 @@ pub mod consts {
             pub const IPV6_DROP_MEMBERSHIP: c_int = 21;
 
             pub const TCP_NODELAY: c_int = 1;
+            pub const TCP_MAXSEG: c_int = 2;
+            pub const TCP_CORK: c_int = 3;
+            pub const TCP_KEEPIDLE: c_int = 4;
+            pub const TCP_KEEPINTVL: c_int = 5;
+            pub const TCP_KEEPCNT: c_int = 6;
+            pub const TCP_SYNCNT: c_int = 7;
+            pub const TCP_LINGER2: c_int = 8;
+            pub const TCP_DEFER_ACCEPT: c_int = 9;
+            pub const TCP_WINDOW_CLAMP: c_int = 10;
+            pub const TCP_INFO: c_int = 11;
+            pub const TCP_QUICKACK: c_int = 12;
+            pub const TCP_CONGESTION: c_int = 13;
+            pub const TCP_MD5SIG: c_int = 14;
+            pub const TCP_COOKIE_TRANSACTIONS: c_int = 15;
+            pub const TCP_THIN_LINEAR_TIMEOUTS: c_int = 16;
+            pub const TCP_THIN_DUPACK: c_int = 17;
+            pub const TCP_USER_TIMEOUT: c_int = 18;
+            pub const TCP_REPAIR: c_int = 19;
+            pub const TCP_REPAIR_QUEUE: c_int = 20;
+            pub const TCP_QUEUE_SEQ: c_int = 21;
+            pub const TCP_REPAIR_OPTIONS: c_int = 22;
+            pub const TCP_FASTOPEN: c_int = 23;
+            pub const TCP_TIMESTAMP: c_int = 24;
+
             pub const SOL_SOCKET: c_int = 1;
-            pub const SO_KEEPALIVE: c_int = 9;
-            pub const SO_BROADCAST: c_int = 6;
+
+            pub const SO_DEBUG: c_int = 1;
             pub const SO_REUSEADDR: c_int = 2;
+            pub const SO_TYPE: c_int = 3;
             pub const SO_ERROR: c_int = 4;
+            pub const SO_DONTROUTE: c_int = 5;
+            pub const SO_BROADCAST: c_int = 6;
+            pub const SO_SNDBUF: c_int = 7;
+            pub const SO_RCVBUF: c_int = 8;
+            pub const SO_KEEPALIVE: c_int = 9;
+            pub const SO_OOBINLINE: c_int = 10;
+            pub const SO_LINGER: c_int = 13;
+            pub const SO_REUSEPORT: c_int = 15;
+            pub const SO_RCVLOWAT: c_int = 18;
+            pub const SO_SNDLOWAT: c_int = 19;
+            pub const SO_RCVTIMEO: c_int = 20;
+            pub const SO_SNDTIMEO: c_int = 21;
+            pub const SO_ACCEPTCONN: c_int = 30;
 
             pub const SHUT_RD: c_int = 0;
             pub const SHUT_WR: c_int = 1;
@@ -3261,11 +3631,49 @@ pub mod consts {
             pub const IPV6_DROP_MEMBERSHIP: c_int = 21;
 
             pub const TCP_NODELAY: c_int = 1;
+            pub const TCP_MAXSEG: c_int = 2;
+            pub const TCP_CORK: c_int = 3;
+            pub const TCP_KEEPIDLE: c_int = 4;
+            pub const TCP_KEEPINTVL: c_int = 5;
+            pub const TCP_KEEPCNT: c_int = 6;
+            pub const TCP_SYNCNT: c_int = 7;
+            pub const TCP_LINGER2: c_int = 8;
+            pub const TCP_DEFER_ACCEPT: c_int = 9;
+            pub const TCP_WINDOW_CLAMP: c_int = 10;
+            pub const TCP_INFO: c_int = 11;
+            pub const TCP_QUICKACK: c_int = 12;
+            pub const TCP_CONGESTION: c_int = 13;
+            pub const TCP_MD5SIG: c_int = 14;
+            pub const TCP_COOKIE_TRANSACTIONS: c_int = 15;
+            pub const TCP_THIN_LINEAR_TIMEOUTS: c_int = 16;
+            pub const TCP_THIN_DUPACK: c_int = 17;
+            pub const TCP_USER_TIMEOUT: c_int = 18;
+            pub const TCP_REPAIR: c_int = 19;
+            pub const TCP_REPAIR_QUEUE: c_int = 20;
+            pub const TCP_QUEUE_SEQ: c_int = 21;
+            pub const TCP_REPAIR_OPTIONS: c_int = 22;
+            pub const TCP_FASTOPEN: c_int = 23;
+            pub const TCP_TIMESTAMP: c_int = 24;
+
             pub const SOL_SOCKET: c_int = 65535;
-            pub const SO_KEEPALIVE: c_int = 8;
-            pub const SO_BROADCAST: c_int = 32;
-            pub const SO_REUSEADDR: c_int = 4;
-            pub const SO_ERROR: c_int = 4103;
+
+            pub const SO_DEBUG: c_int = 0x0001;
+            pub const SO_REUSEADDR: c_int = 0x0004;
+            pub const SO_KEEPALIVE: c_int = 0x0008;
+            pub const SO_DONTROUTE: c_int = 0x0010;
+            pub const SO_BROADCAST: c_int = 0x0020;
+            pub const SO_LINGER: c_int = 0x0080;
+            pub const SO_OOBINLINE: c_int = 0x100;
+            pub const SO_REUSEPORT: c_int = 0x0200;
+            pub const SO_SNDBUF: c_int = 0x1001;
+            pub const SO_RCVBUF: c_int = 0x1002;
+            pub const SO_SNDLOWAT: c_int = 0x1003;
+            pub const SO_RCVLOWAT: c_int = 0x1004;
+            pub const SO_SNDTIMEO: c_int = 0x1005;
+            pub const SO_RCVTIMEO: c_int = 0x1006;
+            pub const SO_ERROR: c_int = 0x1007;
+            pub const SO_TYPE: c_int = 0x1008;
+            pub const SO_ACCEPTCONN: c_int = 0x1009;
 
             pub const SHUT_RD: c_int = 0;
             pub const SHUT_WR: c_int = 1;
@@ -3298,7 +3706,7 @@ pub mod consts {
             pub const MAP_DENYWRITE : c_int = 0x0800;
             pub const MAP_EXECUTABLE : c_int = 0x01000;
             pub const MAP_LOCKED : c_int = 0x02000;
-            pub const MAP_NONRESERVE : c_int = 0x04000;
+            pub const MAP_NORESERVE : c_int = 0x04000;
             pub const MAP_POPULATE : c_int = 0x08000;
             pub const MAP_NONBLOCK : c_int = 0x010000;
             pub const MAP_STACK : c_int = 0x020000;
@@ -3325,7 +3733,7 @@ pub mod consts {
             pub const MAP_DENYWRITE : c_int = 0x02000;
             pub const MAP_EXECUTABLE : c_int = 0x04000;
             pub const MAP_LOCKED : c_int = 0x08000;
-            pub const MAP_NONRESERVE : c_int = 0x0400;
+            pub const MAP_NORESERVE : c_int = 0x0400;
             pub const MAP_POPULATE : c_int = 0x010000;
             pub const MAP_NONBLOCK : c_int = 0x020000;
             pub const MAP_STACK : c_int = 0x040000;
@@ -3384,12 +3792,14 @@ pub mod consts {
             pub const _SC_2_FORT_RUN : c_int = 50;
             pub const _SC_2_SW_DEV : c_int = 51;
             pub const _SC_2_LOCALEDEF : c_int = 52;
+            pub const _SC_NPROCESSORS_ONLN : c_int = 84;
             pub const _SC_2_CHAR_TERM : c_int = 95;
             pub const _SC_2_C_VERSION : c_int = 96;
             pub const _SC_2_UPE : c_int = 97;
             pub const _SC_XBS5_ILP32_OFF32 : c_int = 125;
             pub const _SC_XBS5_ILP32_OFFBIG : c_int = 126;
             pub const _SC_XBS5_LPBIG_OFFBIG : c_int = 128;
+
         }
         #[cfg(target_os = "nacl")]
         pub mod sysconf {
@@ -3399,6 +3809,7 @@ pub mod consts {
             pub static _SC_NPROCESSORS_ONLN : c_int = 1;
             pub static _SC_PAGESIZE : c_int = 2;
         }
+
         #[cfg(target_os = "android")]
         pub mod sysconf {
             use types::os::arch::c95::c_int;
@@ -3470,6 +3881,7 @@ pub mod consts {
             pub const O_APPEND : c_int = 8;
             pub const O_CREAT : c_int = 512;
             pub const O_EXCL : c_int = 2048;
+            pub const O_NOCTTY : c_int = 32768;
             pub const O_TRUNC : c_int = 1024;
             pub const S_IFIFO : mode_t = 4096;
             pub const S_IFCHR : mode_t = 8192;
@@ -3485,6 +3897,14 @@ pub mod consts {
             pub const S_IXUSR : mode_t = 64;
             pub const S_IWUSR : mode_t = 128;
             pub const S_IRUSR : mode_t = 256;
+            pub const S_IRWXG : mode_t = 56;
+            pub const S_IXGRP : mode_t = 8;
+            pub const S_IWGRP : mode_t = 16;
+            pub const S_IRGRP : mode_t = 32;
+            pub const S_IRWXO : mode_t = 7;
+            pub const S_IXOTH : mode_t = 1;
+            pub const S_IWOTH : mode_t = 2;
+            pub const S_IROTH : mode_t = 4;
             pub const F_OK : c_int = 0;
             pub const R_OK : c_int = 4;
             pub const W_OK : c_int = 2;
@@ -3519,7 +3939,7 @@ pub mod consts {
             pub const MAP_FIXED : c_int = 0x0010;
             pub const MAP_ANON : c_int = 0x1000;
 
-            pub const MAP_FAILED : *mut c_void = -1 as *mut c_void;
+            pub const MAP_FAILED : *mut c_void = !0 as *mut c_void;
 
             pub const MCL_CURRENT : c_int = 0x0001;
             pub const MCL_FUTURE : c_int = 0x0002;
@@ -3632,6 +4052,7 @@ pub mod consts {
         }
         pub mod posix01 {
             use types::os::arch::c95::{c_int, size_t};
+            use types::os::common::posix01::rlim_t;
 
             pub const F_DUPFD : c_int = 0;
             pub const F_GETFD : c_int = 1;
@@ -3707,6 +4128,29 @@ pub mod consts {
 
             pub const CLOCK_REALTIME: c_int = 0;
             pub const CLOCK_MONOTONIC: c_int = 4;
+
+            pub const RLIMIT_CPU: c_int = 0;
+            pub const RLIMIT_FSIZE: c_int = 1;
+            pub const RLIMIT_DATA: c_int = 2;
+            pub const RLIMIT_STACK: c_int = 3;
+            pub const RLIMIT_CORE: c_int = 4;
+            pub const RLIMIT_RSS: c_int = 5;
+            pub const RLIMIT_MEMLOCK: c_int = 6;
+            pub const RLIMIT_NPROC: c_int = 7;
+            pub const RLIMIT_NOFILE: c_int = 8;
+            pub const RLIMIT_SBSIZE: c_int = 9;
+            pub const RLIMIT_VMEM: c_int = 10;
+            pub const RLIMIT_AS: c_int = RLIMIT_VMEM;
+            pub const RLIMIT_NPTS: c_int = 11;
+            pub const RLIMIT_SWAP: c_int = 12;
+            pub const RLIMIT_KQUEUES: c_int = 13;
+
+            pub const RLIM_NLIMITS: rlim_t = 14;
+            pub const RLIM_INFINITY: rlim_t = 0x7fff_ffff_ffff_ffff;
+
+            pub const RUSAGE_SELF: c_int = 0;
+            pub const RUSAGE_CHILDREN: c_int = -1;
+            pub const RUSAGE_THREAD: c_int = 1;
         }
         pub mod posix08 {
         }
@@ -3753,10 +4197,24 @@ pub mod consts {
             pub const TCP_NODELAY: c_int = 1;
             pub const TCP_KEEPIDLE: c_int = 256;
             pub const SOL_SOCKET: c_int = 0xffff;
-            pub const SO_KEEPALIVE: c_int = 0x0008;
-            pub const SO_BROADCAST: c_int = 0x0020;
+            pub const SO_DEBUG: c_int = 0x01;
+            pub const SO_ACCEPTCONN: c_int = 0x0002;
             pub const SO_REUSEADDR: c_int = 0x0004;
+            pub const SO_KEEPALIVE: c_int = 0x0008;
+            pub const SO_DONTROUTE: c_int = 0x0010;
+            pub const SO_BROADCAST: c_int = 0x0020;
+            pub const SO_USELOOPBACK: c_int = 0x0040;
+            pub const SO_LINGER: c_int = 0x0080;
+            pub const SO_OOBINLINE: c_int = 0x0100;
+            pub const SO_REUSEPORT: c_int = 0x0200;
+            pub const SO_SNDBUF: c_int = 0x1001;
+            pub const SO_RCVBUF: c_int = 0x1002;
+            pub const SO_SNDLOWAT: c_int = 0x1003;
+            pub const SO_RCVLOWAT: c_int = 0x1004;
+            pub const SO_SNDTIMEO: c_int = 0x1005;
+            pub const SO_RCVTIMEO: c_int = 0x1006;
             pub const SO_ERROR: c_int = 0x1007;
+            pub const SO_TYPE: c_int = 0x1008;
 
             pub const IFF_LOOPBACK: c_int = 0x8;
 
@@ -3878,6 +4336,7 @@ pub mod consts {
             pub const O_APPEND : c_int = 8;
             pub const O_CREAT : c_int = 512;
             pub const O_EXCL : c_int = 2048;
+            pub const O_NOCTTY : c_int = 32768;
             pub const O_TRUNC : c_int = 1024;
             pub const S_IFIFO : mode_t = 4096;
             pub const S_IFCHR : mode_t = 8192;
@@ -3893,6 +4352,14 @@ pub mod consts {
             pub const S_IXUSR : mode_t = 64;
             pub const S_IWUSR : mode_t = 128;
             pub const S_IRUSR : mode_t = 256;
+            pub const S_IRWXG : mode_t = 56;
+            pub const S_IXGRP : mode_t = 8;
+            pub const S_IWGRP : mode_t = 16;
+            pub const S_IRGRP : mode_t = 32;
+            pub const S_IRWXO : mode_t = 7;
+            pub const S_IXOTH : mode_t = 1;
+            pub const S_IWOTH : mode_t = 2;
+            pub const S_IROTH : mode_t = 4;
             pub const F_OK : c_int = 0;
             pub const R_OK : c_int = 4;
             pub const W_OK : c_int = 2;
@@ -3927,7 +4394,7 @@ pub mod consts {
             pub const MAP_FIXED : c_int = 0x0010;
             pub const MAP_ANON : c_int = 0x1000;
 
-            pub const MAP_FAILED : *mut c_void = -1 as *mut c_void;
+            pub const MAP_FAILED : *mut c_void = !0 as *mut c_void;
 
             pub const MCL_CURRENT : c_int = 0x0001;
             pub const MCL_FUTURE : c_int = 0x0002;
@@ -4032,6 +4499,7 @@ pub mod consts {
         }
         pub mod posix01 {
             use types::os::arch::c95::{c_int, size_t};
+            use types::os::common::posix01::rlim_t;
 
             pub const F_DUPFD : c_int = 0;
             pub const F_GETFD : c_int = 1;
@@ -4101,6 +4569,25 @@ pub mod consts {
 
             pub const CLOCK_REALTIME : c_int = 0;
             pub const CLOCK_MONOTONIC : c_int = 3;
+
+            pub const RLIMIT_CPU: c_int = 0;
+            pub const RLIMIT_FSIZE: c_int = 1;
+            pub const RLIMIT_DATA: c_int = 2;
+            pub const RLIMIT_STACK: c_int = 3;
+            pub const RLIMIT_CORE: c_int = 4;
+            pub const RLIMIT_RSS: c_int = 5;
+            pub const RLIMIT_MEMLOCK: c_int = 6;
+            pub const RLIMIT_NPROC: c_int = 7;
+            pub const RLIMIT_NOFILE: c_int = 8;
+            pub const RLIM_NLIMITS: c_int = 9;
+
+            pub const RLIM_INFINITY: rlim_t = 0x7fff_ffff_ffff_ffff;
+            pub const RLIM_SAVED_MAX: rlim_t = RLIM_INFINITY;
+            pub const RLIM_SAVED_CUR: rlim_t = RLIM_INFINITY;
+
+            pub const RUSAGE_SELF: c_int = 0;
+            pub const RUSAGE_CHILDREN: c_int = -1;
+            pub const RUSAGE_THREAD: c_int = 1;
         }
         pub mod posix08 {
         }
@@ -4134,10 +4621,24 @@ pub mod consts {
 
             pub const TCP_NODELAY: c_int = 0x01;
             pub const SOL_SOCKET: c_int = 0xffff;
-            pub const SO_KEEPALIVE: c_int = 0x0008;
-            pub const SO_BROADCAST: c_int = 0x0020;
+            pub const SO_DEBUG: c_int = 0x01;
+            pub const SO_ACCEPTCONN: c_int = 0x0002;
             pub const SO_REUSEADDR: c_int = 0x0004;
+            pub const SO_KEEPALIVE: c_int = 0x0008;
+            pub const SO_DONTROUTE: c_int = 0x0010;
+            pub const SO_BROADCAST: c_int = 0x0020;
+            pub const SO_USELOOPBACK: c_int = 0x0040;
+            pub const SO_LINGER: c_int = 0x0080;
+            pub const SO_OOBINLINE: c_int = 0x0100;
+            pub const SO_REUSEPORT: c_int = 0x0200;
+            pub const SO_SNDBUF: c_int = 0x1001;
+            pub const SO_RCVBUF: c_int = 0x1002;
+            pub const SO_SNDLOWAT: c_int = 0x1003;
+            pub const SO_RCVLOWAT: c_int = 0x1004;
+            pub const SO_SNDTIMEO: c_int = 0x1005;
+            pub const SO_RCVTIMEO: c_int = 0x1006;
             pub const SO_ERROR: c_int = 0x1007;
+            pub const SO_TYPE: c_int = 0x1008;
 
             pub const IFF_LOOPBACK: c_int = 0x8;
 
@@ -4256,6 +4757,7 @@ pub mod consts {
             pub const O_APPEND : c_int = 8;
             pub const O_CREAT : c_int = 512;
             pub const O_EXCL : c_int = 2048;
+            pub const O_NOCTTY : c_int = 131072;
             pub const O_TRUNC : c_int = 1024;
             pub const S_IFIFO : mode_t = 4096;
             pub const S_IFCHR : mode_t = 8192;
@@ -4271,6 +4773,14 @@ pub mod consts {
             pub const S_IXUSR : mode_t = 64;
             pub const S_IWUSR : mode_t = 128;
             pub const S_IRUSR : mode_t = 256;
+            pub const S_IRWXG : mode_t = 56;
+            pub const S_IXGRP : mode_t = 8;
+            pub const S_IWGRP : mode_t = 16;
+            pub const S_IRGRP : mode_t = 32;
+            pub const S_IRWXO : mode_t = 7;
+            pub const S_IXOTH : mode_t = 1;
+            pub const S_IWOTH : mode_t = 2;
+            pub const S_IROTH : mode_t = 4;
             pub const F_OK : c_int = 0;
             pub const R_OK : c_int = 4;
             pub const W_OK : c_int = 2;
@@ -4305,7 +4815,7 @@ pub mod consts {
             pub const MAP_FIXED : c_int = 0x0010;
             pub const MAP_ANON : c_int = 0x1000;
 
-            pub const MAP_FAILED : *mut c_void = -1 as *mut c_void;
+            pub const MAP_FAILED : *mut c_void = !0 as *mut c_void;
 
             pub const MCL_CURRENT : c_int = 0x0001;
             pub const MCL_FUTURE : c_int = 0x0002;
@@ -4428,6 +4938,7 @@ pub mod consts {
         }
         pub mod posix01 {
             use types::os::arch::c95::{c_int, size_t};
+            use types::os::common::posix01::rlim_t;
 
             pub const F_DUPFD : c_int = 0;
             pub const F_GETFD : c_int = 1;
@@ -4488,6 +4999,24 @@ pub mod consts {
             pub const PTHREAD_CREATE_JOINABLE: c_int = 1;
             pub const PTHREAD_CREATE_DETACHED: c_int = 2;
             pub const PTHREAD_STACK_MIN: size_t = 8192;
+
+            pub const RLIMIT_CPU: c_int = 0;
+            pub const RLIMIT_FSIZE: c_int = 1;
+            pub const RLIMIT_DATA: c_int = 2;
+            pub const RLIMIT_STACK: c_int = 3;
+            pub const RLIMIT_CORE: c_int = 4;
+            pub const RLIMIT_AS: c_int = 5;
+            pub const RLIMIT_MEMLOCK: c_int = 6;
+            pub const RLIMIT_NPROC: c_int = 7;
+            pub const RLIMIT_NOFILE: c_int = 8;
+            pub const RLIM_NLIMITS: c_int = 9;
+            pub const _RLIMIT_POSIX_FLAG: c_int = 0x1000;
+
+            pub const RLIM_INFINITY: rlim_t = 0xffff_ffff_ffff_ffff;
+
+            pub const RUSAGE_SELF: c_int = 0;
+            pub const RUSAGE_CHILDREN: c_int = -1;
+            pub const RUSAGE_THREAD: c_int = 1;
         }
         pub mod posix08 {
         }
@@ -4532,10 +5061,25 @@ pub mod consts {
             pub const TCP_NODELAY: c_int = 0x01;
             pub const TCP_KEEPALIVE: c_int = 0x10;
             pub const SOL_SOCKET: c_int = 0xffff;
-            pub const SO_KEEPALIVE: c_int = 0x0008;
-            pub const SO_BROADCAST: c_int = 0x0020;
+
+            pub const SO_DEBUG: c_int = 0x01;
+            pub const SO_ACCEPTCONN: c_int = 0x0002;
             pub const SO_REUSEADDR: c_int = 0x0004;
+            pub const SO_KEEPALIVE: c_int = 0x0008;
+            pub const SO_DONTROUTE: c_int = 0x0010;
+            pub const SO_BROADCAST: c_int = 0x0020;
+            pub const SO_USELOOPBACK: c_int = 0x0040;
+            pub const SO_LINGER: c_int = 0x0080;
+            pub const SO_OOBINLINE: c_int = 0x0100;
+            pub const SO_REUSEPORT: c_int = 0x0200;
+            pub const SO_SNDBUF: c_int = 0x1001;
+            pub const SO_RCVBUF: c_int = 0x1002;
+            pub const SO_SNDLOWAT: c_int = 0x1003;
+            pub const SO_RCVLOWAT: c_int = 0x1004;
+            pub const SO_SNDTIMEO: c_int = 0x1005;
+            pub const SO_RCVTIMEO: c_int = 0x1006;
             pub const SO_ERROR: c_int = 0x1007;
+            pub const SO_TYPE: c_int = 0x1008;
 
             pub const IFF_LOOPBACK: c_int = 0x8;
 
@@ -4561,6 +5105,15 @@ pub mod consts {
             pub const MAP_STACK : c_int = 0;
 
             pub const IPPROTO_RAW : c_int = 255;
+
+            pub const SO_NREAD: c_int = 0x1020;
+            pub const SO_NKE: c_int = 0x1021;
+            pub const SO_NOSIGPIPE: c_int = 0x1022;
+            pub const SO_NOADDRERR: c_int = 0x1023;
+            pub const SO_NWRITE: c_int = 0x1024;
+            pub const SO_DONTTRUNC: c_int = 0x2000;
+            pub const SO_WANTMORE: c_int = 0x4000;
+            pub const SO_WANTOOBFLAG: c_int = 0x8000;
         }
         pub mod sysconf {
             use types::os::arch::c95::c_int;
@@ -4617,10 +5170,54 @@ pub mod consts {
             pub const _SC_SEM_VALUE_MAX : c_int = 50;
             pub const _SC_SIGQUEUE_MAX : c_int = 51;
             pub const _SC_TIMER_MAX : c_int = 52;
+            pub const _SC_NPROCESSORS_CONF : c_int = 57;
+            pub const _SC_NPROCESSORS_ONLN : c_int = 58;
+            pub const _SC_2_PBS : c_int = 59;
+            pub const _SC_2_PBS_ACCOUNTING : c_int = 60;
+            pub const _SC_2_PBS_CHECKPOINT : c_int = 61;
+            pub const _SC_2_PBS_LOCATE : c_int = 62;
+            pub const _SC_2_PBS_MESSAGE : c_int = 63;
+            pub const _SC_2_PBS_TRACK : c_int = 64;
+            pub const _SC_ADVISORY_INFO : c_int = 65;
+            pub const _SC_BARRIERS : c_int = 66;
+            pub const _SC_CLOCK_SELECTION : c_int = 67;
+            pub const _SC_CPUTIME : c_int = 68;
+            pub const _SC_FILE_LOCKING : c_int = 69;
+            pub const _SC_HOST_NAME_MAX : c_int = 72;
+            pub const _SC_MONOTONIC_CLOCK : c_int = 74;
+            pub const _SC_READER_WRITER_LOCKS : c_int = 76;
+            pub const _SC_REGEXP : c_int = 77;
+            pub const _SC_SHELL : c_int = 78;
+            pub const _SC_SPAWN : c_int = 79;
+            pub const _SC_SPIN_LOCKS : c_int = 80;
+            pub const _SC_SPORADIC_SERVER : c_int = 81;
+            pub const _SC_THREAD_CPUTIME : c_int = 84;
+            pub const _SC_THREAD_SPORADIC_SERVER : c_int = 92;
+            pub const _SC_TIMEOUTS : c_int = 95;
+            pub const _SC_TRACE : c_int = 97;
+            pub const _SC_TRACE_EVENT_FILTER : c_int = 98;
+            pub const _SC_TRACE_INHERIT : c_int = 99;
+            pub const _SC_TRACE_LOG : c_int = 100;
+            pub const _SC_TYPED_MEMORY_OBJECTS : c_int = 102;
+            pub const _SC_V6_ILP32_OFF32 : c_int = 103;
+            pub const _SC_V6_ILP32_OFFBIG : c_int = 104;
+            pub const _SC_V6_LP64_OFF64 : c_int = 105;
+            pub const _SC_V6_LPBIG_OFFBIG : c_int = 106;
+            pub const _SC_IPV6 : c_int = 118;
+            pub const _SC_RAW_SOCKETS : c_int = 119;
+            pub const _SC_SYMLOOP_MAX : c_int = 120;
+            pub const _SC_PAGE_SIZE : c_int = _SC_PAGESIZE;
+            pub const _SC_XOPEN_STREAMS : c_int = 114;
             pub const _SC_XBS5_ILP32_OFF32 : c_int = 122;
             pub const _SC_XBS5_ILP32_OFFBIG : c_int = 123;
             pub const _SC_XBS5_LP64_OFF64 : c_int = 124;
             pub const _SC_XBS5_LPBIG_OFFBIG : c_int = 125;
+            pub const _SC_SS_REPL_MAX : c_int = 126;
+            pub const _SC_TRACE_EVENT_NAME_MAX : c_int = 127;
+            pub const _SC_TRACE_NAME_MAX : c_int = 128;
+            pub const _SC_TRACE_SYS_MAX : c_int = 129;
+            pub const _SC_TRACE_USER_EVENT_MAX : c_int = 130;
+            pub const _SC_PASS_MAX : c_int = 131;
         }
     }
 }
@@ -4743,7 +5340,7 @@ pub mod funcs {
                 ///
                 /// # Examples
                 ///
-                /// ```no_run
+                /// ```no_run,ignore
                 /// extern crate libc;
                 ///
                 /// fn main() {
@@ -5131,6 +5728,9 @@ pub mod funcs {
                 pub fn tcgetpgrp(fd: c_int) -> pid_t;
                 pub fn ttyname(fd: c_int) -> *mut c_char;
                 pub fn unlink(c: *const c_char) -> c_int;
+                pub fn wait(status: *const c_int) -> pid_t;
+                pub fn waitpid(pid: pid_t, status: *const c_int, options: c_int)
+                               -> pid_t;
                 pub fn write(fd: c_int, buf: *const c_void, count: size_t)
                              -> ssize_t;
                 pub fn pread(fd: c_int, buf: *mut c_void, count: size_t,
@@ -5182,6 +5782,9 @@ pub mod funcs {
                 pub fn sysconf(name: c_int) -> c_long;
                 pub fn ttyname(fd: c_int) -> *mut c_char;
                 pub fn unlink(c: *const c_char) -> c_int;
+                pub fn wait(status: *const c_int) -> pid_t;
+                pub fn waitpid(pid: pid_t, status: *const c_int, options: c_int)
+                               -> pid_t;
                 pub fn write(fd: c_int, buf: *const c_void, count: size_t)
                              -> ssize_t;
                 pub fn pread(fd: c_int, buf: *mut c_void, count: size_t,
@@ -5348,6 +5951,18 @@ pub mod funcs {
                                      -> c_int;
             }
         }
+
+        pub mod resource {
+            use types::os::arch::c95::c_int;
+            use types::os::common::posix01::rlimit;
+            use types::os::common::bsd43::rusage;
+            extern {
+                pub fn getrlimit(resource: c_int, rlim: *mut rlimit) -> c_int;
+                pub fn setrlimit(resource: c_int, rlim: *const rlimit) -> c_int;
+                pub fn getrusage(resource: c_int, usage: *mut rusage) -> c_int;
+
+            }
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -5428,7 +6043,6 @@ pub mod funcs {
         use types::common::c95::{c_void};
         use types::os::common::bsd44::{socklen_t, sockaddr, SOCKET};
         use types::os::arch::c95::c_int;
-        use types::os::arch::posix88::ssize_t;
 
         extern "system" {
             pub fn socket(domain: c_int, ty: c_int, protocol: c_int) -> SOCKET;
@@ -5453,7 +6067,7 @@ pub mod funcs {
                         flags: c_int) -> c_int;
             pub fn recvfrom(socket: SOCKET, buf: *mut c_void, len: c_int,
                             flags: c_int, addr: *mut sockaddr,
-                            addrlen: *mut c_int) -> ssize_t;
+                            addrlen: *mut c_int) -> c_int;
             pub fn sendto(socket: SOCKET, buf: *const c_void, len: c_int,
                           flags: c_int, addr: *const sockaddr,
                           addrlen: c_int) -> c_int;

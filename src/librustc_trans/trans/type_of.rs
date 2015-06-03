@@ -21,7 +21,6 @@ use util::ppaux::Repr;
 
 use trans::type_::Type;
 
-use std::num::Int;
 use syntax::abi;
 use syntax::ast;
 
@@ -68,7 +67,7 @@ pub fn untuple_arguments_if_necessary<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
         return inputs.iter().cloned().collect()
     }
 
-    if inputs.len() == 0 {
+    if inputs.is_empty() {
         return Vec::new()
     }
 
@@ -264,7 +263,7 @@ pub fn arg_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> Type {
 }
 
 /// Get the LLVM type corresponding to a Rust type, i.e. `middle::ty::Ty`.
-/// This is the right LLVM type for an alloca containg a value of that type,
+/// This is the right LLVM type for an alloca containing a value of that type,
 /// and the pointee of an Lvalue Datum (which is always a LLVM pointer).
 /// For unsized types, the returned type is a fat pointer, thus the resulting
 /// LLVM type for a `Trait` Lvalue is `{ i8*, void(i8*)** }*`, which is a double
@@ -358,14 +357,14 @@ pub fn in_memory_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> 
                   cx.tn().find_type("str_slice").unwrap()
               } else {
                   let ptr_ty = in_memory_type_of(cx, ty).ptr_to();
-                  let unsized_part = unsized_part_of_type(cx.tcx(), ty);
+                  let unsized_part = ty::struct_tail(cx.tcx(), ty);
                   let info_ty = match unsized_part.sty {
                       ty::ty_str | ty::ty_vec(..) => {
-                          Type::uint_from_ty(cx, ast::TyUs(false))
+                          Type::uint_from_ty(cx, ast::TyUs)
                       }
                       ty::ty_trait(_) => Type::vtable_ptr(cx),
                       _ => panic!("Unexpected type returned from \
-                                   unsized_part_of_type: {} for ty={}",
+                                   struct_tail: {} for ty={}",
                                   unsized_part.repr(cx.tcx()), ty.repr(cx.tcx()))
                   };
                   Type::struct_(cx, &[ptr_ty, info_ty], false)

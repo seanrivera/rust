@@ -8,7 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// no-pretty-expanded FIXME #15189
+#![feature(core)]
 
 use std::iter::Unfold;
 
@@ -16,7 +16,7 @@ use std::iter::Unfold;
 // cross-crate
 
 pub fn main() {
-    fn count(st: &mut uint) -> Option<uint> {
+    fn count(st: &mut usize) -> Option<usize> {
         if *st < 10 {
             let ret = Some(*st);
             *st += 1;

@@ -41,7 +41,7 @@ pub use lint::context::{Context, LintStore, raw_emit_lint, check_crate, gather_a
                         GatherNodeLevels};
 
 /// Specification of a single lint.
-#[derive(Copy, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct Lint {
     /// A string identifier for the lint.
     ///
@@ -143,8 +143,8 @@ pub trait LintPass {
     fn check_generics(&mut self, _: &Context, _: &ast::Generics) { }
     fn check_fn(&mut self, _: &Context,
         _: FnKind, _: &ast::FnDecl, _: &ast::Block, _: Span, _: ast::NodeId) { }
-    fn check_ty_method(&mut self, _: &Context, _: &ast::TypeMethod) { }
     fn check_trait_item(&mut self, _: &Context, _: &ast::TraitItem) { }
+    fn check_impl_item(&mut self, _: &Context, _: &ast::ImplItem) { }
     fn check_struct_def(&mut self, _: &Context,
         _: &ast::StructDef, _: ast::Ident, _: &ast::Generics, _: ast::NodeId) { }
     fn check_struct_def_post(&mut self, _: &Context,

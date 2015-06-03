@@ -10,9 +10,9 @@
 
 // Test that the CompilerCalls interface to the compiler works.
 
-// ignore-android
+// ignore-cross-compile
 
-#![feature(rustc_private)]
+#![feature(rustc_private, path)]
 #![feature(core)]
 
 extern crate getopts;
@@ -77,7 +77,6 @@ fn main() {
     let mut tc = TestCalls { count: 1 };
     // we should never get use this filename, but lets make sure they are valid args.
     let args = vec!["compiler-calls".to_string(), "foo.rs".to_string()];
-    rustc_driver::run_compiler(args.as_slice(), &mut tc);
+    rustc_driver::run_compiler(&args, &mut tc);
     assert!(tc.count == 30);
 }
-

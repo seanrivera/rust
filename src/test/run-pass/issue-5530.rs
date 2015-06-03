@@ -8,12 +8,13 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 enum Enum {
-    Foo { foo: uint },
-    Bar { bar: uint }
+    Foo { foo: usize },
+    Bar { bar: usize }
 }
 
-fn fun1(e1: &Enum, e2: &Enum) -> uint {
+fn fun1(e1: &Enum, e2: &Enum) -> usize {
     match (e1, e2) {
         (&Enum::Foo { foo: _ }, &Enum::Foo { foo: _ }) => 0,
         (&Enum::Foo { foo: _ }, &Enum::Bar { bar: _ }) => 1,
@@ -22,7 +23,7 @@ fn fun1(e1: &Enum, e2: &Enum) -> uint {
     }
 }
 
-fn fun2(e1: &Enum, e2: &Enum) -> uint {
+fn fun2(e1: &Enum, e2: &Enum) -> usize {
     match (e1, e2) {
         (&Enum::Foo { foo: _ }, &Enum::Foo { foo: _ }) => 0,
         (&Enum::Foo { foo: _ }, _              ) => 1,

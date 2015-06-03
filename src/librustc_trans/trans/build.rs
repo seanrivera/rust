@@ -12,7 +12,7 @@
 #![allow(non_snake_case)]
 
 use llvm;
-use llvm::{CallConv, AtomicBinOp, AtomicOrdering, AsmDialect, AttrBuilder};
+use llvm::{CallConv, AtomicBinOp, AtomicOrdering, SynchronizationScope, AsmDialect, AttrBuilder};
 use llvm::{Opcode, IntPredicate, RealPredicate};
 use llvm::{ValueRef, BasicBlockRef};
 use trans::common::*;
@@ -105,7 +105,7 @@ pub fn CondBr(cx: Block,
     B(cx).cond_br(if_, then, else_);
 }
 
-pub fn Switch(cx: Block, v: ValueRef, else_: BasicBlockRef, num_cases: uint)
+pub fn Switch(cx: Block, v: ValueRef, else_: BasicBlockRef, num_cases: usize)
     -> ValueRef {
     if cx.unreachable.get() { return _Undef(v); }
     check_not_terminated(cx);
@@ -122,7 +122,7 @@ pub fn AddCase(s: ValueRef, on_val: ValueRef, dest: BasicBlockRef) {
 
 pub fn IndirectBr(cx: Block,
                   addr: ValueRef,
-                  num_dests: uint,
+                  num_dests: usize,
                   debug_loc: DebugLoc) {
     if cx.unreachable.get() {
         return;
@@ -646,13 +646,13 @@ pub fn LoadNonNull(cx: Block, ptr: ValueRef) -> ValueRef {
     }
 }
 
-pub fn Store(cx: Block, val: ValueRef, ptr: ValueRef) {
-    if cx.unreachable.get() { return; }
+pub fn Store(cx: Block, val: ValueRef, ptr: ValueRef) -> ValueRef {
+    if cx.unreachable.get() { return C_nil(cx.ccx()); }
     B(cx).store(val, ptr)
 }
 
-pub fn VolatileStore(cx: Block, val: ValueRef, ptr: ValueRef) {
-    if cx.unreachable.get() { return; }
+pub fn VolatileStore(cx: Block, val: ValueRef, ptr: ValueRef) -> ValueRef {
+    if cx.unreachable.get() { return C_nil(cx.ccx()); }
     B(cx).volatile_store(val, ptr)
 }
 
@@ -673,7 +673,7 @@ pub fn GEP(cx: Block, pointer: ValueRef, indices: &[ValueRef]) -> ValueRef {
 // Simple wrapper around GEP that takes an array of ints and wraps them
 // in C_i32()
 #[inline]
-pub fn GEPi(cx: Block, base: ValueRef, ixs: &[uint]) -> ValueRef {
+pub fn GEPi(cx: Block, base: ValueRef, ixs: &[usize]) -> ValueRef {
     unsafe {
         if cx.unreachable.get() {
             return llvm::LLVMGetUndef(Type::nil(cx.ccx()).ptr_to().to_ref());
@@ -691,7 +691,7 @@ pub fn InBoundsGEP(cx: Block, pointer: ValueRef, indices: &[ValueRef]) -> ValueR
     }
 }
 
-pub fn StructGEP(cx: Block, pointer: ValueRef, idx: uint) -> ValueRef {
+pub fn StructGEP(cx: Block, pointer: ValueRef, idx: usize) -> ValueRef {
     unsafe {
         if cx.unreachable.get() {
             return llvm::LLVMGetUndef(Type::nil(cx.ccx()).ptr_to().to_ref());
@@ -965,9 +965,9 @@ pub fn CallWithConv(cx: Block,
     B(cx).call_with_conv(fn_, args, conv, attributes)
 }
 
-pub fn AtomicFence(cx: Block, order: AtomicOrdering) {
+pub fn AtomicFence(cx: Block, order: AtomicOrdering, scope: SynchronizationScope) {
     if cx.unreachable.get() { return; }
-    B(cx).atomic_fence(order)
+    B(cx).atomic_fence(order, scope)
 }
 
 pub fn Select(cx: Block, if_: ValueRef, then: ValueRef, else_: ValueRef) -> ValueRef {
@@ -1011,7 +1011,7 @@ pub fn ShuffleVector(cx: Block, v1: ValueRef, v2: ValueRef,
     }
 }
 
-pub fn VectorSplat(cx: Block, num_elts: uint, elt_val: ValueRef) -> ValueRef {
+pub fn VectorSplat(cx: Block, num_elts: usize, elt_val: ValueRef) -> ValueRef {
     unsafe {
         if cx.unreachable.get() {
             return llvm::LLVMGetUndef(Type::nil(cx.ccx()).to_ref());
@@ -1020,7 +1020,7 @@ pub fn VectorSplat(cx: Block, num_elts: uint, elt_val: ValueRef) -> ValueRef {
     }
 }
 
-pub fn ExtractValue(cx: Block, agg_val: ValueRef, index: uint) -> ValueRef {
+pub fn ExtractValue(cx: Block, agg_val: ValueRef, index: usize) -> ValueRef {
     unsafe {
         if cx.unreachable.get() {
             return llvm::LLVMGetUndef(Type::nil(cx.ccx()).to_ref());
@@ -1029,7 +1029,7 @@ pub fn ExtractValue(cx: Block, agg_val: ValueRef, index: uint) -> ValueRef {
     }
 }
 
-pub fn InsertValue(cx: Block, agg_val: ValueRef, elt_val: ValueRef, index: uint) -> ValueRef {
+pub fn InsertValue(cx: Block, agg_val: ValueRef, elt_val: ValueRef, index: usize) -> ValueRef {
     unsafe {
         if cx.unreachable.get() {
             return llvm::LLVMGetUndef(Type::nil(cx.ccx()).to_ref());
@@ -1070,7 +1070,7 @@ pub fn Trap(cx: Block) {
 }
 
 pub fn LandingPad(cx: Block, ty: Type, pers_fn: ValueRef,
-                  num_clauses: uint) -> ValueRef {
+                  num_clauses: usize) -> ValueRef {
     check_not_terminated(cx);
     assert!(!cx.unreachable.get());
     B(cx).landing_pad(ty, pers_fn, num_clauses)

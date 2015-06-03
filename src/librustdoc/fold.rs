@@ -9,7 +9,7 @@
 // except according to those terms.
 
 use clean::*;
-use std::iter::Extend;
+use std::collections::HashMap;
 use std::mem::{replace, swap};
 
 pub trait DocFolder : Sized {
@@ -40,37 +40,13 @@ pub trait DocFolder : Sized {
                 EnumItem(i)
             },
             TraitItem(mut i) => {
-                fn vtrm<T: DocFolder>(this: &mut T, trm: TraitMethod)
-                        -> Option<TraitMethod> {
-                    match trm {
-                        RequiredMethod(it) => {
-                            match this.fold_item(it) {
-                                Some(x) => return Some(RequiredMethod(x)),
-                                None => return None,
-                            }
-                        },
-                        ProvidedMethod(it) => {
-                            match this.fold_item(it) {
-                                Some(x) => return Some(ProvidedMethod(x)),
-                                None => return None,
-                            }
-                        },
-                        TypeTraitItem(it) => {
-                            match this.fold_item(it) {
-                                Some(x) => return Some(TypeTraitItem(x)),
-                                None => return None,
-                            }
-                        }
-                    }
-                }
                 let mut foo = Vec::new(); swap(&mut foo, &mut i.items);
-                i.items.extend(foo.into_iter().filter_map(|x| vtrm(self, x)));
+                i.items.extend(foo.into_iter().filter_map(|x| self.fold_item(x)));
                 TraitItem(i)
             },
             ImplItem(mut i) => {
                 let mut foo = Vec::new(); swap(&mut foo, &mut i.items);
-                i.items.extend(foo.into_iter()
-                                  .filter_map(|x| self.fold_item(x)));
+                i.items.extend(foo.into_iter().filter_map(|x| self.fold_item(x)));
                 ImplItem(i)
             },
             VariantItem(i) => {
@@ -104,6 +80,13 @@ pub trait DocFolder : Sized {
         c.module = match replace(&mut c.module, None) {
             Some(module) => self.fold_item(module), None => None
         };
+        let external_traits = replace(&mut c.external_traits, HashMap::new());
+        c.external_traits = external_traits.into_iter().map(|(k, mut v)| {
+            let items = replace(&mut v.items, Vec::new());
+            v.items = items.into_iter().filter_map(|i| self.fold_item(i))
+                           .collect();
+            (k, v)
+        }).collect();
         return c;
     }
 }

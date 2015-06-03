@@ -12,9 +12,7 @@
 
 // pp-exact
 
-use std::marker::MarkerTrait;
-
-trait MyTrait: MarkerTrait { }
+trait MyTrait { }
 
 impl MyTrait for .. { }
 

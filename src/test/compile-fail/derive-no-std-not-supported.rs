@@ -13,13 +13,7 @@
 
 extern crate core;
 extern crate rand;
-extern crate "serialize" as rustc_serialize;
-
-#[derive(Rand)]  //~ ERROR this trait cannot be derived
-//~^ WARNING `#[derive(Rand)]` is deprecated
-struct Foo {
-    x: u32,
-}
+extern crate serialize as rustc_serialize;
 
 #[derive(RustcEncodable)]  //~ ERROR this trait cannot be derived
 struct Bar {

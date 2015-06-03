@@ -18,7 +18,6 @@ use std::borrow::ToOwned;
 use std::dynamic_lib::DynamicLibrary;
 use std::env;
 use std::mem;
-use std::old_path;
 use std::path::PathBuf;
 use syntax::ast;
 use syntax::codemap::{Span, COMMAND_LINE_SP};
@@ -100,13 +99,13 @@ impl<'a> PluginLoader<'a> {
     }
 
     // Dynamically link a registrar function into the compiler process.
+    #[allow(deprecated)] // until #23197
     fn dylink_registrar(&mut self,
                         span: Span,
                         path: PathBuf,
                         symbol: String) -> PluginRegistrarFun {
         // Make sure the path contains a / or the linker will search for it.
         let path = env::current_dir().unwrap().join(&path);
-        let path = old_path::Path::new(path.to_str().unwrap());
 
         let lib = match DynamicLibrary::open(Some(&path)) {
             Ok(lib) => lib,
@@ -132,7 +131,7 @@ impl<'a> PluginLoader<'a> {
 
             // Intentionally leak the dynamic library. We can't ever unload it
             // since the library can make things that will live arbitrarily long
-            // (e.g. an @-box cycle or a task).
+            // (e.g. an @-box cycle or a thread).
             mem::forget(lib);
 
             registrar

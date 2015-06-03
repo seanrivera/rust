@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 pub fn main() {
     use std::f64;
     let x = "NaN".to_string();
@@ -15,4 +16,3 @@ pub fn main() {
     assert_eq!(format!("{:e}", f64::NAN), x);
     assert_eq!(format!("{:E}", f64::NAN), x);
 }
-

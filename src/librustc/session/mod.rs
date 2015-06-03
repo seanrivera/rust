@@ -23,6 +23,7 @@ use syntax::parse;
 use syntax::parse::token;
 use syntax::parse::ParseSess;
 use syntax::{ast, codemap};
+use syntax::feature_gate::AttributeType;
 
 use rustc_back::target::Target;
 
@@ -46,21 +47,28 @@ pub struct Session {
     pub entry_type: Cell<Option<config::EntryFnType>>,
     pub plugin_registrar_fn: Cell<Option<ast::NodeId>>,
     pub default_sysroot: Option<PathBuf>,
-    // The name of the root source file of the crate, in the local file system. The path is always
-    // expected to be absolute. `None` means that there is no source file.
+    // The name of the root source file of the crate, in the local file system.
+    // The path is always expected to be absolute. `None` means that there is no
+    // source file.
     pub local_crate_source_file: Option<PathBuf>,
     pub working_dir: PathBuf,
     pub lint_store: RefCell<lint::LintStore>,
     pub lints: RefCell<NodeMap<Vec<(lint::LintId, codemap::Span, String)>>>,
+    pub plugin_llvm_passes: RefCell<Vec<String>>,
+    pub plugin_attributes: RefCell<Vec<(String, AttributeType)>>,
     pub crate_types: RefCell<Vec<config::CrateType>>,
     pub crate_metadata: RefCell<Vec<String>>,
     pub features: RefCell<feature_gate::Features>,
 
+    pub delayed_span_bug: RefCell<Option<(codemap::Span, String)>>,
+
     /// The maximum recursion limit for potentially infinitely recursive
     /// operations such as auto-dereference and monomorphization.
-    pub recursion_limit: Cell<uint>,
+    pub recursion_limit: Cell<usize>,
 
-    pub can_print_warnings: bool
+    pub can_print_warnings: bool,
+
+    next_node_id: Cell<ast::NodeId>
 }
 
 impl Session {
@@ -68,13 +76,13 @@ impl Session {
         if self.opts.treat_err_as_bug {
             self.span_bug(sp, msg);
         }
-        self.diagnostic().span_fatal(sp, msg)
+        panic!(self.diagnostic().span_fatal(sp, msg))
     }
     pub fn span_fatal_with_code(&self, sp: Span, msg: &str, code: &str) -> ! {
         if self.opts.treat_err_as_bug {
             self.span_bug(sp, msg);
         }
-        self.diagnostic().span_fatal_with_code(sp, msg, code)
+        panic!(self.diagnostic().span_fatal_with_code(sp, msg, code))
     }
     pub fn fatal(&self, msg: &str) -> ! {
         if self.opts.treat_err_as_bug {
@@ -106,14 +114,22 @@ impl Session {
         }
         self.diagnostic().handler().err(msg)
     }
-    pub fn err_count(&self) -> uint {
+    pub fn err_count(&self) -> usize {
         self.diagnostic().handler().err_count()
     }
     pub fn has_errors(&self) -> bool {
         self.diagnostic().handler().has_errors()
     }
     pub fn abort_if_errors(&self) {
-        self.diagnostic().handler().abort_if_errors()
+        self.diagnostic().handler().abort_if_errors();
+
+        let delayed_bug = self.delayed_span_bug.borrow();
+        match *delayed_bug {
+            Some((span, ref errmsg)) => {
+                self.diagnostic().span_bug(span, errmsg);
+            },
+            _ => {}
+        }
     }
     pub fn span_warn(&self, sp: Span, msg: &str) {
         if self.can_print_warnings {
@@ -142,6 +158,13 @@ impl Session {
     pub fn span_end_note(&self, sp: Span, msg: &str) {
         self.diagnostic().span_end_note(sp, msg)
     }
+
+    /// Prints out a message with a suggested edit of the code.
+    ///
+    /// See `diagnostic::RenderSpan::Suggestion` for more information.
+    pub fn span_suggestion(&self, sp: Span, msg: &str, suggestion: String) {
+        self.diagnostic().span_suggestion(sp, msg, suggestion)
+    }
     pub fn span_help(&self, sp: Span, msg: &str) {
         self.diagnostic().span_help(sp, msg)
     }
@@ -155,13 +178,18 @@ impl Session {
         self.diagnostic().handler().note(msg)
     }
     pub fn help(&self, msg: &str) {
-        self.diagnostic().handler().note(msg)
+        self.diagnostic().handler().help(msg)
     }
     pub fn opt_span_bug(&self, opt_sp: Option<Span>, msg: &str) -> ! {
         match opt_sp {
             Some(sp) => self.span_bug(sp, msg),
             None => self.bug(msg),
         }
+    }
+    /// Delay a span_bug() call until abort_if_errors()
+    pub fn delay_span_bug(&self, sp: Span, msg: &str) {
+        let mut delayed = self.delayed_span_bug.borrow_mut();
+        *delayed = Some((sp, msg.to_string()));
     }
     pub fn span_bug(&self, sp: Span, msg: &str) -> ! {
         self.diagnostic().span_bug(sp, msg)
@@ -189,16 +217,23 @@ impl Session {
         lints.insert(id, vec!((lint_id, sp, msg)));
     }
     pub fn next_node_id(&self) -> ast::NodeId {
-        self.parse_sess.next_node_id()
+        self.reserve_node_ids(1)
     }
     pub fn reserve_node_ids(&self, count: ast::NodeId) -> ast::NodeId {
-        self.parse_sess.reserve_node_ids(count)
+        let id = self.next_node_id.get();
+
+        match id.checked_add(count) {
+            Some(next) => self.next_node_id.set(next),
+            None => self.bug("Input too large, ran out of node ids!")
+        }
+
+        id
     }
     pub fn diagnostic<'a>(&'a self) -> &'a diagnostic::SpanHandler {
         &self.parse_sess.span_diagnostic
     }
     pub fn codemap<'a>(&'a self) -> &'a codemap::CodeMap {
-        &self.parse_sess.span_diagnostic.cm
+        self.parse_sess.codemap()
     }
     // This exists to help with refactoring to eliminate impossible
     // cases later on
@@ -335,9 +370,9 @@ pub fn build_session(sopts: config::Options,
 
     let codemap = codemap::CodeMap::new();
     let diagnostic_handler =
-        diagnostic::default_handler(sopts.color, Some(registry), can_print_warnings);
+        diagnostic::Handler::new(sopts.color, Some(registry), can_print_warnings);
     let span_diagnostic_handler =
-        diagnostic::mk_span_handler(diagnostic_handler, codemap);
+        diagnostic::SpanHandler::new(diagnostic_handler, codemap);
 
     build_session_(sopts, local_crate_source_file, span_diagnostic_handler)
 }
@@ -354,7 +389,7 @@ pub fn build_session_(sopts: config::Options,
     }
     };
     let target_cfg = config::build_target_config(&sopts, &span_diagnostic);
-    let p_s = parse::new_parse_sess_special_handler(span_diagnostic);
+    let p_s = parse::ParseSess::with_span_handler(span_diagnostic);
     let default_sysroot = match sopts.maybe_sysroot {
         Some(_) => None,
         None => Some(filesearch::get_or_default_sysroot())
@@ -391,11 +426,15 @@ pub fn build_session_(sopts: config::Options,
         working_dir: env::current_dir().unwrap(),
         lint_store: RefCell::new(lint::LintStore::new()),
         lints: RefCell::new(NodeMap()),
+        plugin_llvm_passes: RefCell::new(Vec::new()),
+        plugin_attributes: RefCell::new(Vec::new()),
         crate_types: RefCell::new(Vec::new()),
         crate_metadata: RefCell::new(Vec::new()),
+        delayed_span_bug: RefCell::new(None),
         features: RefCell::new(feature_gate::Features::new()),
         recursion_limit: Cell::new(64),
-        can_print_warnings: can_print_warnings
+        can_print_warnings: can_print_warnings,
+        next_node_id: Cell::new(1)
     };
 
     sess

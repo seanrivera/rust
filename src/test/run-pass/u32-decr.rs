@@ -11,6 +11,7 @@
 
 
 
+
 pub fn main() {
     let mut word: u32 = 200000;
     word = word - 1;

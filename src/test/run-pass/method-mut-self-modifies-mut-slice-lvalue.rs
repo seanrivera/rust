@@ -12,25 +12,25 @@
 // type is `&mut [u8]`, passes in a pointer to the lvalue and not a
 // temporary. Issue #19147.
 
-use std::raw;
-use std::mem;
+
+#![feature(core)]
+
 use std::slice;
-use std::old_io::IoResult;
 
 trait MyWriter {
-    fn my_write(&mut self, buf: &[u8]) -> IoResult<()>;
+    fn my_write(&mut self, buf: &[u8]) -> Result<(), ()>;
 }
 
 impl<'a> MyWriter for &'a mut [u8] {
-    fn my_write(&mut self, buf: &[u8]) -> IoResult<()> {
-        slice::bytes::copy_memory(*self, buf);
+    fn my_write(&mut self, buf: &[u8]) -> Result<(), ()> {
+        slice::bytes::copy_memory(buf, *self);
 
         let write_len = buf.len();
         unsafe {
-            *self = mem::transmute(raw::Slice {
-                data: self.as_ptr().offset(write_len as int),
-                len: self.len() - write_len,
-            });
+            *self = slice::from_raw_parts_mut(
+                self.as_mut_ptr().offset(write_len as isize),
+                self.len() - write_len
+            );
         }
 
         Ok(())

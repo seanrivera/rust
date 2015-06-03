@@ -13,7 +13,7 @@
 
 #![allow(unknown_features)]
 #![feature(box_syntax)]
-#![feature(unboxed_closures)]
+#![feature(unboxed_closures, core)]
 
 fn main(){
     fn bar<'a, T:Clone+'a> (t: T) -> Box<FnMut()->T + 'a> {
@@ -32,7 +32,7 @@ fn main(){
     assert_eq!(f.call_mut(()), &x);
 
     #[derive(Clone, Copy, Debug, PartialEq)]
-    struct Foo(uint, &'static str);
+    struct Foo(usize, &'static str);
 
     let x = Foo(42, "forty-two");
     let mut f = bar(x);

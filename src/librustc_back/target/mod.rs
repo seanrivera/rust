@@ -46,44 +46,20 @@
 //! specified by the target, rather than replace.
 
 use serialize::json::Json;
-use syntax::{diagnostic, abi};
 use std::default::Default;
 use std::io::prelude::*;
+use syntax::{diagnostic, abi};
 
-mod windows_base;
-mod linux_base;
+mod android_base;
 mod apple_base;
 mod apple_ios_base;
-mod freebsd_base;
-mod dragonfly_base;
 mod bitrig_base;
+mod dragonfly_base;
+mod freebsd_base;
+mod linux_base;
 mod openbsd_base;
-
-mod armv7_apple_ios;
-mod armv7s_apple_ios;
-mod i386_apple_ios;
-
-mod arm_linux_androideabi;
-mod arm_unknown_linux_gnueabi;
-mod arm_unknown_linux_gnueabihf;
-mod aarch64_apple_ios;
-mod aarch64_linux_android;
-mod aarch64_unknown_linux_gnu;
-mod i686_apple_darwin;
-mod i686_pc_windows_gnu;
-mod i686_unknown_dragonfly;
-mod i686_unknown_linux_gnu;
-mod mips_unknown_linux_gnu;
-mod mipsel_unknown_linux_gnu;
-mod powerpc_unknown_linux_gnu;
-mod x86_64_apple_darwin;
-mod x86_64_apple_ios;
-mod x86_64_pc_windows_gnu;
-mod x86_64_unknown_freebsd;
-mod x86_64_unknown_dragonfly;
-mod x86_64_unknown_bitrig;
-mod x86_64_unknown_linux_gnu;
-mod x86_64_unknown_openbsd;
+mod windows_base;
+mod windows_msvc_base;
 
 /// Everything `rustc` knows about how to compile for a specific target.
 ///
@@ -100,6 +76,8 @@ pub struct Target {
     pub target_pointer_width: String,
     /// OS name to use for conditional compilation.
     pub target_os: String,
+    /// Environment name to use for conditional compilation.
+    pub target_env: String,
     /// Architecture to use for ABI considerations. Valid options: "x86", "x86_64", "arm",
     /// "aarch64", "mips", and "powerpc". "mips" includes "mipsel".
     pub arch: String,
@@ -115,14 +93,24 @@ pub struct Target {
 pub struct TargetOptions {
     /// Linker to invoke. Defaults to "cc".
     pub linker: String,
-    /// Linker arguments that are unconditionally passed *before* any user-defined libraries.
+    /// Archive utility to use when managing archives. Defaults to "ar".
+    pub ar: String,
+    /// Linker arguments that are unconditionally passed *before* any
+    /// user-defined libraries.
     pub pre_link_args: Vec<String>,
-    /// Linker arguments that are unconditionally passed *after* any user-defined libraries.
+    /// Linker arguments that are unconditionally passed *after* any
+    /// user-defined libraries.
     pub post_link_args: Vec<String>,
-    /// Default CPU to pass to LLVM. Corresponds to `llc -mcpu=$cpu`. Defaults to "default".
+    /// Objects to link before and after all others, always found within the
+    /// sysroot folder.
+    pub pre_link_objects: Vec<String>,
+    pub post_link_objects: Vec<String>,
+    /// Default CPU to pass to LLVM. Corresponds to `llc -mcpu=$cpu`. Defaults
+    /// to "default".
     pub cpu: String,
-    /// Default target features to pass to LLVM. These features will *always* be passed, and cannot
-    /// be disabled even via `-C`. Corresponds to `llc -mattr=$features`.
+    /// Default target features to pass to LLVM. These features will *always* be
+    /// passed, and cannot be disabled even via `-C`. Corresponds to `llc
+    /// -mattr=$features`.
     pub features: String,
     /// Whether dynamic linking is available on this target. Defaults to false.
     pub dynamic_linking: bool,
@@ -157,9 +145,10 @@ pub struct TargetOptions {
     /// particular running dsymutil and some other stuff like `-dead_strip`. Defaults to false.
     pub is_like_osx: bool,
     /// Whether the target toolchain is like Windows'. Only useful for compiling against Windows,
-    /// only realy used for figuring out how to find libraries, since Windows uses its own
+    /// only really used for figuring out how to find libraries, since Windows uses its own
     /// library naming convention. Defaults to false.
     pub is_like_windows: bool,
+    pub is_like_msvc: bool,
     /// Whether the target toolchain is like Android's. Only useful for compiling against Android.
     /// Defaults to false.
     pub is_like_android: bool,
@@ -167,22 +156,24 @@ pub struct TargetOptions {
     pub linker_is_gnu: bool,
     /// Whether the linker support rpaths or not. Defaults to false.
     pub has_rpath: bool,
-    /// Whether to disable linking to compiler-rt. Defaults to false, as LLVM will emit references
-    /// to the functions that compiler-rt provides.
+    /// Whether to disable linking to compiler-rt. Defaults to false, as LLVM
+    /// will emit references to the functions that compiler-rt provides.
     pub no_compiler_rt: bool,
-    /// Dynamically linked executables can be compiled as position independent if the default
-    /// relocation model of position independent code is not changed. This is a requirement to take
-    /// advantage of ASLR, as otherwise the functions in the executable are not randomized and can
-    /// be used during an exploit of a vulnerability in any code.
+    /// Dynamically linked executables can be compiled as position independent
+    /// if the default relocation model of position independent code is not
+    /// changed. This is a requirement to take advantage of ASLR, as otherwise
+    /// the functions in the executable are not randomized and can be used
+    /// during an exploit of a vulnerability in any code.
     pub position_independent_executables: bool,
 }
 
 impl Default for TargetOptions {
-    /// Create a set of "sane defaults" for any target. This is still incomplete, and if used for
-    /// compilation, will certainly not work.
+    /// Create a set of "sane defaults" for any target. This is still
+    /// incomplete, and if used for compilation, will certainly not work.
     fn default() -> TargetOptions {
         TargetOptions {
             linker: "cc".to_string(),
+            ar: "ar".to_string(),
             pre_link_args: Vec::new(),
             post_link_args: Vec::new(),
             cpu: "generic".to_string(),
@@ -203,10 +194,13 @@ impl Default for TargetOptions {
             is_like_osx: false,
             is_like_windows: false,
             is_like_android: false,
+            is_like_msvc: false,
             linker_is_gnu: false,
             has_rpath: false,
             no_compiler_rt: false,
             position_independent_executables: false,
+            pre_link_objects: Vec::new(),
+            post_link_objects: Vec::new(),
         }
     }
 }
@@ -231,7 +225,7 @@ impl Target {
         // this is 1. ugly, 2. error prone.
 
 
-        let handler = diagnostic::default_handler(diagnostic::Auto, None, true);
+        let handler = diagnostic::Handler::new(diagnostic::Auto, None, true);
 
         let get_req_field = |name: &str| {
             match obj.find(name)
@@ -250,6 +244,8 @@ impl Target {
             target_pointer_width: get_req_field("target-pointer-width"),
             arch: get_req_field("arch"),
             target_os: get_req_field("os"),
+            target_env: obj.find("env").and_then(|s| s.as_string())
+                           .map(|s| s.to_string()).unwrap_or(String::new()),
             options: Default::default(),
         };
 
@@ -329,6 +325,7 @@ impl Target {
         macro_rules! load_specific {
             ( $($name:ident),+ ) => (
                 {
+                    $(mod $name;)*
                     let target = target.replace("-", "_");
                     if false { }
                     $(
@@ -358,6 +355,7 @@ impl Target {
             arm_unknown_linux_gnueabi,
             arm_unknown_linux_gnueabihf,
             aarch64_unknown_linux_gnu,
+            x86_64_unknown_linux_musl,
 
             arm_linux_androideabi,
             aarch64_linux_android,
@@ -380,7 +378,9 @@ impl Target {
             armv7s_apple_ios,
 
             x86_64_pc_windows_gnu,
-            i686_pc_windows_gnu
+            i686_pc_windows_gnu,
+
+            x86_64_pc_windows_msvc
         );
 
 
@@ -393,11 +393,11 @@ impl Target {
         let path = {
             let mut target = target.to_string();
             target.push_str(".json");
-            PathBuf::new(&target)
+            PathBuf::from(target)
         };
 
         let target_path = env::var_os("RUST_TARGET_PATH")
-                              .unwrap_or(OsString::from_str(""));
+                              .unwrap_or(OsString::new());
 
         // FIXME 16351: add a sane default search path?
 

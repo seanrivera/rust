@@ -16,10 +16,11 @@ impl<A> vec_monad<A> for Vec<A> {
     fn bind<B, F>(&self, mut f: F) where F: FnMut(A) -> Vec<B> {
         let mut r = panic!();
         for elt in self { r = r + f(*elt); }
-        //~^ ERROR binary operation `+` cannot be applied to type `collections::vec::Vec<B>`
+        //~^ ERROR E0277
+        //~| ERROR E0277
    }
 }
 fn main() {
     ["hi"].bind(|x| [x] );
-    //~^ ERROR type `[&str; 1]` does not implement any method in scope named `bind`
+    //~^ ERROR no method named `bind` found for type `[&str; 1]` in the current scope
 }

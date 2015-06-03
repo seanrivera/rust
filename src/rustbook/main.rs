@@ -12,11 +12,9 @@
 
 #![feature(core)]
 #![feature(exit_status)]
-#![feature(io)]
-#![feature(old_io)]
-#![feature(path)]
 #![feature(rustdoc)]
 #![feature(rustc_private)]
+#![feature(path_relative_from)]
 
 extern crate rustdoc;
 extern crate rustc_back;

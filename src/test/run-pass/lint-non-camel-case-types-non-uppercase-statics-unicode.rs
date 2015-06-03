@@ -8,7 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 //
-// ignore-lexer-test FIXME #15679
 
 
 #![forbid(non_camel_case_types)]
@@ -20,6 +19,6 @@
 
 struct ヒ;
 
-static ラ: uint = 0;
+static ラ: usize = 0;
 
 pub fn main() {}

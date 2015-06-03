@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 #![feature(asm)]
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -34,8 +35,8 @@ pub fn main() {
         assert_eq!(2147483648, next_power_of_2(2147483647));
     }
 
-    let mut y: int = 5;
-    let x: int;
+    let mut y: isize = 5;
+    let x: isize;
     unsafe {
         // Treat the output as initialization.
         asm!(

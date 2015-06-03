@@ -15,13 +15,18 @@
 
 # The names of crates that must be tested
 
-# libcore/libunicode tests are in a separate crate
+# libcore/librustc_unicode tests are in a separate crate
 DEPS_coretest :=
 $(eval $(call RUST_CRATE,coretest))
 
-TEST_TARGET_CRATES = $(filter-out core unicode,$(TARGET_CRATES)) coretest
+DEPS_collectionstest :=
+$(eval $(call RUST_CRATE,collectionstest))
+
+TEST_TARGET_CRATES = $(filter-out core rustc_unicode,$(TARGET_CRATES)) \
+			collectionstest coretest
 TEST_DOC_CRATES = $(DOC_CRATES)
-TEST_HOST_CRATES = $(filter-out rustc_typeck rustc_borrowck rustc_resolve rustc_trans rustc_lint,\
+TEST_HOST_CRATES = $(filter-out rustc_typeck rustc_borrowck rustc_resolve \
+		   		rustc_trans rustc_lint,\
                      $(HOST_CRATES))
 TEST_CRATES = $(TEST_TARGET_CRATES) $(TEST_HOST_CRATES)
 
@@ -163,32 +168,38 @@ $(foreach file,$(wildcard $(S)src/doc/trpl/*.md), \
 ######################################################################
 
 # The main testing target. Tests lots of stuff.
-check: cleantmptestlogs cleantestlibs all check-stage2 tidy
+check: check-sanitycheck cleantmptestlogs cleantestlibs all check-stage2 tidy
 	$(Q)$(CFG_PYTHON) $(S)src/etc/check-summary.py tmp/*.log
 
 # As above but don't bother running tidy.
-check-notidy: cleantmptestlogs cleantestlibs all check-stage2
+check-notidy: check-sanitycheck cleantmptestlogs cleantestlibs all check-stage2
 	$(Q)$(CFG_PYTHON) $(S)src/etc/check-summary.py tmp/*.log
 
 # A slightly smaller set of tests for smoke testing.
-check-lite: cleantestlibs cleantmptestlogs \
+check-lite: check-sanitycheck cleantestlibs cleantmptestlogs \
 	$(foreach crate,$(TEST_TARGET_CRATES),check-stage2-$(crate)) \
 	check-stage2-rpass check-stage2-rpass-valgrind \
 	check-stage2-rfail check-stage2-cfail check-stage2-pfail check-stage2-rmake
 	$(Q)$(CFG_PYTHON) $(S)src/etc/check-summary.py tmp/*.log
 
 # Only check the 'reference' tests: rpass/cfail/rfail/rmake.
-check-ref: cleantestlibs cleantmptestlogs check-stage2-rpass check-stage2-rpass-valgrind \
-	check-stage2-rfail check-stage2-cfail check-stage2-pfail check-stage2-rmake
+check-ref: check-sanitycheck cleantestlibs cleantmptestlogs check-stage2-rpass \
+	check-stage2-rpass-valgrind check-stage2-rfail check-stage2-cfail check-stage2-pfail \
+	check-stage2-rmake
 	$(Q)$(CFG_PYTHON) $(S)src/etc/check-summary.py tmp/*.log
 
 # Only check the docs.
-check-docs: cleantestlibs cleantmptestlogs check-stage2-docs
+check-docs: check-sanitycheck cleantestlibs cleantmptestlogs check-stage2-docs
 	$(Q)$(CFG_PYTHON) $(S)src/etc/check-summary.py tmp/*.log
 
 # Some less critical tests that are not prone to breakage.
 # Not run as part of the normal test suite, but tested by bors on checkin.
 check-secondary: check-build-compiletest check-build-lexer-verifier check-lexer check-pretty
+
+.PHONY: check-sanitycheck
+
+check-sanitycheck:
+	$(Q)$(CFG_PYTHON) $(S)src/etc/check-sanitycheck.py
 
 # check + check-secondary.
 #
@@ -294,8 +305,10 @@ check-stage$(1)-T-$(2)-H-$(3)-exec: \
 	check-stage$(1)-T-$(2)-H-$(3)-pfail-exec \
     check-stage$(1)-T-$(2)-H-$(3)-rpass-valgrind-exec \
     check-stage$(1)-T-$(2)-H-$(3)-rpass-full-exec \
+    check-stage$(1)-T-$(2)-H-$(3)-rfail-full-exec \
 	check-stage$(1)-T-$(2)-H-$(3)-cfail-full-exec \
 	check-stage$(1)-T-$(2)-H-$(3)-rmake-exec \
+	check-stage$(1)-T-$(2)-H-$(3)-rustdocck-exec \
         check-stage$(1)-T-$(2)-H-$(3)-crates-exec \
         check-stage$(1)-T-$(2)-H-$(3)-doc-crates-exec \
 	check-stage$(1)-T-$(2)-H-$(3)-bench-exec \
@@ -334,6 +347,7 @@ check-stage$(1)-T-$(2)-H-$(3)-pretty-exec: \
     check-stage$(1)-T-$(2)-H-$(3)-pretty-rpass-valgrind-exec \
 	check-stage$(1)-T-$(2)-H-$(3)-pretty-rpass-full-exec \
 	check-stage$(1)-T-$(2)-H-$(3)-pretty-rfail-exec \
+	check-stage$(1)-T-$(2)-H-$(3)-pretty-rfail-full-exec \
 	check-stage$(1)-T-$(2)-H-$(3)-pretty-bench-exec \
 	check-stage$(1)-T-$(2)-H-$(3)-pretty-pretty-exec
 
@@ -369,10 +383,10 @@ $(3)/stage$(1)/test/$(4)test-$(2)$$(X_$(2)): \
 		$$(CRATEFILE_$(4)) \
 		$$(TESTDEP_$(1)_$(2)_$(3)_$(4))
 	@$$(call E, rustc: $$@)
-	$(Q)CFG_LLVM_LINKAGE_FILE=$$(LLVM_LINKAGE_PATH_$(3)) \
+	$(Q)CFG_LLVM_LINKAGE_FILE=$$(LLVM_LINKAGE_PATH_$(2)) \
 	    $$(subst @,,$$(STAGE$(1)_T_$(2)_H_$(3))) -o $$@ $$< --test \
 		-L "$$(RT_OUTPUT_DIR_$(2))" \
-		-L "$$(LLVM_LIBDIR_$(2))" \
+		$$(LLVM_LIBDIR_RUSTFLAGS_$(2)) \
 		$$(RUSTFLAGS_$(4))
 
 endef
@@ -453,6 +467,7 @@ $(foreach host,$(CFG_HOST), \
 RPASS_RS := $(wildcard $(S)src/test/run-pass/*.rs)
 RPASS_VALGRIND_RS := $(wildcard $(S)src/test/run-pass-valgrind/*.rs)
 RPASS_FULL_RS := $(wildcard $(S)src/test/run-pass-fulldeps/*.rs)
+RFAIL_FULL_RS := $(wildcard $(S)src/test/run-fail-fulldeps/*.rs)
 CFAIL_FULL_RS := $(wildcard $(S)src/test/compile-fail-fulldeps/*.rs)
 RFAIL_RS := $(wildcard $(S)src/test/run-fail/*.rs)
 CFAIL_RS := $(wildcard $(S)src/test/compile-fail/*.rs)
@@ -463,6 +478,7 @@ DEBUGINFO_GDB_RS := $(wildcard $(S)src/test/debuginfo/*.rs)
 DEBUGINFO_LLDB_RS := $(wildcard $(S)src/test/debuginfo/*.rs)
 CODEGEN_RS := $(wildcard $(S)src/test/codegen/*.rs)
 CODEGEN_CC := $(wildcard $(S)src/test/codegen/*.cc)
+RUSTDOCCK_RS := $(wildcard $(S)src/test/rustdoc/*.rs)
 
 # perf tests are the same as bench tests only they run under
 # a performance monitor.
@@ -471,6 +487,7 @@ PERF_RS := $(wildcard $(S)src/test/bench/*.rs)
 RPASS_TESTS := $(RPASS_RS)
 RPASS_VALGRIND_TESTS := $(RPASS_VALGRIND_RS)
 RPASS_FULL_TESTS := $(RPASS_FULL_RS)
+RFAIL_FULL_TESTS := $(RFAIL_FULL_RS)
 CFAIL_FULL_TESTS := $(CFAIL_FULL_RS)
 RFAIL_TESTS := $(RFAIL_RS)
 CFAIL_TESTS := $(CFAIL_RS)
@@ -481,6 +498,7 @@ PRETTY_TESTS := $(PRETTY_RS)
 DEBUGINFO_GDB_TESTS := $(DEBUGINFO_GDB_RS)
 DEBUGINFO_LLDB_TESTS := $(DEBUGINFO_LLDB_RS)
 CODEGEN_TESTS := $(CODEGEN_RS) $(CODEGEN_CC)
+RUSTDOCCK_TESTS := $(RUSTDOCCK_RS)
 
 CTEST_SRC_BASE_rpass = run-pass
 CTEST_BUILD_BASE_rpass = run-pass
@@ -496,6 +514,11 @@ CTEST_SRC_BASE_rpass-full = run-pass-fulldeps
 CTEST_BUILD_BASE_rpass-full = run-pass-fulldeps
 CTEST_MODE_rpass-full = run-pass
 CTEST_RUNTOOL_rpass-full = $(CTEST_RUNTOOL)
+
+CTEST_SRC_BASE_rfail-full = run-fail-fulldeps
+CTEST_BUILD_BASE_rfail-full = run-fail-fulldeps
+CTEST_MODE_rfail-full = run-fail
+CTEST_RUNTOOL_rfail-full = $(CTEST_RUNTOOL)
 
 CTEST_SRC_BASE_cfail-full = compile-fail-fulldeps
 CTEST_BUILD_BASE_cfail-full = compile-fail-fulldeps
@@ -542,6 +565,11 @@ CTEST_BUILD_BASE_codegen = codegen
 CTEST_MODE_codegen = codegen
 CTEST_RUNTOOL_codegen = $(CTEST_RUNTOOL)
 
+CTEST_SRC_BASE_rustdocck = rustdoc
+CTEST_BUILD_BASE_rustdocck = rustdoc
+CTEST_MODE_rustdocck = rustdoc
+CTEST_RUNTOOL_rustdocck = $(CTEST_RUNTOOL)
+
 # CTEST_DISABLE_$(TEST_GROUP), if set, will cause the test group to be
 # disabled and the associated message to be printed as a warning
 # during attempts to run those tests.
@@ -554,16 +582,17 @@ ifeq ($(CFG_LLDB),)
 CTEST_DISABLE_debuginfo-lldb = "no lldb found"
 endif
 
-ifeq ($(CFG_CLANG),)
-CTEST_DISABLE_codegen = "no clang found"
-endif
-
 ifneq ($(CFG_OSTYPE),apple-darwin)
 CTEST_DISABLE_debuginfo-lldb = "lldb tests are only run on darwin"
 endif
 
 ifeq ($(CFG_OSTYPE),apple-darwin)
 CTEST_DISABLE_debuginfo-gdb = "gdb on darwin needs root"
+endif
+
+ifeq ($(findstring android, $(CFG_TARGET)), android)
+CTEST_DISABLE_debuginfo-gdb =
+CTEST_DISABLE_debuginfo-lldb = "lldb tests are disabled on android"
 endif
 
 # CTEST_DISABLE_NONSELFHOST_$(TEST_GROUP), if set, will cause that
@@ -590,7 +619,7 @@ TEST_SREQ$(1)_T_$(2)_H_$(3) = \
 
 # The tests select when to use debug configuration on their own;
 # remove directive, if present, from CFG_RUSTC_FLAGS (issue #7898).
-CTEST_RUSTC_FLAGS := $$(subst -C debug-assertions,,$$(CFG_RUSTC_FLAGS))
+CTEST_RUSTC_FLAGS := $$(subst -C debug-assertions,,$$(subst -C debug-assertions=on,,$$(CFG_RUSTC_FLAGS)))
 
 # The tests cannot be optimized while the rest of the compiler is optimized, so
 # filter out the optimization (if any) from rustc and then figure out if we need
@@ -600,17 +629,25 @@ ifndef CFG_DISABLE_OPTIMIZE_TESTS
 CTEST_RUSTC_FLAGS += -O
 endif
 
+# Analogously to the above, whether to pass `-g` when compiling tests
+# is a separate choice from whether to pass `-g` when building the
+# compiler and standard library themselves.
+CTEST_RUSTC_FLAGS := $$(subst -g,,$$(CTEST_RUSTC_FLAGS))
+ifdef CFG_ENABLE_DEBUGINFO_TESTS
+CTEST_RUSTC_FLAGS += -g
+endif
 
 CTEST_COMMON_ARGS$(1)-T-$(2)-H-$(3) := \
 		--compile-lib-path $$(HLIB$(1)_H_$(3)) \
         --run-lib-path $$(TLIB$(1)_T_$(2)_H_$(3)) \
         --rustc-path $$(HBIN$(1)_H_$(3))/rustc$$(X_$(3)) \
-        --clang-path $(if $(CFG_CLANG),$(CFG_CLANG),clang) \
+        --rustdoc-path $$(HBIN$(1)_H_$(3))/rustdoc$$(X_$(3)) \
         --llvm-bin-path $(CFG_LLVM_INST_DIR_$(CFG_BUILD))/bin \
         --aux-base $$(S)src/test/auxiliary/ \
         --stage-id stage$(1)-$(2) \
         --target $(2) \
         --host $(3) \
+	--python $$(CFG_PYTHON) \
         --gdb-version="$(CFG_GDB_VERSION)" \
         --lldb-version="$(CFG_LLDB_VERSION)" \
         --android-cross-path=$(CFG_ANDROID_CROSS_PATH) \
@@ -636,6 +673,7 @@ endif
 CTEST_DEPS_rpass_$(1)-T-$(2)-H-$(3) = $$(RPASS_TESTS)
 CTEST_DEPS_rpass-valgrind_$(1)-T-$(2)-H-$(3) = $$(RPASS_VALGRIND_TESTS)
 CTEST_DEPS_rpass-full_$(1)-T-$(2)-H-$(3) = $$(RPASS_FULL_TESTS) $$(CSREQ$(1)_T_$(3)_H_$(3)) $$(SREQ$(1)_T_$(2)_H_$(3))
+CTEST_DEPS_rfail-full_$(1)-T-$(2)-H-$(3) = $$(RFAIL_FULL_TESTS) $$(CSREQ$(1)_T_$(3)_H_$(3)) $$(SREQ$(1)_T_$(2)_H_$(3))
 CTEST_DEPS_cfail-full_$(1)-T-$(2)-H-$(3) = $$(CFAIL_FULL_TESTS) $$(CSREQ$(1)_T_$(3)_H_$(3)) $$(SREQ$(1)_T_$(2)_H_$(3))
 CTEST_DEPS_rfail_$(1)-T-$(2)-H-$(3) = $$(RFAIL_TESTS)
 CTEST_DEPS_cfail_$(1)-T-$(2)-H-$(3) = $$(CFAIL_TESTS)
@@ -647,6 +685,9 @@ CTEST_DEPS_debuginfo-lldb_$(1)-T-$(2)-H-$(3) = $$(DEBUGINFO_LLDB_TESTS) \
                                                $(S)src/etc/lldb_batchmode.py \
                                                $(S)src/etc/lldb_rust_formatters.py
 CTEST_DEPS_codegen_$(1)-T-$(2)-H-$(3) = $$(CODEGEN_TESTS)
+CTEST_DEPS_rustdocck_$(1)-T-$(2)-H-$(3) = $$(RUSTDOCCK_TESTS) \
+        $$(HBIN$(1)_H_$(3))/rustdoc$$(X_$(3)) \
+	$(S)src/etc/htmldocck.py
 
 endef
 
@@ -709,7 +750,8 @@ endif
 
 endef
 
-CTEST_NAMES = rpass rpass-valgrind rpass-full cfail-full rfail cfail pfail bench perf debuginfo-gdb debuginfo-lldb codegen
+CTEST_NAMES = rpass rpass-valgrind rpass-full rfail-full cfail-full rfail cfail pfail \
+	bench perf debuginfo-gdb debuginfo-lldb codegen rustdocck
 
 $(foreach host,$(CFG_HOST), \
  $(eval $(foreach target,$(CFG_TARGET), \
@@ -717,26 +759,32 @@ $(foreach host,$(CFG_HOST), \
    $(eval $(foreach name,$(CTEST_NAMES), \
    $(eval $(call DEF_RUN_COMPILETEST,$(stage),$(target),$(host),$(name))))))))))
 
-PRETTY_NAMES = pretty-rpass pretty-rpass-valgrind pretty-rpass-full pretty-rfail pretty-bench pretty-pretty
+PRETTY_NAMES = pretty-rpass pretty-rpass-valgrind pretty-rpass-full pretty-rfail-full pretty-rfail \
+    pretty-bench pretty-pretty
 PRETTY_DEPS_pretty-rpass = $(RPASS_TESTS)
 PRETTY_DEPS_pretty-rpass-valgrind = $(RPASS_VALGRIND_TESTS)
 PRETTY_DEPS_pretty-rpass-full = $(RPASS_FULL_TESTS)
+PRETTY_DEPS_pretty-rfail-full = $(RFAIL_FULL_TESTS)
 PRETTY_DEPS_pretty-rfail = $(RFAIL_TESTS)
 PRETTY_DEPS_pretty-bench = $(BENCH_TESTS)
 PRETTY_DEPS_pretty-pretty = $(PRETTY_TESTS)
-# The stage- and host-specific dependencies are for e.g. macro_crate_test which pulls in
-# external crates.
-PRETTY_DEPS$(1)_H_$(3)_pretty-rpass =
-PRETTY_DEPS$(1)_H_$(3)_pretty-rpass-full = $$(HLIB$(1)_H_$(3))/stamp.syntax $$(HLIB$(1)_H_$(3))/stamp.rustc
-PRETTY_DEPS$(1)_H_$(3)_pretty-rfail =
-PRETTY_DEPS$(1)_H_$(3)_pretty-bench =
-PRETTY_DEPS$(1)_H_$(3)_pretty-pretty =
 PRETTY_DIRNAME_pretty-rpass = run-pass
 PRETTY_DIRNAME_pretty-rpass-valgrind = run-pass-valgrind
 PRETTY_DIRNAME_pretty-rpass-full = run-pass-fulldeps
+PRETTY_DIRNAME_pretty-rfail-full = run-fail-fulldeps
 PRETTY_DIRNAME_pretty-rfail = run-fail
 PRETTY_DIRNAME_pretty-bench = bench
 PRETTY_DIRNAME_pretty-pretty = pretty
+
+define DEF_PRETTY_FULLDEPS
+PRETTY_DEPS$(1)_T_$(2)_H_$(3)_pretty-rpass-full = $$(CSREQ$(1)_T_$(3)_H_$(3))
+PRETTY_DEPS$(1)_T_$(2)_H_$(3)_pretty-rfail-full = $$(CSREQ$(1)_T_$(3)_H_$(3))
+endef
+
+$(foreach host,$(CFG_HOST), \
+ $(foreach target,$(CFG_TARGET), \
+  $(foreach stage,$(STAGES), \
+   $(eval $(call DEF_PRETTY_FULLDEPS,$(stage),$(target),$(host))))))
 
 define DEF_RUN_PRETTY_TEST
 
@@ -751,7 +799,7 @@ check-stage$(1)-T-$(2)-H-$(3)-$(4)-exec: $$(call TEST_OK_FILE,$(1),$(2),$(3),$(4
 $$(call TEST_OK_FILE,$(1),$(2),$(3),$(4)): \
 	        $$(TEST_SREQ$(1)_T_$(2)_H_$(3)) \
 	        $$(PRETTY_DEPS_$(4)) \
-	        $$(PRETTY_DEPS$(1)_H_$(3)_$(4))
+	        $$(PRETTY_DEPS$(1)_T_$(2)_H_$(3)_$(4))
 	@$$(call E, run pretty-rpass [$(2)]: $$<)
 	$$(Q)touch $$@.start_time
 	$$(Q)$$(call CFG_RUN_CTEST_$(2),$(1),$$<,$(3)) \
@@ -842,7 +890,7 @@ ifeq ($(2),$$(CFG_BUILD))
 $$(call TEST_OK_FILE,$(1),$(2),$(3),doc-crate-$(4)): $$(CRATEDOCTESTDEP_$(1)_$(2)_$(3)_$(4))
 	@$$(call E, run doc-crate-$(4) [$(2)])
 	$$(Q)touch $$@.start_time
-	$$(Q)CFG_LLVM_LINKAGE_FILE=$$(LLVM_LINKAGE_PATH_$(3)) \
+	$$(Q)CFG_LLVM_LINKAGE_FILE=$$(LLVM_LINKAGE_PATH_$(2)) \
 	    $$(RUSTDOC_$(1)_T_$(2)_H_$(3)) --test --cfg dox \
 	        $$(CRATEFILE_$(4)) --test-args "$$(TESTARGS)" && \
 	        touch -r $$@.start_time $$@ && rm $$@.start_time
@@ -870,6 +918,7 @@ TEST_GROUPS = \
 	rpass \
     rpass-valgrind \
 	rpass-full \
+	rfail-full \
 	cfail-full \
 	rfail \
 	cfail \
@@ -877,6 +926,7 @@ TEST_GROUPS = \
 	bench \
 	perf \
 	rmake \
+	rustdocck \
 	debuginfo-gdb \
 	debuginfo-lldb \
 	codegen \
@@ -886,6 +936,7 @@ TEST_GROUPS = \
 	pretty-rpass \
     pretty-rpass-valgrind \
 	pretty-rpass-full \
+	pretty-rfail-full \
 	pretty-rfail \
 	pretty-bench \
 	pretty-pretty \

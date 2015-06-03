@@ -8,6 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+// compile-flags: -Z parse-only
+
 struct A { foo: isize }
 
 fn a() -> A { panic!() }
@@ -15,4 +17,3 @@ fn a() -> A { panic!() }
 fn main() {
     let A { .., } = a(); //~ ERROR: expected `}`
 }
-

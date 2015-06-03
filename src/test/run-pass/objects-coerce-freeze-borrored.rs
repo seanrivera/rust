@@ -10,17 +10,18 @@
 
 // Test that we can coerce an `@Object` to an `&Object`
 
+
 trait Foo {
-    fn foo(&self) -> uint;
-    fn bar(&mut self) -> uint;
+    fn foo(&self) -> usize;
+    fn bar(&mut self) -> usize;
 }
 
-impl Foo for uint {
-    fn foo(&self) -> uint {
+impl Foo for usize {
+    fn foo(&self) -> usize {
         *self
     }
 
-    fn bar(&mut self) -> uint {
+    fn bar(&mut self) -> usize {
         *self += 1;
         *self
     }
@@ -34,13 +35,13 @@ fn do_it_mut(obj: &mut Foo) {
     do_it_imm(obj, y);
 }
 
-fn do_it_imm(obj: &Foo, v: uint) {
+fn do_it_imm(obj: &Foo, v: usize) {
     let y = obj.foo();
     assert_eq!(v, y);
 }
 
 pub fn main() {
-    let mut x = 22;
+    let mut x: usize = 22;
     let obj = &mut x as &mut Foo;
     do_it_mut(obj);
     do_it_imm(obj, 23);

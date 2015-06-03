@@ -11,6 +11,7 @@
 // Test that we are handle to correctly handle a projection type
 // that appears in a supertrait bound. Issue #20559.
 
+
 trait A
 {
     type TA;

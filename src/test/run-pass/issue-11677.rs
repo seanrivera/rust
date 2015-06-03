@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 #![allow(dead_code)]
 
 // this code used to cause an ICE
@@ -22,7 +23,7 @@ struct S<T> {f: Box<X<T>+'static>,
              g: Box<X<T>+'static>}
 
 struct F;
-impl X<int> for F {
+impl X<isize> for F {
 }
 
 fn main() {

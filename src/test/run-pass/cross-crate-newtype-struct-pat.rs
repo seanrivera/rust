@@ -10,6 +10,7 @@
 
 // aux-build:newtype_struct_xc.rs
 
+
 extern crate newtype_struct_xc;
 
 pub fn main() {

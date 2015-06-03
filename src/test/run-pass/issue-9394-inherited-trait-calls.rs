@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 trait Base: Base2 + Base3{
     fn foo(&self) -> String;
     fn foo1(&self) -> String;

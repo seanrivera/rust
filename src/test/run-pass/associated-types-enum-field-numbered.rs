@@ -10,6 +10,7 @@
 
 // Test associated types appearing in tuple-like enum variants.
 
+
 use self::VarValue::*;
 
 pub trait UnifyKey {

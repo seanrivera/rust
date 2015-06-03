@@ -11,7 +11,7 @@
 #![allow(dead_code)] // FFI wrappers
 
 use llvm;
-use llvm::{CallConv, AtomicBinOp, AtomicOrdering, AsmDialect, AttrBuilder};
+use llvm::{CallConv, AtomicBinOp, AtomicOrdering, SynchronizationScope, AsmDialect, AttrBuilder};
 use llvm::{Opcode, IntPredicate, RealPredicate, False};
 use llvm::{ValueRef, BasicBlockRef, BuilderRef, ModuleRef};
 use trans::base;
@@ -140,13 +140,13 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         }
     }
 
-    pub fn switch(&self, v: ValueRef, else_llbb: BasicBlockRef, num_cases: uint) -> ValueRef {
+    pub fn switch(&self, v: ValueRef, else_llbb: BasicBlockRef, num_cases: usize) -> ValueRef {
         unsafe {
             llvm::LLVMBuildSwitch(self.llbuilder, v, else_llbb, num_cases as c_uint)
         }
     }
 
-    pub fn indirect_br(&self, addr: ValueRef, num_dests: uint) {
+    pub fn indirect_br(&self, addr: ValueRef, num_dests: usize) {
         self.count_insn("indirectbr");
         unsafe {
             llvm::LLVMBuildIndirectBr(self.llbuilder, addr, num_dests as c_uint);
@@ -509,18 +509,18 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         value
     }
 
-    pub fn store(&self, val: ValueRef, ptr: ValueRef) {
+    pub fn store(&self, val: ValueRef, ptr: ValueRef) -> ValueRef {
         debug!("Store {} -> {}",
                self.ccx.tn().val_to_string(val),
                self.ccx.tn().val_to_string(ptr));
         assert!(!self.llbuilder.is_null());
         self.count_insn("store");
         unsafe {
-            llvm::LLVMBuildStore(self.llbuilder, val, ptr);
+            llvm::LLVMBuildStore(self.llbuilder, val, ptr)
         }
     }
 
-    pub fn volatile_store(&self, val: ValueRef, ptr: ValueRef) {
+    pub fn volatile_store(&self, val: ValueRef, ptr: ValueRef) -> ValueRef {
         debug!("Store {} -> {}",
                self.ccx.tn().val_to_string(val),
                self.ccx.tn().val_to_string(ptr));
@@ -529,6 +529,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         unsafe {
             let insn = llvm::LLVMBuildStore(self.llbuilder, val, ptr);
             llvm::LLVMSetVolatile(insn, llvm::True);
+            insn
         }
     }
 
@@ -555,7 +556,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     // Simple wrapper around GEP that takes an array of ints and wraps them
     // in C_i32()
     #[inline]
-    pub fn gepi(&self, base: ValueRef, ixs: &[uint]) -> ValueRef {
+    pub fn gepi(&self, base: ValueRef, ixs: &[usize]) -> ValueRef {
         // Small vector optimization. This should catch 100% of the cases that
         // we care about.
         if ixs.len() < 16 {
@@ -579,7 +580,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         }
     }
 
-    pub fn struct_gep(&self, ptr: ValueRef, idx: uint) -> ValueRef {
+    pub fn struct_gep(&self, ptr: ValueRef, idx: usize) -> ValueRef {
         self.count_insn("structgep");
         unsafe {
             llvm::LLVMBuildStructGEP(self.llbuilder, ptr, idx as c_uint, noname())
@@ -886,7 +887,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         }
     }
 
-    pub fn vector_splat(&self, num_elts: uint, elt: ValueRef) -> ValueRef {
+    pub fn vector_splat(&self, num_elts: usize, elt: ValueRef) -> ValueRef {
         unsafe {
             let elt_ty = val_ty(elt);
             let undef = llvm::LLVMGetUndef(Type::vector(&elt_ty, num_elts as u64).to_ref());
@@ -896,7 +897,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         }
     }
 
-    pub fn extract_value(&self, agg_val: ValueRef, idx: uint) -> ValueRef {
+    pub fn extract_value(&self, agg_val: ValueRef, idx: usize) -> ValueRef {
         self.count_insn("extractvalue");
         unsafe {
             llvm::LLVMBuildExtractValue(self.llbuilder, agg_val, idx as c_uint, noname())
@@ -904,7 +905,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     }
 
     pub fn insert_value(&self, agg_val: ValueRef, elt: ValueRef,
-                       idx: uint) -> ValueRef {
+                       idx: usize) -> ValueRef {
         self.count_insn("insertvalue");
         unsafe {
             llvm::LLVMBuildInsertValue(self.llbuilder, agg_val, elt, idx as c_uint,
@@ -940,7 +941,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             let m: ModuleRef = llvm::LLVMGetGlobalParent(fn_);
             let p = "llvm.trap\0".as_ptr();
             let t: ValueRef = llvm::LLVMGetNamedFunction(m, p as *const _);
-            assert!((t as int != 0));
+            assert!((t as isize != 0));
             let args: &[ValueRef] = &[];
             self.count_insn("trap");
             llvm::LLVMBuildCall(
@@ -948,7 +949,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         }
     }
 
-    pub fn landing_pad(&self, ty: Type, pers_fn: ValueRef, num_clauses: uint) -> ValueRef {
+    pub fn landing_pad(&self, ty: Type, pers_fn: ValueRef, num_clauses: usize) -> ValueRef {
         self.count_insn("landingpad");
         unsafe {
             llvm::LLVMBuildLandingPad(
@@ -988,9 +989,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         }
     }
 
-    pub fn atomic_fence(&self, order: AtomicOrdering) {
+    pub fn atomic_fence(&self, order: AtomicOrdering, scope: SynchronizationScope) {
         unsafe {
-            llvm::LLVMBuildAtomicFence(self.llbuilder, order);
+            llvm::LLVMBuildAtomicFence(self.llbuilder, order, scope);
         }
     }
 }

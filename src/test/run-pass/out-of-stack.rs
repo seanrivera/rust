@@ -9,10 +9,11 @@
 // except according to those terms.
 
 // ignore-android: FIXME (#20004)
+// ignore-musl
 
 #![feature(asm)]
 
-use std::old_io::process::Command;
+use std::process::Command;
 use std::env;
 
 // lifted from the test module
@@ -42,12 +43,12 @@ fn main() {
     } else {
         let silent = Command::new(&args[0]).arg("silent").output().unwrap();
         assert!(!silent.status.success());
-        let error = String::from_utf8_lossy(&silent.error);
+        let error = String::from_utf8_lossy(&silent.stderr);
         assert!(error.contains("has overflowed its stack"));
 
         let loud = Command::new(&args[0]).arg("loud").output().unwrap();
         assert!(!loud.status.success());
-        let error = String::from_utf8_lossy(&silent.error);
+        let error = String::from_utf8_lossy(&silent.stderr);
         assert!(error.contains("has overflowed its stack"));
     }
 }

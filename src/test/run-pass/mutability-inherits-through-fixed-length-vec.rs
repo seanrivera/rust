@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 fn test1() {
     let mut ints = [0; 32];
     ints[0] += 1;

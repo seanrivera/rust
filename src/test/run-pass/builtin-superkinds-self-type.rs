@@ -11,6 +11,7 @@
 // Tests the ability for the Self type in default methods to use
 // capabilities granted by builtin kinds as supertraits.
 
+
 use std::sync::mpsc::{Sender, channel};
 
 trait Foo : Send + Sized + 'static {

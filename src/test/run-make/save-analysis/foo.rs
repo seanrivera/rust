@@ -9,67 +9,76 @@
 // except according to those terms.
 
 #![ crate_name = "test" ]
-#![allow(unstable)]
 #![feature(box_syntax)]
+#![feature(rustc_private)]
+
 
 extern crate graphviz;
 // A simple rust project
 
-extern crate "flate" as myflate;
+extern crate krate2;
+extern crate krate2 as krate3;
+extern crate flate as myflate;
 
+use graphviz::RenderOption;
 use std::collections::{HashMap,HashSet};
 use std::cell::RefCell;
-use std::old_io::stdio::println;
+use std::io::Write;
 
 
 use sub::sub2 as msalias;
 use sub::sub2;
 use sub::sub2::nested_struct as sub_struct;
-use std::num::Float;
-use std::num::cast;
-use std::num::{from_int,from_i8,from_i32};
 
 use std::mem::size_of;
+
+use std::char::from_u32;
 
 static uni: &'static str = "Les Miséééééééérables";
 static yy: usize = 25;
 
-static bob: Option<&'static [isize]> = None;
+static bob: Option<graphviz::RenderOption> = None;
 
 // buglink test - see issue #1337.
 
 fn test_alias<I: Iterator>(i: Option<<I as Iterator>::Item>) {
-    let s = sub_struct{ field2: 45, };
+    let s = sub_struct{ field2: 45u32, };
 
     // import tests
-    fn foo(x: &Float) {}
-    let _: Option<u8> = from_i32(45);
+    fn foo(x: &Write) {}
+    let _: Option<_> = from_u32(45);
 
-    let x = 42;
+    let x = 42usize;
 
+    krate2::hello();
+    krate3::hello();
     myflate::deflate_bytes(&[]);
 
-    let x = (3, 4);
+    let x = (3isize, 4usize);
     let y = x.1;
 }
 
-struct TupStruct(int, int, Box<str>);
+struct TupStruct(isize, isize, Box<str>);
 
-fn test_tup_struct(x: TupStruct) -> int {
+fn test_tup_struct(x: TupStruct) -> isize {
     x.1
+}
+
+fn println(s: &str) {
+    std::io::stdout().write_all(s.as_bytes());
 }
 
 mod sub {
     pub mod sub2 {
-        use std::old_io::stdio::println;
+        use std::io::Write;
         pub mod sub3 {
-            use std::old_io::stdio::println;
+            use std::io::Write;
             pub fn hello() {
-                println("hello from module 3");
+                ::println("hello from module 3");
             }
         }
         pub fn hello() {
-            println("hello from a module");
+            ::println("hello from a module");
         }
 
         pub struct nested_struct {
@@ -99,7 +108,7 @@ struct some_fields {
 type SF = some_fields;
 
 trait SuperTrait {
-    fn dummy(&self) { }
+    fn qux(&self) { panic!(); }
 }
 
 trait SomeTrait: SuperTrait {
@@ -142,6 +151,7 @@ impl some_fields {
     }
 
     fn align_to<T>(&mut self) {
+
     }
 
     fn test(&mut self) {
@@ -179,7 +189,7 @@ enum SomeEnum<'a> {
     MyTypes(MyType, MyType)
 }
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 enum SomeOtherEnum {
     SomeConst1,
     SomeConst2,
@@ -197,9 +207,7 @@ fn matchSomeEnum(val: SomeEnum) {
         SomeEnum::Ints(int1, int2) => { println(&(int1+int2).to_string()); }
         SomeEnum::Floats(float1, float2) => { println(&(float2*float1).to_string()); }
         SomeEnum::Strings(_, _, s3) => { println(s3); }
-        SomeEnum::MyTypes(mt1, mt2) => {
-            println(&(mt1.field1 - mt2.field1).to_string());
-        }
+        SomeEnum::MyTypes(mt1, mt2) => { println(&(mt1.field1 - mt2.field1).to_string()); }
     }
 }
 
@@ -245,10 +253,9 @@ fn hello<X: SomeTrait>((z, a) : (u32, String), ex: X) {
     let x = 32.0f32;
     let _ = (x + ((x * x) + 1.0).sqrt()).ln();
 
-    // FIXME (#22405): Replace `Box::new` with `box` here when/if possible.
-    let s: Box<SomeTrait> = Box::new(some_fields {field1: 43});
+    let s: Box<SomeTrait> = box some_fields {field1: 43};
     let s2: Box<some_fields> =  box some_fields {field1: 43};
-    let s3: Box<_> = box nofields;
+    let s3 = box nofields;
 
     s.Method(43);
     s3.Method(43);
@@ -259,8 +266,6 @@ fn hello<X: SomeTrait>((z, a) : (u32, String), ex: X) {
     let y: u32 = 56;
     // static method on struct
     let r = some_fields::stat(y);
-    // trait static method, calls override
-    let r = SubTrait::stat2(&*s2);
     // trait static method, calls default
     let r = SubTrait::stat2(&*s3);
 
@@ -283,7 +288,7 @@ pub struct blah {
 }
 
 fn main() { // foo
-    let s: Box<_> = box some_fields {field1: 43};
+    let s = box some_fields {field1: 43};
     hello((43, "a".to_string()), *s);
     sub::sub2::hello();
     sub2::sub3::hello();
@@ -322,9 +327,18 @@ fn main() { // foo
     matchSomeEnum(s7);
     let s8: SomeOtherEnum = SomeOtherEnum::SomeConst2;
     matchSomeOtherEnum(s8);
-    let s9: SomeStructEnum =
-        SomeStructEnum::EnumStruct2{f1: box some_fields{field1:10}, f2: box s2};
+    let s9: SomeStructEnum = SomeStructEnum::EnumStruct2{ f1: box some_fields{ field1:10 },
+                                                          f2: box s2 };
     matchSomeStructEnum(s9);
+
+    for x in &vec![1, 2, 3] {
+        let _y = x;
+    }
+
+    let s7: SomeEnum = SomeEnum::Strings("one", "two", "three");
+    if let SomeEnum::Strings(..) = s7 {
+        println!("hello!");
+    }
 }
 
 impl Iterator for nofields {
@@ -338,3 +352,15 @@ impl Iterator for nofields {
         panic!()
     }
 }
+
+trait Pattern<'a> {
+    type Searcher;
+}
+
+struct CharEqPattern;
+
+impl<'a> Pattern<'a> for CharEqPattern {
+    type Searcher = CharEqPattern;
+}
+
+struct CharSearcher<'a>(<CharEqPattern as Pattern<'a>>::Searcher);

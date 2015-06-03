@@ -8,19 +8,17 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::cell::RefCell;
+use std::cell::{RefCell, Cell};
 use std::collections::{HashSet, HashMap};
 use std::dynamic_lib::DynamicLibrary;
 use std::env;
 use std::ffi::OsString;
-use std::old_io;
+use std::io::prelude::*;
 use std::io;
 use std::path::PathBuf;
 use std::process::Command;
 use std::str;
-use std::sync::mpsc::channel;
-use std::thread;
-use std::thunk::Thunk;
+use std::sync::{Arc, Mutex};
 
 use testing;
 use rustc_lint;
@@ -40,14 +38,20 @@ use html::markdown;
 use passes;
 use visit_ast::RustdocVisitor;
 
+#[derive(Clone, Default)]
+pub struct TestOptions {
+    pub no_crate_inject: bool,
+    pub attrs: Vec<String>,
+}
+
 pub fn run(input: &str,
            cfgs: Vec<String>,
            libs: SearchPaths,
            externs: core::Externs,
            mut test_args: Vec<String>,
            crate_name: Option<String>)
-           -> int {
-    let input_path = PathBuf::new(input);
+           -> isize {
+    let input_path = PathBuf::from(input);
     let input = config::Input::File(input_path.clone());
 
     let sessopts = config::Options {
@@ -61,9 +65,9 @@ pub fn run(input: &str,
     };
 
     let codemap = CodeMap::new();
-    let diagnostic_handler = diagnostic::default_handler(diagnostic::Auto, None, true);
+    let diagnostic_handler = diagnostic::Handler::new(diagnostic::Auto, None, true);
     let span_diagnostic_handler =
-    diagnostic::mk_span_handler(diagnostic_handler, codemap);
+    diagnostic::SpanHandler::new(diagnostic_handler, codemap);
 
     let sess = session::build_session_(sessopts,
                                       Some(input_path.clone()),
@@ -77,6 +81,8 @@ pub fn run(input: &str,
                                                      "rustdoc-test", None)
         .expect("phase_2_configure_and_expand aborted in rustdoc!");
 
+    let opts = scrape_test_config(&krate);
+
     let ctx = core::DocContext {
         krate: &krate,
         maybe_typed: core::NotTyped(sess),
@@ -86,6 +92,7 @@ pub fn run(input: &str,
         external_typarams: RefCell::new(None),
         inlined: RefCell::new(None),
         populated_crate_impls: RefCell::new(HashSet::new()),
+        deref_trait_did: Cell::new(None),
     };
 
     let mut v = RustdocVisitor::new(&ctx, None);
@@ -101,7 +108,8 @@ pub fn run(input: &str,
     let mut collector = Collector::new(krate.name.to_string(),
                                        libs,
                                        externs,
-                                       false);
+                                       false,
+                                       opts);
     collector.fold_crate(krate);
 
     test_args.insert(0, "rustdoctest".to_string());
@@ -111,13 +119,45 @@ pub fn run(input: &str,
     0
 }
 
-#[allow(deprecated)]
+// Look for #![doc(test(no_crate_inject))], used by crates in the std facade
+fn scrape_test_config(krate: &::syntax::ast::Crate) -> TestOptions {
+    use syntax::attr::AttrMetaMethods;
+    use syntax::print::pprust;
+
+    let mut opts = TestOptions {
+        no_crate_inject: false,
+        attrs: Vec::new(),
+    };
+
+    let attrs = krate.attrs.iter().filter(|a| a.check_name("doc"))
+                     .filter_map(|a| a.meta_item_list())
+                     .flat_map(|l| l.iter())
+                     .filter(|a| a.check_name("test"))
+                     .filter_map(|a| a.meta_item_list())
+                     .flat_map(|l| l.iter());
+    for attr in attrs {
+        if attr.check_name("no_crate_inject") {
+            opts.no_crate_inject = true;
+        }
+        if attr.check_name("attr") {
+            if let Some(l) = attr.meta_item_list() {
+                for item in l {
+                    opts.attrs.push(pprust::meta_item_to_string(item));
+                }
+            }
+        }
+    }
+
+    return opts;
+}
+
 fn runtest(test: &str, cratename: &str, libs: SearchPaths,
            externs: core::Externs,
-           should_fail: bool, no_run: bool, as_test_harness: bool) {
+           should_panic: bool, no_run: bool, as_test_harness: bool,
+           opts: &TestOptions) {
     // the test harness wants its own `main` & top level functions, so
     // never wrap the test in `fn main() { ... }`
-    let test = maketest(test, Some(cratename), true, as_test_harness);
+    let test = maketest(test, Some(cratename), as_test_harness, opts);
     let input = config::Input::Str(test.to_string());
 
     let sessopts = config::Options {
@@ -140,36 +180,35 @@ fn runtest(test: &str, cratename: &str, libs: SearchPaths,
     // an explicit handle into rustc to collect output messages, but we also
     // want to catch the error message that rustc prints when it fails.
     //
-    // We take our task-local stderr (likely set by the test runner), and move
-    // it into another task. This helper task then acts as a sink for both the
-    // stderr of this task and stderr of rustc itself, copying all the info onto
-    // the stderr channel we originally started with.
+    // We take our thread-local stderr (likely set by the test runner) and replace
+    // it with a sink that is also passed to rustc itself. When this function
+    // returns the output of the sink is copied onto the output of our own thread.
     //
-    // The basic idea is to not use a default_handler() for rustc, and then also
+    // The basic idea is to not use a default Handler for rustc, and then also
     // not print things by default to the actual stderr.
-    let (tx, rx) = channel();
-    let w1 = old_io::ChanWriter::new(tx);
-    let w2 = w1.clone();
-    let old = old_io::stdio::set_stderr(box w1);
-    thread::spawn(move || {
-        let mut p = old_io::ChanReader::new(rx);
-        let mut err = match old {
-            Some(old) => {
-                // Chop off the `Send` bound.
-                let old: Box<Writer> = old;
-                old
-            }
-            None => box old_io::stderr() as Box<Writer>,
-        };
-        old_io::util::copy(&mut p, &mut err).unwrap();
-    });
-    let emitter = diagnostic::EmitterWriter::new(box w2, None);
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+    impl Write for Sink {
+        fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+            Write::write(&mut *self.0.lock().unwrap(), data)
+        }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+    struct Bomb(Arc<Mutex<Vec<u8>>>, Box<Write+Send>);
+    impl Drop for Bomb {
+        fn drop(&mut self) {
+            let _ = self.1.write_all(&self.0.lock().unwrap());
+        }
+    }
+    let data = Arc::new(Mutex::new(Vec::new()));
+    let emitter = diagnostic::EmitterWriter::new(box Sink(data.clone()), None);
+    let old = io::set_panic(box Sink(data.clone()));
+    let _bomb = Bomb(data, old.unwrap_or(box io::stdout()));
 
     // Compile the code
     let codemap = CodeMap::new();
-    let diagnostic_handler = diagnostic::mk_handler(true, box emitter);
+    let diagnostic_handler = diagnostic::Handler::with_emitter(true, box emitter);
     let span_diagnostic_handler =
-        diagnostic::mk_span_handler(diagnostic_handler, codemap);
+        diagnostic::SpanHandler::new(diagnostic_handler, codemap);
 
     let sess = session::build_session_(sessopts,
                                        None,
@@ -194,7 +233,7 @@ fn runtest(test: &str, cratename: &str, libs: SearchPaths,
     // environment to ensure that the target loads the right libraries at
     // runtime. It would be a sad day if the *host* libraries were loaded as a
     // mistake.
-    let mut cmd = Command::new(&outdir.path().join("rust-out"));
+    let mut cmd = Command::new(&outdir.path().join("rust_out"));
     let var = DynamicLibrary::envvar();
     let newpath = {
         let path = env::var_os(var).unwrap_or(OsString::new());
@@ -210,46 +249,79 @@ fn runtest(test: &str, cratename: &str, libs: SearchPaths,
                             " - maybe your tempdir is mounted with noexec?"
                         } else { "" }),
         Ok(out) => {
-            if should_fail && out.status.success() {
+            if should_panic && out.status.success() {
                 panic!("test executable succeeded when it should have failed");
-            } else if !should_fail && !out.status.success() {
-                panic!("test executable failed:\n{:?}",
-                      str::from_utf8(&out.stdout));
+            } else if !should_panic && !out.status.success() {
+                panic!("test executable failed:\n{}\n{}",
+                       str::from_utf8(&out.stdout).unwrap_or(""),
+                       str::from_utf8(&out.stderr).unwrap_or(""));
             }
         }
     }
 }
 
-pub fn maketest(s: &str, cratename: Option<&str>, lints: bool, dont_insert_main: bool) -> String {
+pub fn maketest(s: &str, cratename: Option<&str>, dont_insert_main: bool,
+                opts: &TestOptions) -> String {
+    let (crate_attrs, everything_else) = partition_source(s);
+
     let mut prog = String::new();
-    if lints {
-        prog.push_str(r"
-#![allow(unused_variables, unused_assignments, unused_mut, unused_attributes, dead_code)]
-");
+
+    // First push any outer attributes from the example, assuming they
+    // are intended to be crate attributes.
+    prog.push_str(&crate_attrs);
+
+    // Next, any attributes for other aspects such as lints.
+    for attr in &opts.attrs {
+        prog.push_str(&format!("#![{}]\n", attr));
     }
 
     // Don't inject `extern crate std` because it's already injected by the
     // compiler.
-    if !s.contains("extern crate") && cratename != Some("std") {
+    if !s.contains("extern crate") && !opts.no_crate_inject && cratename != Some("std") {
         match cratename {
             Some(cratename) => {
                 if s.contains(cratename) {
-                    prog.push_str(&format!("extern crate {};\n",
-                                           cratename));
+                    prog.push_str(&format!("extern crate {};\n", cratename));
                 }
             }
             None => {}
         }
     }
     if dont_insert_main || s.contains("fn main") {
-        prog.push_str(s);
+        prog.push_str(&everything_else);
     } else {
         prog.push_str("fn main() {\n    ");
-        prog.push_str(&s.replace("\n", "\n    "));
+        prog.push_str(&everything_else.replace("\n", "\n    "));
         prog.push_str("\n}");
     }
 
+    info!("final test program: {}", prog);
+
     return prog
+}
+
+fn partition_source(s: &str) -> (String, String) {
+    use rustc_unicode::str::UnicodeStr;
+
+    let mut after_header = false;
+    let mut before = String::new();
+    let mut after = String::new();
+
+    for line in s.lines() {
+        let trimline = line.trim();
+        let header = trimline.is_whitespace() ||
+            trimline.starts_with("#![feature");
+        if !header || after_header {
+            after_header = true;
+            after.push_str(line);
+            after.push_str("\n");
+        } else {
+            before.push_str(line);
+            before.push_str("\n");
+        }
+    }
+
+    return (before, after);
 }
 
 pub struct Collector {
@@ -257,15 +329,16 @@ pub struct Collector {
     names: Vec<String>,
     libs: SearchPaths,
     externs: core::Externs,
-    cnt: uint,
+    cnt: usize,
     use_headers: bool,
     current_header: Option<String>,
     cratename: String,
+    opts: TestOptions,
 }
 
 impl Collector {
     pub fn new(cratename: String, libs: SearchPaths, externs: core::Externs,
-               use_headers: bool) -> Collector {
+               use_headers: bool, opts: TestOptions) -> Collector {
         Collector {
             tests: Vec::new(),
             names: Vec::new(),
@@ -275,11 +348,13 @@ impl Collector {
             use_headers: use_headers,
             current_header: None,
             cratename: cratename,
+            opts: opts,
         }
     }
 
     pub fn add_test(&mut self, test: String,
-                    should_fail: bool, no_run: bool, should_ignore: bool, as_test_harness: bool) {
+                    should_panic: bool, no_run: bool, should_ignore: bool,
+                    as_test_harness: bool) {
         let name = if self.use_headers {
             let s = self.current_header.as_ref().map(|s| &**s).unwrap_or("");
             format!("{}_{}", s, self.cnt)
@@ -290,21 +365,24 @@ impl Collector {
         let libs = self.libs.clone();
         let externs = self.externs.clone();
         let cratename = self.cratename.to_string();
+        let opts = self.opts.clone();
         debug!("Creating test {}: {}", name, test);
         self.tests.push(testing::TestDescAndFn {
             desc: testing::TestDesc {
                 name: testing::DynTestName(name),
                 ignore: should_ignore,
-                should_fail: testing::ShouldFail::No, // compiler failures are test failures
+                // compiler failures are test failures
+                should_panic: testing::ShouldPanic::No,
             },
-            testfn: testing::DynTestFn(Thunk::new(move|| {
+            testfn: testing::DynTestFn(Box::new(move|| {
                 runtest(&test,
                         &cratename,
                         libs,
                         externs,
-                        should_fail,
+                        should_panic,
                         no_run,
-                        as_test_harness);
+                        as_test_harness,
+                        &opts);
             }))
         });
     }
@@ -332,7 +410,7 @@ impl Collector {
 impl DocFolder for Collector {
     fn fold_item(&mut self, item: clean::Item) -> Option<clean::Item> {
         let pushed = match item.name {
-            Some(ref name) if name.len() == 0 => false,
+            Some(ref name) if name.is_empty() => false,
             Some(ref name) => { self.names.push(name.to_string()); true }
             None => false
         };

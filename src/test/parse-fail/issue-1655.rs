@@ -8,7 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// error-pattern:expected one of `!` or `[`, found `vec`
+// compile-flags: -Z parse-only
+
+// error-pattern:expected `[`, found `vec`
 mod blade_runner {
     #vec[doc(
         brief = "Blade Runner is probably the best movie ever",

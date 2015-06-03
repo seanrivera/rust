@@ -1,13 +1,16 @@
 % Patterns
 
-We've made use of patterns a few times in the guide: first with `let` bindings,
-then with `match` statements. Let's go on a whirlwind tour of all of the things
-patterns can do!
+Patterns are quite common in Rust. We use them in [variable
+bindings][bindings], [match statements][match], and other places, too. Let’s go
+on a whirlwind tour of all of the things patterns can do!
+
+[bindings]: variable-bindings.html
+[match]: match.html
 
 A quick refresher: you can match against literals directly, and `_` acts as an
-*any* case:
+‘any’ case:
 
-```{rust}
+```rust
 let x = 1;
 
 match x {
@@ -18,9 +21,13 @@ match x {
 }
 ```
 
+This prints `one`.
+
+# Multiple patterns
+
 You can match multiple patterns with `|`:
 
-```{rust}
+```rust
 let x = 1;
 
 match x {
@@ -30,9 +37,13 @@ match x {
 }
 ```
 
+This prints `one or two`.
+
+# Ranges
+
 You can match a range of values with `...`:
 
-```{rust}
+```rust
 let x = 1;
 
 match x {
@@ -41,12 +52,27 @@ match x {
 }
 ```
 
-Ranges are mostly used with integers and single characters.
+This prints `one through five`.
 
-If you're matching multiple things, via a `|` or a `...`, you can bind
-the value to a name with `@`:
+Ranges are mostly used with integers and `char`s:
 
-```{rust}
+```rust
+let x = '💅';
+
+match x {
+    'a' ... 'j' => println!("early letter"),
+    'k' ... 'z' => println!("late letter"),
+    _ => println!("something else"),
+}
+```
+
+This prints `something else`.
+
+# Bindings
+
+You can bind values to names with `@`:
+
+```rust
 let x = 1;
 
 match x {
@@ -55,10 +81,43 @@ match x {
 }
 ```
 
-If you're matching on an enum which has variants, you can use `..` to
+This prints `got a range element 1`. This is useful when you want to
+do a complicated match of part of a data structure:
+
+```rust
+#[derive(Debug)]
+struct Person {
+    name: Option<String>,
+}
+
+let name = "Steve".to_string();
+let mut x: Option<Person> = Some(Person { name: Some(name) });
+match x {
+    Some(Person { name: ref a @ Some(_), .. }) => println!("{:?}", a),
+    _ => {}
+}
+```
+
+This prints `Some("Steve")`: We’ve bound the inner `name` to `a`.
+
+If you use `@` with `|`, you need to make sure the name is bound in each part
+of the pattern:
+
+```rust
+let x = 5;
+
+match x {
+    e @ 1 ... 5 | e @ 8 ... 10 => println!("got a range element {}", e),
+    _ => println!("anything"),
+}
+```
+
+# Ignoring variants
+
+If you’re matching on an enum which has variants, you can use `..` to
 ignore the value and type in the variant:
 
-```{rust}
+```rust
 enum OptionalInt {
     Value(i32),
     Missing,
@@ -72,9 +131,13 @@ match x {
 }
 ```
 
-You can introduce *match guards* with `if`:
+This prints `Got an int!`.
 
-```{rust}
+# Guards
+
+You can introduce ‘match guards’ with `if`:
+
+```rust
 enum OptionalInt {
     Value(i32),
     Missing,
@@ -89,24 +152,13 @@ match x {
 }
 ```
 
-If you're matching on a pointer, you can use the same syntax as you declared it
-with. First, `&`:
+This prints `Got an int!`.
 
-```{rust}
-let x = &5;
+# ref and ref mut
 
-match x {
-    &val => println!("Got a value: {}", val),
-}
-```
+If you want to get a [reference][ref], use the `ref` keyword:
 
-Here, the `val` inside the `match` has type `i32`. In other words, the left-hand
-side of the pattern destructures the value. If we have `&5`, then in `&val`, `val`
-would be `5`.
-
-If you want to get a reference, use the `ref` keyword:
-
-```{rust}
+```rust
 let x = 5;
 
 match x {
@@ -114,11 +166,15 @@ match x {
 }
 ```
 
+This prints `Got a reference to 5`.
+
+[ref]: references-and-borrowing.html
+
 Here, the `r` inside the `match` has the type `&i32`. In other words, the `ref`
 keyword _creates_ a reference, for use in the pattern. If you need a mutable
 reference, `ref mut` will work in the same way:
 
-```{rust}
+```rust
 let mut x = 5;
 
 match x {
@@ -126,10 +182,12 @@ match x {
 }
 ```
 
-If you have a struct, you can destructure it inside of a pattern:
+# Destructuring
 
-```{rust}
-# #![allow(non_shorthand_field_patterns)]
+If you have a compound data type, like a [`struct`][struct], you can destructure it
+inside of a pattern:
+
+```rust
 struct Point {
     x: i32,
     y: i32,
@@ -142,10 +200,11 @@ match origin {
 }
 ```
 
-If we only care about some of the values, we don't have to give them all names:
+[struct]: structs.html
 
-```{rust}
-# #![allow(non_shorthand_field_patterns)]
+If we only care about some of the values, we don’t have to give them all names:
+
+```rust
 struct Point {
     x: i32,
     y: i32,
@@ -158,10 +217,11 @@ match origin {
 }
 ```
 
+This prints `x is 0`.
+
 You can do this kind of match on any member, not just the first:
 
-```{rust}
-# #![allow(non_shorthand_field_patterns)]
+```rust
 struct Point {
     x: i32,
     y: i32,
@@ -174,26 +234,23 @@ match origin {
 }
 ```
 
-If you want to match against a slice or array, you can use `&`:
+This prints `y is 0`.
 
-```{rust}
-fn main() {
-    let v = vec!["match_this", "1"];
+This ‘destructuring’ behavior works on any compound data type, like
+[tuples][tuples] or [enums][enums].
 
-    match &v[..] {
-        ["match_this", second] => println!("The second element is {}", second),
-        _ => {},
-    }
-}
-```
+[tuples]: primitive-types.html#tuples
+[enums]: enums.html
 
-Whew! That's a lot of different ways to match things, and they can all be
-mixed and matched, depending on what you're doing:
+# Mix and Match
 
-```{rust,ignore}
+Whew! That’s a lot of different ways to match things, and they can all be
+mixed and matched, depending on what you’re doing:
+
+```rust,ignore
 match x {
     Foo { x: Some(ref name), y: None } => ...
 }
 ```
 
-Patterns are very powerful.  Make good use of them.
+Patterns are very powerful. Make good use of them.

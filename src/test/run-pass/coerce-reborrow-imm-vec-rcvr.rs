@@ -9,11 +9,12 @@
 // except according to those terms.
 
 
-fn bar(v: &mut [uint]) -> Vec<uint> {
+
+fn bar(v: &mut [usize]) -> Vec<usize> {
     v.to_vec()
 }
 
-fn bip(v: &[uint]) -> Vec<uint> {
+fn bip(v: &[usize]) -> Vec<usize> {
     v.to_vec()
 }
 

@@ -13,6 +13,8 @@
 
 // FIXME (#22405): Replace `Box::new` with `box` here when/if possible.
 
+// pretty-expanded FIXME #23616
+
 fn main() {
     send::<Box<Foo>>(Box::new(Output(0)));
     Test::<Box<Foo>>::foo(Box::new(Output(0)));
@@ -29,5 +31,5 @@ impl<T> Test<T> {
 }
 
 trait Foo { fn dummy(&self) { }}
-struct Output(int);
+struct Output(isize);
 impl Foo for Output {}

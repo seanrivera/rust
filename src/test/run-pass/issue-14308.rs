@@ -8,7 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-struct A(int);
+
+struct A(isize);
 struct B;
 
 fn main() {

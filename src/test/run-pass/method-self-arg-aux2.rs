@@ -10,6 +10,7 @@
 
 // Test method calls with self as an argument (cross-crate)
 
+
 #![allow(unknown_features)]
 #![feature(box_syntax)]
 

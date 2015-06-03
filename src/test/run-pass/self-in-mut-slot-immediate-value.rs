@@ -11,9 +11,10 @@
 // Assert that `mut self` on an immediate value doesn't
 // allow mutating the original - issue #10615.
 
-#[derive(Copy)]
+
+#[derive(Copy, Clone)]
 struct Value {
-    n: int
+    n: isize
 }
 
 impl Value {

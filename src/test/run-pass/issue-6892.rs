@@ -11,12 +11,13 @@
 // Ensures that destructors are run for expressions of the form "let _ = e;"
 // where `e` is a type which requires a destructor.
 
-struct Foo;
-struct Bar { x: int }
-struct Baz(int);
-enum FooBar { _Foo(Foo), _Bar(uint) }
 
-static mut NUM_DROPS: uint = 0;
+struct Foo;
+struct Bar { x: isize }
+struct Baz(isize);
+enum FooBar { _Foo(Foo), _Bar(usize) }
+
+static mut NUM_DROPS: usize = 0;
 
 impl Drop for Foo {
     fn drop(&mut self) {

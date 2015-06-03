@@ -8,11 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 #![allow(unknown_features)]
 #![feature(box_syntax)]
 
-fn foo(x: &uint) -> &uint { x }
-fn bar(x: &uint) -> uint { *x }
+fn foo(x: &usize) -> &usize { x }
+fn bar(x: &usize) -> usize { *x }
 
 pub fn main() {
     let p: Box<_> = box 3;

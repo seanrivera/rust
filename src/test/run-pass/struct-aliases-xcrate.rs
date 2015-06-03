@@ -9,6 +9,7 @@
 // except according to those terms.
 
 // aux-build:xcrate_struct_aliases.rs
+
 extern crate xcrate_struct_aliases;
 
 use xcrate_struct_aliases::{S, S2};
@@ -28,4 +29,3 @@ fn main() {
         }
     }
 }
-

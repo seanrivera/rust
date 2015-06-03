@@ -9,6 +9,9 @@
 // except according to those terms.
 
 
+
+#![feature(slice_patterns)]
+
 struct Foo {
     string: String
 }

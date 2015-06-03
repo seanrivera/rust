@@ -107,60 +107,10 @@
 //!
 //! let (tx, rx) = sync_channel::<i32>(0);
 //! thread::spawn(move|| {
-//!     // This will wait for the parent task to start receiving
+//!     // This will wait for the parent thread to start receiving
 //!     tx.send(53).unwrap();
 //! });
 //! rx.recv().unwrap();
-//! ```
-//!
-//! Reading from a channel with a timeout requires to use a Timer together
-//! with the channel. You can use the select! macro to select either and
-//! handle the timeout case. This first example will break out of the loop
-//! after 10 seconds no matter what:
-//!
-//! ```no_run
-//! use std::sync::mpsc::channel;
-//! use std::old_io::timer::Timer;
-//! use std::time::Duration;
-//!
-//! let (tx, rx) = channel::<i32>();
-//! let mut timer = Timer::new().unwrap();
-//! let timeout = timer.oneshot(Duration::seconds(10));
-//!
-//! loop {
-//!     select! {
-//!         val = rx.recv() => println!("Received {}", val.unwrap()),
-//!         _ = timeout.recv() => {
-//!             println!("timed out, total time was more than 10 seconds");
-//!             break;
-//!         }
-//!     }
-//! }
-//! ```
-//!
-//! This second example is more costly since it allocates a new timer every
-//! time a message is received, but it allows you to timeout after the channel
-//! has been inactive for 5 seconds:
-//!
-//! ```no_run
-//! use std::sync::mpsc::channel;
-//! use std::old_io::timer::Timer;
-//! use std::time::Duration;
-//!
-//! let (tx, rx) = channel::<i32>();
-//! let mut timer = Timer::new().unwrap();
-//!
-//! loop {
-//!     let timeout = timer.oneshot(Duration::seconds(5));
-//!
-//!     select! {
-//!         val = rx.recv() => println!("Received {}", val.unwrap()),
-//!         _ = timeout.recv() => {
-//!             println!("timed out, no message received in 5 seconds");
-//!             break;
-//!         }
-//!     }
-//! }
 //! ```
 
 #![stable(feature = "rust1", since = "1.0.0")]
@@ -303,7 +253,7 @@
 // blocking. The implementation is essentially the entire blocking procedure
 // followed by an increment as soon as its woken up. The cancellation procedure
 // involves an increment and swapping out of to_wake to acquire ownership of the
-// task to unblock.
+// thread to unblock.
 //
 // Sadly this current implementation requires multiple allocations, so I have
 // seen the throughput of select() be much worse than it should be. I do not
@@ -318,9 +268,11 @@
 use prelude::v1::*;
 
 use sync::Arc;
+use error;
 use fmt;
 use mem;
 use cell::UnsafeCell;
+use marker::Reflect;
 
 pub use self::select::{Select, Handle};
 use self::select::StartResult;
@@ -337,7 +289,7 @@ mod mpsc_queue;
 mod spsc_queue;
 
 /// The receiving-half of Rust's channel type. This half can only be owned by
-/// one task
+/// one thread
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Receiver<T> {
     inner: UnsafeCell<Flavor<T>>,
@@ -351,12 +303,20 @@ unsafe impl<T: Send> Send for Receiver<T> { }
 /// whenever `next` is called, waiting for a new message, and `None` will be
 /// returned when the corresponding channel has hung up.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub struct Iter<'a, T:'a> {
+pub struct Iter<'a, T: 'a> {
     rx: &'a Receiver<T>
 }
 
+/// An owning iterator over messages on a receiver, this iterator will block
+/// whenever `next` is called, waiting for a new message, and `None` will be
+/// returned when the corresponding channel has hung up.
+#[stable(feature = "receiver_into_iter", since = "1.1.0")]
+pub struct IntoIter<T> {
+    rx: Receiver<T>
+}
+
 /// The sending-half of Rust's asynchronous channel type. This half can only be
-/// owned by one task, but it can be cloned to send to other tasks.
+/// owned by one thread, but it can be cloned to send to other threads.
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Sender<T> {
     inner: UnsafeCell<Flavor<T>>,
@@ -367,7 +327,7 @@ pub struct Sender<T> {
 unsafe impl<T: Send> Send for Sender<T> { }
 
 /// The sending-half of Rust's synchronous channel type. This half can only be
-/// owned by one task, but it can be cloned to send to other tasks.
+/// owned by one thread, but it can be cloned to send to other threads.
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct SyncSender<T> {
     inner: Arc<UnsafeCell<sync::Packet<T>>>,
@@ -394,8 +354,8 @@ pub struct SendError<T>(#[stable(feature = "rust1", since = "1.0.0")] pub T);
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct RecvError;
 
-/// This enumeration is the list of the possible reasons that try_recv could not
-/// return data when called.
+/// This enumeration is the list of the possible reasons that `try_recv` could
+/// not return data when called.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub enum TryRecvError {
@@ -461,9 +421,9 @@ impl<T> UnsafeFlavor<T> for Receiver<T> {
 /// Creates a new asynchronous channel, returning the sender/receiver halves.
 ///
 /// All data sent on the sender will become available on the receiver, and no
-/// send will block the calling task (this channel has an "infinite buffer").
+/// send will block the calling thread (this channel has an "infinite buffer").
 ///
-/// # Example
+/// # Examples
 ///
 /// ```
 /// use std::sync::mpsc::channel;
@@ -485,7 +445,7 @@ impl<T> UnsafeFlavor<T> for Receiver<T> {
 /// println!("{:?}", rx.recv().unwrap());
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
-pub fn channel<T: Send>() -> (Sender<T>, Receiver<T>) {
+pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
     let a = Arc::new(UnsafeCell::new(oneshot::Packet::new()));
     (Sender::new(Flavor::Oneshot(a.clone())), Receiver::new(Flavor::Oneshot(a)))
 }
@@ -505,7 +465,7 @@ pub fn channel<T: Send>() -> (Sender<T>, Receiver<T>) {
 /// As with asynchronous channels, all senders will panic in `send` if the
 /// `Receiver` has been destroyed.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```
 /// use std::sync::mpsc::sync_channel;
@@ -525,7 +485,7 @@ pub fn channel<T: Send>() -> (Sender<T>, Receiver<T>) {
 /// assert_eq!(rx.recv().unwrap(), 2);
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
-pub fn sync_channel<T: Send>(bound: usize) -> (SyncSender<T>, Receiver<T>) {
+pub fn sync_channel<T>(bound: usize) -> (SyncSender<T>, Receiver<T>) {
     let a = Arc::new(UnsafeCell::new(sync::Packet::new(bound)));
     (SyncSender::new(a.clone()), Receiver::new(Flavor::Sync(a)))
 }
@@ -534,7 +494,7 @@ pub fn sync_channel<T: Send>(bound: usize) -> (SyncSender<T>, Receiver<T>) {
 // Sender
 ////////////////////////////////////////////////////////////////////////////////
 
-impl<T: Send> Sender<T> {
+impl<T> Sender<T> {
     fn new(inner: Flavor<T>) -> Sender<T> {
         Sender {
             inner: UnsafeCell::new(inner),
@@ -554,7 +514,7 @@ impl<T: Send> Sender<T> {
     ///
     /// This method will never block the current thread.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// use std::sync::mpsc::channel;
@@ -591,7 +551,7 @@ impl<T: Send> Sender<T> {
                                 // asleep (we're looking at it), so the receiver
                                 // can't go away.
                                 (*a.get()).send(t).ok().unwrap();
-                        token.signal();
+                                token.signal();
                                 (a, Ok(()))
                             }
                         }
@@ -616,7 +576,7 @@ impl<T: Send> Sender<T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T: Send> Clone for Sender<T> {
+impl<T> Clone for Sender<T> {
     fn clone(&self) -> Sender<T> {
         let (packet, sleeper, guard) = match *unsafe { self.inner() } {
             Flavor::Oneshot(ref p) => {
@@ -660,9 +620,8 @@ impl<T: Send> Clone for Sender<T> {
     }
 }
 
-#[unsafe_destructor]
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T: Send> Drop for Sender<T> {
+impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
         match *unsafe { self.inner_mut() } {
             Flavor::Oneshot(ref mut p) => unsafe { (*p.get()).drop_chan(); },
@@ -677,7 +636,7 @@ impl<T: Send> Drop for Sender<T> {
 // SyncSender
 ////////////////////////////////////////////////////////////////////////////////
 
-impl<T: Send> SyncSender<T> {
+impl<T> SyncSender<T> {
     fn new(inner: Arc<UnsafeCell<sync::Packet<T>>>) -> SyncSender<T> {
         SyncSender { inner: inner }
     }
@@ -717,16 +676,15 @@ impl<T: Send> SyncSender<T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T: Send> Clone for SyncSender<T> {
+impl<T> Clone for SyncSender<T> {
     fn clone(&self) -> SyncSender<T> {
         unsafe { (*self.inner.get()).clone_chan(); }
         return SyncSender::new(self.inner.clone());
     }
 }
 
-#[unsafe_destructor]
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T: Send> Drop for SyncSender<T> {
+impl<T> Drop for SyncSender<T> {
     fn drop(&mut self) {
         unsafe { (*self.inner.get()).drop_chan(); }
     }
@@ -736,7 +694,7 @@ impl<T: Send> Drop for SyncSender<T> {
 // Receiver
 ////////////////////////////////////////////////////////////////////////////////
 
-impl<T: Send> Receiver<T> {
+impl<T> Receiver<T> {
     fn new(inner: Flavor<T>) -> Receiver<T> {
         Receiver { inner: UnsafeCell::new(inner) }
     }
@@ -799,7 +757,7 @@ impl<T: Send> Receiver<T> {
         }
     }
 
-    /// Attempt to wait for a value on this receiver, returning an error if the
+    /// Attempts to wait for a value on this receiver, returning an error if the
     /// corresponding channel has hung up.
     ///
     /// This function will always block the current thread if there is no data
@@ -855,7 +813,7 @@ impl<T: Send> Receiver<T> {
     }
 }
 
-impl<T: Send> select::Packet for Receiver<T> {
+impl<T> select::Packet for Receiver<T> {
     fn can_recv(&self) -> bool {
         loop {
             let new_port = match *unsafe { self.inner() } {
@@ -942,15 +900,37 @@ impl<T: Send> select::Packet for Receiver<T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, T: Send> Iterator for Iter<'a, T> {
+impl<'a, T> Iterator for Iter<'a, T> {
     type Item = T;
 
     fn next(&mut self) -> Option<T> { self.rx.recv().ok() }
 }
 
-#[unsafe_destructor]
+#[stable(feature = "receiver_into_iter", since = "1.1.0")]
+impl<'a, T> IntoIterator for &'a Receiver<T> {
+    type Item = T;
+    type IntoIter = Iter<'a, T>;
+
+    fn into_iter(self) -> Iter<'a, T> { self.iter() }
+}
+
+impl<T> Iterator for IntoIter<T> {
+    type Item = T;
+    fn next(&mut self) -> Option<T> { self.rx.recv().ok() }
+}
+
+#[stable(feature = "receiver_into_iter", since = "1.1.0")]
+impl <T> IntoIterator for Receiver<T> {
+    type Item = T;
+    type IntoIter = IntoIter<T>;
+
+    fn into_iter(self) -> IntoIter<T> {
+        IntoIter { rx: self }
+    }
+}
+
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T: Send> Drop for Receiver<T> {
+impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
         match *unsafe { self.inner_mut() } {
             Flavor::Oneshot(ref mut p) => unsafe { (*p.get()).drop_port(); },
@@ -972,6 +952,17 @@ impl<T> fmt::Debug for SendError<T> {
 impl<T> fmt::Display for SendError<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         "sending on a closed channel".fmt(f)
+    }
+}
+
+#[stable(feature = "rust1", since = "1.0.0")]
+impl<T: Send + Reflect> error::Error for SendError<T> {
+    fn description(&self) -> &str {
+        "sending on a closed channel"
+    }
+
+    fn cause(&self) -> Option<&error::Error> {
+        None
     }
 }
 
@@ -1000,9 +991,40 @@ impl<T> fmt::Display for TrySendError<T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
+impl<T: Send + Reflect> error::Error for TrySendError<T> {
+
+    fn description(&self) -> &str {
+        match *self {
+            TrySendError::Full(..) => {
+                "sending on a full channel"
+            }
+            TrySendError::Disconnected(..) => {
+                "sending on a closed channel"
+            }
+        }
+    }
+
+    fn cause(&self) -> Option<&error::Error> {
+        None
+    }
+}
+
+#[stable(feature = "rust1", since = "1.0.0")]
 impl fmt::Display for RecvError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         "receiving on a closed channel".fmt(f)
+    }
+}
+
+#[stable(feature = "rust1", since = "1.0.0")]
+impl error::Error for RecvError {
+
+    fn description(&self) -> &str {
+        "receiving on a closed channel"
+    }
+
+    fn cause(&self) -> Option<&error::Error> {
+        None
     }
 }
 
@@ -1020,8 +1042,27 @@ impl fmt::Display for TryRecvError {
     }
 }
 
+#[stable(feature = "rust1", since = "1.0.0")]
+impl error::Error for TryRecvError {
+
+    fn description(&self) -> &str {
+        match *self {
+            TryRecvError::Empty => {
+                "receiving on an empty channel"
+            }
+            TryRecvError::Disconnected => {
+                "receiving on a closed channel"
+            }
+        }
+    }
+
+    fn cause(&self) -> Option<&error::Error> {
+        None
+    }
+}
+
 #[cfg(test)]
-mod test {
+mod tests {
     use prelude::v1::*;
 
     use std::env;
@@ -1044,13 +1085,13 @@ mod test {
 
     #[test]
     fn drop_full() {
-        let (tx, _rx) = channel::<Box<int>>();
+        let (tx, _rx) = channel::<Box<isize>>();
         tx.send(box 1).unwrap();
     }
 
     #[test]
     fn drop_full_shared() {
-        let (tx, _rx) = channel::<Box<int>>();
+        let (tx, _rx) = channel::<Box<isize>>();
         drop(tx.clone());
         drop(tx.clone());
         tx.send(box 1).unwrap();
@@ -1389,7 +1430,7 @@ mod test {
     #[test]
     fn oneshot_multi_thread_send_recv_stress() {
         for _ in 0..stress_factor() {
-            let (tx, rx) = channel::<Box<int>>();
+            let (tx, rx) = channel::<Box<isize>>();
             let _t = thread::spawn(move|| {
                 tx.send(box 10).unwrap();
             });
@@ -1495,6 +1536,32 @@ mod test {
     }
 
     #[test]
+    fn test_recv_into_iter_owned() {
+        let mut iter = {
+          let (tx, rx) = channel::<i32>();
+          tx.send(1).unwrap();
+          tx.send(2).unwrap();
+
+          rx.into_iter()
+        };
+        assert_eq!(iter.next().unwrap(), 1);
+        assert_eq!(iter.next().unwrap(), 2);
+        assert_eq!(iter.next().is_none(), true);
+    }
+
+    #[test]
+    fn test_recv_into_iter_borrowed() {
+        let (tx, rx) = channel::<i32>();
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        drop(tx);
+        let mut iter = (&rx).into_iter();
+        assert_eq!(iter.next().unwrap(), 1);
+        assert_eq!(iter.next().unwrap(), 2);
+        assert_eq!(iter.next().is_none(), true);
+    }
+
+    #[test]
     fn try_recv_states() {
         let (tx1, rx1) = channel::<i32>();
         let (tx2, rx2) = channel::<()>();
@@ -1529,7 +1596,7 @@ mod test {
             drop(rx);  // destroy a shared
             tx2.send(()).unwrap();
         });
-        // make sure the other task has gone to sleep
+        // make sure the other thread has gone to sleep
         for _ in 0..5000 { thread::yield_now(); }
 
         // upgrade to a shared chan and send a message
@@ -1537,7 +1604,7 @@ mod test {
         drop(tx);
         t.send(()).unwrap();
 
-        // wait for the child task to exit before we exit
+        // wait for the child thread to exit before we exit
         rx2.recv().unwrap();
     }
 }
@@ -1566,7 +1633,7 @@ mod sync_tests {
 
     #[test]
     fn drop_full() {
-        let (tx, _rx) = sync_channel::<Box<int>>(1);
+        let (tx, _rx) = sync_channel::<Box<isize>>(1);
         tx.send(box 1).unwrap();
     }
 
@@ -1993,7 +2060,7 @@ mod sync_tests {
             drop(rx);  // destroy a shared
             tx2.send(()).unwrap();
         });
-        // make sure the other task has gone to sleep
+        // make sure the other thread has gone to sleep
         for _ in 0..5000 { thread::yield_now(); }
 
         // upgrade to a shared chan and send a message
@@ -2001,7 +2068,7 @@ mod sync_tests {
         drop(tx);
         t.send(()).unwrap();
 
-        // wait for the child task to exit before we exit
+        // wait for the child thread to exit before we exit
         rx2.recv().unwrap();
     }
 

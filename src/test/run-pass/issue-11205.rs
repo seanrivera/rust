@@ -8,18 +8,20 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+// pretty-expanded FIXME #23616
+
 #![allow(dead_code)]
 
 // FIXME (#22405): Replace `Box::new` with `box` here when/if possible.
 
 trait Foo { fn dummy(&self) { } }
-impl Foo for int {}
+impl Foo for isize {}
 fn foo(_: [&Foo; 2]) {}
 fn foos(_: &[&Foo]) {}
 fn foog<T>(_: &[T], _: &[T]) {}
 
 fn bar(_: [Box<Foo>; 2]) {}
-fn bars(_: &[Box<Foo>]) {}
+fn bars(_: &[Box<Foo+'static>]) {}
 
 fn main() {
     let x: [&Foo; 2] = [&1, &2];
@@ -43,11 +45,11 @@ fn main() {
     bar(x);
     bar([Box::new(1), Box::new(2)]);
 
-    let x: &[Box<Foo>] = &[Box::new(1), Box::new(2)];
+    let x: &[Box<Foo+'static>] = &[Box::new(1), Box::new(2)];
     bars(x);
     bars(&[Box::new(1), Box::new(2)]);
 
-    let x: &[Box<Foo>] = &[Box::new(1), Box::new(2)];
+    let x: &[Box<Foo+'static>] = &[Box::new(1), Box::new(2)];
     foog(x, &[Box::new(1)]);
 
     struct T<'a> {

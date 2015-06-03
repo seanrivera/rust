@@ -10,6 +10,7 @@
 //
 // regression test for the model lexer handling the DOTDOTDOT syntax (#15877)
 
+
 pub fn main() {
     match 5_usize {
       1_usize...5_usize => {}

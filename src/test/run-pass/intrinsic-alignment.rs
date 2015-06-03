@@ -8,12 +8,13 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 #![feature(intrinsics, main)]
 
 mod rusti {
     extern "rust-intrinsic" {
-        pub fn pref_align_of<T>() -> uint;
-        pub fn min_align_of<T>() -> uint;
+        pub fn pref_align_of<T>() -> usize;
+        pub fn min_align_of<T>() -> usize;
     }
 }
 

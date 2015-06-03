@@ -20,15 +20,10 @@ use parse::token;
 use ptr::P;
 
 /// The specific types of unsupported syntax
-#[derive(Copy, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub enum ObsoleteSyntax {
-    Sized,
-    ForSized,
-    ProcType,
-    ProcExpr,
-    ClosureType,
     ClosureKind,
-    EmptyIndex,
+    ExternCrateString,
 }
 
 pub trait ParserObsoleteMethods {
@@ -51,40 +46,14 @@ impl<'a> ParserObsoleteMethods for parser::Parser<'a> {
     /// Reports an obsolete syntax non-fatal error.
     fn obsolete(&mut self, sp: Span, kind: ObsoleteSyntax) {
         let (kind_str, desc, error) = match kind {
-            ObsoleteSyntax::ForSized => (
-                "for Sized?",
-                "no longer required. Traits (and their `Self` type) do not have the `Sized` bound \
-                 by default",
-                true,
-            ),
-            ObsoleteSyntax::ProcType => (
-                "the `proc` type",
-                "use unboxed closures instead",
-                true,
-            ),
-            ObsoleteSyntax::ProcExpr => (
-                "`proc` expression",
-                "use a `move ||` expression instead",
-                true,
-            ),
-            ObsoleteSyntax::ClosureType => (
-                "`|usize| -> bool` closure type",
-                "use unboxed closures instead, no type annotation needed",
-                true,
-            ),
             ObsoleteSyntax::ClosureKind => (
                 "`:`, `&mut:`, or `&:`",
                 "rely on inference instead",
                 true,
             ),
-            ObsoleteSyntax::Sized => (
-                "`Sized? T` for removing the `Sized` bound",
-                "write `T: ?Sized` instead",
-                true,
-            ),
-            ObsoleteSyntax::EmptyIndex => (
-                "[]",
-                "write `[..]` instead",
+            ObsoleteSyntax::ExternCrateString => (
+                "\"crate-name\"",
+                "use an identifier not in quotes instead",
                 false, // warning for now
             ),
         };
@@ -111,7 +80,8 @@ impl<'a> ParserObsoleteMethods for parser::Parser<'a> {
             self.span_warn(sp, &format!("obsolete syntax: {}", kind_str));
         }
 
-        if !self.obsolete_set.contains(&kind) {
+        if !self.obsolete_set.contains(&kind) &&
+            (error || self.sess.span_diagnostic.handler().can_emit_warnings) {
             self.sess
                 .span_diagnostic
                 .handler()
@@ -131,7 +101,7 @@ impl<'a> ParserObsoleteMethods for parser::Parser<'a> {
 
     fn eat_obsolete_ident(&mut self, ident: &str) -> bool {
         if self.is_obsolete_ident(ident) {
-            self.bump();
+            panictry!(self.bump());
             true
         } else {
             false

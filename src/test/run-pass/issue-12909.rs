@@ -8,6 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+// pretty-expanded FIXME #23616
+
 use std::collections::HashMap;
 
 fn copy<T: Copy>(&x: &T) -> T {
@@ -21,6 +23,6 @@ fn main() {
     let v2: Vec<_> = arr.iter().map(copy).collect();
 
     let m1: HashMap<_, _> = arr.iter().map(copy).collect();
-    let m2: HashMap<int, _> = arr.iter().map(copy).collect();
-    let m3: HashMap<_, uint> = arr.iter().map(copy).collect();
+    let m2: HashMap<isize, _> = arr.iter().map(copy).collect();
+    let m3: HashMap<_, usize> = arr.iter().map(copy).collect();
 }

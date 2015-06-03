@@ -116,7 +116,7 @@ A *consumer* operates on an iterator, returning some kind of value or values.
 The most common consumer is `collect()`. This code doesn't quite compile,
 but it shows the intention:
 
-```{rust,ignore}
+```rust,ignore
 let one_to_one_hundred = (1..101).collect();
 ```
 
@@ -212,9 +212,9 @@ see why consumers matter.
 As we've said before, an iterator is something that we can call the
 `.next()` method on repeatedly, and it gives us a sequence of things.
 Because you need to call the method, this means that iterators
-are *lazy* and don't need to generate all of the values upfront.
-This code, for example, does not actually generate the numbers
-`1-100`, and just creates a value that represents the sequence:
+can be *lazy* and not generate all of the values upfront. This code,
+for example, does not actually generate the numbers `1-99`, instead
+creating a value that merely represents the sequence:
 
 ```rust
 let nums = 1..100;
@@ -235,7 +235,7 @@ Ranges are one of two basic iterators that you'll see. The other is `iter()`.
 in turn:
 
 ```rust
-let nums = [1, 2, 3];
+let nums = vec![1, 2, 3];
 
 for num in nums.iter() {
    println!("{}", num);
@@ -243,16 +243,7 @@ for num in nums.iter() {
 ```
 
 These two basic iterators should serve you well. There are some more
-advanced iterators, including ones that are infinite. Like `count`:
-
-```rust
-std::iter::count(1, 5);
-```
-
-This iterator counts up from one, adding five each time. It will give
-you a new integer every time, forever (well, technically, until it reaches the
-maximum number representable by an `i32`). But since iterators are lazy,
-that's okay! You probably don't want to use `collect()` on it, though...
+advanced iterators, including ones that are infinite.
 
 That's enough about iterators. Iterator adapters are the last concept
 we need to talk about with regards to iterators. Let's get to it!
@@ -262,7 +253,7 @@ we need to talk about with regards to iterators. Let's get to it!
 *Iterator adapters* take an iterator and modify it somehow, producing
 a new iterator. The simplest one is called `map`:
 
-```{rust,ignore}
+```rust,ignore
 (1..100).map(|x| x + 1);
 ```
 
@@ -281,7 +272,7 @@ warning: unused result which must be used: iterator adaptors are lazy and
 Laziness strikes again! That closure will never execute. This example
 doesn't print any numbers:
 
-```{rust,ignore}
+```rust,ignore
 (1..100).map(|x| println!("{}", x));
 ```
 
@@ -289,12 +280,13 @@ If you are trying to execute a closure on an iterator for its side effects,
 just use `for` instead.
 
 There are tons of interesting iterator adapters. `take(n)` will return an
-iterator over the next `n` elements of the original iterator, note that this
+iterator over the next `n` elements of the original iterator. Note that this
 has no side effect on the original iterator. Let's try it out with our infinite
-iterator from before, `count()`:
+iterator from before:
 
 ```rust
-for i in std::iter::count(1, 5).take(5) {
+# #![feature(step_by)]
+for i in (1..).step_by(5).take(5) {
     println!("{}", i);
 }
 ```
@@ -329,7 +321,7 @@ You can chain all three things together: start with an iterator, adapt it
 a few times, and then consume the result. Check it out:
 
 ```rust
-(1..1000)
+(1..)
     .filter(|&x| x % 2 == 0)
     .filter(|&x| x % 3 == 0)
     .take(5)

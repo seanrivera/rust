@@ -8,14 +8,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![feature(collections)]
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::string::String;
 
 #[derive(PartialEq, Debug)]
 struct Point {
-    x: int,
-    y: int
+    x: isize,
+    y: isize
 }
 
 pub fn main() {

@@ -9,6 +9,9 @@
 // except according to those terms.
 
 
+
+#![feature(std_misc, libc)]
+
 extern crate libc;
 use std::ffi::CString;
 
@@ -21,11 +24,11 @@ mod mlibc {
     }
 }
 
-fn strlen(str: String) -> uint {
+fn strlen(str: String) -> usize {
     // C string is terminated with a zero
     let s = CString::new(str).unwrap();
     unsafe {
-        mlibc::my_strlen(s.as_ptr()) as uint
+        mlibc::my_strlen(s.as_ptr()) as usize
     }
 }
 

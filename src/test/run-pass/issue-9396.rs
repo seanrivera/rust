@@ -9,15 +9,12 @@
 // except according to those terms.
 
 use std::sync::mpsc::{TryRecvError, channel};
-use std::old_io::timer::Timer;
-use std::thread::Thread;
-use std::time::Duration;
+use std::thread;
 
 pub fn main() {
     let (tx, rx) = channel();
-    let _t = Thread::scoped(move||{
-        let mut timer = Timer::new().unwrap();
-        timer.sleep(Duration::milliseconds(10));
+    let t = thread::spawn(move||{
+        thread::sleep_ms(10);
         tx.send(()).unwrap();
     });
     loop {
@@ -27,4 +24,5 @@ pub fn main() {
             Err(TryRecvError::Disconnected) => unreachable!()
         }
     }
+    t.join();
 }

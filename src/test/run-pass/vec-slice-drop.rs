@@ -8,23 +8,20 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(unsafe_destructor)]
-
 use std::cell::Cell;
 
 // Make sure that destructors get run on slice literals
 struct foo<'a> {
-    x: &'a Cell<int>,
+    x: &'a Cell<isize>,
 }
 
-#[unsafe_destructor]
 impl<'a> Drop for foo<'a> {
     fn drop(&mut self) {
         self.x.set(self.x.get() + 1);
     }
 }
 
-fn foo(x: &Cell<int>) -> foo {
+fn foo(x: &Cell<isize>) -> foo {
     foo {
         x: x
     }

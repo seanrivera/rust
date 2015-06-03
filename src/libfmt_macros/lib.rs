@@ -22,7 +22,7 @@
 #![crate_type = "rlib"]
 #![crate_type = "dylib"]
 #![doc(html_logo_url = "http://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-       html_favicon_url = "http://www.rust-lang.org/favicon.ico",
+       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
        html_root_url = "http://doc.rust-lang.org/nightly/",
        html_playground_url = "http://play.rust-lang.org/")]
 
@@ -40,7 +40,7 @@ use std::string;
 
 /// A piece is a portion of the format string which represents the next part
 /// to emit. These are emitted as a stream by the `Parser` class.
-#[derive(Copy, PartialEq)]
+#[derive(Copy, Clone, PartialEq)]
 pub enum Piece<'a> {
     /// A literal string which should directly be emitted
     String(&'a str),
@@ -50,7 +50,7 @@ pub enum Piece<'a> {
 }
 
 /// Representation of an argument specification.
-#[derive(Copy, PartialEq)]
+#[derive(Copy, Clone, PartialEq)]
 pub struct Argument<'a> {
     /// Where to find this argument
     pub position: Position<'a>,
@@ -59,7 +59,7 @@ pub struct Argument<'a> {
 }
 
 /// Specification for the formatting of an argument in the format string.
-#[derive(Copy, PartialEq)]
+#[derive(Copy, Clone, PartialEq)]
 pub struct FormatSpec<'a> {
     /// Optionally specified character to fill alignment with
     pub fill: Option<char>,
@@ -78,7 +78,7 @@ pub struct FormatSpec<'a> {
 }
 
 /// Enum describing where an argument for a format can be located.
-#[derive(Copy, PartialEq)]
+#[derive(Copy, Clone, PartialEq)]
 pub enum Position<'a> {
     /// The argument will be in the next position. This is the default.
     ArgumentNext,
@@ -89,7 +89,7 @@ pub enum Position<'a> {
 }
 
 /// Enum of alignments which are supported.
-#[derive(Copy, PartialEq)]
+#[derive(Copy, Clone, PartialEq)]
 pub enum Alignment {
     /// The value will be aligned to the left.
     AlignLeft,
@@ -103,7 +103,7 @@ pub enum Alignment {
 
 /// Various flags which can be applied to format strings. The meaning of these
 /// flags is defined by the formatters themselves.
-#[derive(Copy, PartialEq)]
+#[derive(Copy, Clone, PartialEq)]
 pub enum Flag {
     /// A `+` will be used to denote positive numbers.
     FlagSignPlus,
@@ -119,7 +119,7 @@ pub enum Flag {
 
 /// A count is used for the precision and width parameters of an integer, and
 /// can reference either an argument or a literal integer.
-#[derive(Copy, PartialEq)]
+#[derive(Copy, Clone, PartialEq)]
 pub enum Count<'a> {
     /// The count is specified explicitly.
     CountIs(usize),
@@ -371,7 +371,7 @@ impl<'a> Parser<'a> {
             None => {
                 let tmp = self.cur.clone();
                 match self.word() {
-                    word if word.len() > 0 => {
+                    word if !word.is_empty() => {
                         if self.consume('$') {
                             CountIsName(word)
                         } else {
@@ -446,7 +446,7 @@ mod tests {
 
     fn same(fmt: &'static str, p: &[Piece<'static>]) {
         let parser = Parser::new(fmt);
-        assert!(p == parser.collect::<Vec<Piece<'static>>>());
+        assert!(parser.collect::<Vec<Piece<'static>>>() == p);
     }
 
     fn fmtdflt() -> FormatSpec<'static> {
@@ -463,7 +463,7 @@ mod tests {
     fn musterr(s: &str) {
         let mut p = Parser::new(s);
         p.next();
-        assert!(p.errors.len() != 0);
+        assert!(!p.errors.is_empty());
     }
 
     #[test]

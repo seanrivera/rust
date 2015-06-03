@@ -8,6 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+// compile-flags: -Z parse-only
+
 
 // ignore-tidy-tab
 
@@ -19,5 +21,3 @@ pub fn main() {
     b"é";  //~ ERROR byte constant must be ASCII
     b"a  //~ ERROR unterminated double quote byte string
 }
-
-

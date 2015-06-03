@@ -11,12 +11,10 @@
 #![feature(box_syntax)]
 #![allow(warnings)]
 
-use std::marker::PhantomFn;
-
-trait A<T> : PhantomFn<(Self,T)> { }
+trait A<T> { }
 struct B<'a, T>(&'a (A<T>+'a));
 
-trait X : ::std::marker::MarkerTrait {}
+trait X { }
 
 impl<'a, T> X for B<'a, T> {}
 
@@ -25,4 +23,3 @@ fn f<'a, T:'static, U>(v: Box<A<T>+'static>) -> Box<X+'static> {
 }
 
 fn main() {}
-

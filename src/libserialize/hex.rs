@@ -7,8 +7,6 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
-//
-// ignore-lexer-test FIXME #15679
 
 //! Hex binary-to-text encoding
 
@@ -29,9 +27,10 @@ const CHARS: &'static [u8] = b"0123456789abcdef";
 impl ToHex for [u8] {
     /// Turn a vector of `u8` bytes into a hexadecimal string.
     ///
-    /// # Example
+    /// # Examples
     ///
-    /// ```rust
+    /// ```
+    /// # #![feature(rustc_private)]
     /// extern crate serialize;
     /// use serialize::hex::ToHex;
     ///
@@ -43,8 +42,8 @@ impl ToHex for [u8] {
     fn to_hex(&self) -> String {
         let mut v = Vec::with_capacity(self.len() * 2);
         for &byte in self {
-            v.push(CHARS[(byte >> 4) as uint]);
-            v.push(CHARS[(byte & 0xf) as uint]);
+            v.push(CHARS[(byte >> 4) as usize]);
+            v.push(CHARS[(byte & 0xf) as usize]);
         }
 
         unsafe {
@@ -61,10 +60,10 @@ pub trait FromHex {
 }
 
 /// Errors that can occur when decoding a hex encoded string
-#[derive(Copy, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum FromHexError {
     /// The input contained a character not part of the hex format
-    InvalidHexCharacter(char, uint),
+    InvalidHexCharacter(char, usize),
     /// The input had an invalid length
     InvalidHexLength,
 }
@@ -96,11 +95,12 @@ impl FromHex for str {
     /// You can use the `String::from_utf8` function to turn a
     /// `Vec<u8>` into a string with characters corresponding to those values.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// This converts a string literal to hexadecimal and back.
     ///
-    /// ```rust
+    /// ```
+    /// # #![feature(rustc_private)]
     /// extern crate serialize;
     /// use serialize::hex::{FromHex, ToHex};
     ///
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     pub fn test_to_hex_all_bytes() {
         for i in 0..256 {
-            assert_eq!([i as u8].to_hex(), format!("{:02x}", i as uint));
+            assert_eq!([i as u8].to_hex(), format!("{:02x}", i as usize));
         }
     }
 
@@ -194,10 +194,10 @@ mod tests {
     pub fn test_from_hex_all_bytes() {
         for i in 0..256 {
             let ii: &[u8] = &[i as u8];
-            assert_eq!(format!("{:02x}", i as uint).from_hex()
+            assert_eq!(format!("{:02x}", i as usize).from_hex()
                                                    .unwrap(),
                        ii);
-            assert_eq!(format!("{:02X}", i as uint).from_hex()
+            assert_eq!(format!("{:02X}", i as usize).from_hex()
                                                    .unwrap(),
                        ii);
         }

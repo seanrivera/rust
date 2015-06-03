@@ -15,9 +15,11 @@ use io;
 use libc::{self, c_int, size_t};
 use str;
 use sys::c;
-use net::{SocketAddr, IpAddr};
+use net::SocketAddr;
 use sys::fd::FileDesc;
-use sys_common::AsInner;
+use sys_common::{AsInner, FromInner};
+use sys_common::net::{getsockopt, setsockopt};
+use time::Duration;
 
 pub use sys::{cvt, cvt_r};
 
@@ -35,18 +37,21 @@ pub fn cvt_gai(err: c_int) -> io::Result<()> {
             .to_string()
     };
     Err(io::Error::new(io::ErrorKind::Other,
-                       "failed to lookup address information", Some(detail)))
+                       &format!("failed to lookup address information: {}",
+                                detail)[..]))
 }
 
 impl Socket {
     pub fn new(addr: &SocketAddr, ty: c_int) -> io::Result<Socket> {
-        let fam = match addr.ip() {
-            IpAddr::V4(..) => libc::AF_INET,
-            IpAddr::V6(..) => libc::AF_INET6,
+        let fam = match *addr {
+            SocketAddr::V4(..) => libc::AF_INET,
+            SocketAddr::V6(..) => libc::AF_INET6,
         };
         unsafe {
             let fd = try!(cvt(libc::socket(fam, ty, 0)));
-            Ok(Socket(FileDesc::new(fd)))
+            let fd = FileDesc::new(fd);
+            fd.set_cloexec();
+            Ok(Socket(fd))
         }
     }
 
@@ -55,20 +60,70 @@ impl Socket {
         let fd = try!(cvt_r(|| unsafe {
             libc::accept(self.0.raw(), storage, len)
         }));
-        Ok(Socket(FileDesc::new(fd)))
+        let fd = FileDesc::new(fd);
+        fd.set_cloexec();
+        Ok(Socket(fd))
     }
 
     pub fn duplicate(&self) -> io::Result<Socket> {
-        cvt(unsafe { libc::dup(self.0.raw()) }).map(|fd| {
-            Socket(FileDesc::new(fd))
-        })
+        let fd = try!(cvt(unsafe { libc::dup(self.0.raw()) }));
+        let fd = FileDesc::new(fd);
+        fd.set_cloexec();
+        Ok(Socket(fd))
     }
 
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
         self.0.read(buf)
     }
+
+    pub fn set_timeout(&self, dur: Option<Duration>, kind: libc::c_int) -> io::Result<()> {
+        let timeout = match dur {
+            Some(dur) => {
+                if dur.secs() == 0 && dur.extra_nanos() == 0 {
+                    return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                                              "cannot set a 0 duration timeout"));
+                }
+
+                let secs = if dur.secs() > libc::time_t::max_value() as u64 {
+                    libc::time_t::max_value()
+                } else {
+                    dur.secs() as libc::time_t
+                };
+                let mut timeout = libc::timeval {
+                    tv_sec: secs,
+                    tv_usec: (dur.extra_nanos() / 1000) as libc::suseconds_t,
+                };
+                if timeout.tv_sec == 0 && timeout.tv_usec == 0 {
+                    timeout.tv_usec = 1;
+                }
+                timeout
+            }
+            None => {
+                libc::timeval {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                }
+            }
+        };
+        setsockopt(self, libc::SOL_SOCKET, kind, timeout)
+    }
+
+    pub fn timeout(&self, kind: libc::c_int) -> io::Result<Option<Duration>> {
+        let raw: libc::timeval = try!(getsockopt(self, libc::SOL_SOCKET, kind));
+        if raw.tv_sec == 0 && raw.tv_usec == 0 {
+            Ok(None)
+        } else {
+            let sec = raw.tv_sec as u64;
+            let nsec = (raw.tv_usec as u32) * 1000;
+            Ok(Some(Duration::new(sec, nsec)))
+        }
+    }
 }
 
 impl AsInner<c_int> for Socket {
     fn as_inner(&self) -> &c_int { self.0.as_inner() }
+}
+
+impl FromInner<c_int> for Socket {
+    fn from_inner(fd: c_int) -> Socket { Socket(FileDesc::new(fd)) }
 }

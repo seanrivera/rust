@@ -8,8 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+// pretty-expanded FIXME #23616
 
-trait Foo : ::std::marker::MarkerTrait {
+trait Foo {
 }
 
 fn b(_x: Box<Foo+Send>) {

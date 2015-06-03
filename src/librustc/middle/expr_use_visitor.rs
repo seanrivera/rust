@@ -94,11 +94,12 @@ pub trait Delegate<'tcx> {
               mode: MutateMode);
 }
 
-#[derive(Copy, PartialEq, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum LoanCause {
     ClosureCapture(Span),
     AddrOf,
     AutoRef,
+    AutoUnsafe,
     RefBinding,
     OverloadedOperator,
     ClosureInvocation,
@@ -106,20 +107,20 @@ pub enum LoanCause {
     MatchDiscriminant
 }
 
-#[derive(Copy, PartialEq, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum ConsumeMode {
     Copy,                // reference to x where x has a type that copies
     Move(MoveReason),    // reference to x where x has a type that moves
 }
 
-#[derive(Copy, PartialEq, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum MoveReason {
     DirectRefMove,
     PatBindingMove,
     CaptureMove,
 }
 
-#[derive(Copy, PartialEq, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum MatchMode {
     NonBindingMatch,
     BorrowingMatch,
@@ -127,7 +128,7 @@ pub enum MatchMode {
     MovingMatch,
 }
 
-#[derive(Copy, PartialEq, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 enum TrackMatchMode {
     Unknown,
     Definite(MatchMode),
@@ -194,14 +195,14 @@ impl TrackMatchMode {
     }
 }
 
-#[derive(Copy, PartialEq, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum MutateMode {
     Init,
     JustWrite,    // x = y
     WriteAndRead, // x += y
 }
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 enum OverloadedCallType {
     FnOverloadedCall,
     FnMutOverloadedCall,
@@ -233,7 +234,7 @@ impl OverloadedCallType {
             ty::MethodTraitItem(ref method_descriptor) => {
                 (*method_descriptor).clone()
             }
-            ty::TypeTraitItem(_) => {
+            _ => {
                 tcx.sess.bug("overloaded call method wasn't in method map")
             }
         };
@@ -442,7 +443,7 @@ impl<'d,'t,'tcx,TYPER:mc::Typer<'tcx>> ExprUseVisitor<'d,'t,'tcx,TYPER> {
                 if !self.walk_overloaded_operator(expr,
                                                   &**lhs,
                                                   vec![&**rhs],
-                                                  PassArgs::ByRef) {
+                                                  PassArgs::ByValue) {
                     self.select_from_expr(&**lhs);
                     self.consume_expr(&**rhs);
                 }
@@ -786,32 +787,19 @@ impl<'d,'t,'tcx,TYPER:mc::Typer<'tcx>> ExprUseVisitor<'d,'t,'tcx,TYPER> {
     // process.
     fn walk_adjustment(&mut self, expr: &ast::Expr) {
         let typer = self.typer;
-        match typer.adjustments().borrow().get(&expr.id) {
-            None => { }
-            Some(adjustment) => {
-                match *adjustment {
-                    ty::AdjustReifyFnPointer(..) => {
-                        // Creating a closure/fn-pointer consumes the
-                        // input and stores it into the resulting
-                        // rvalue.
-                        debug!("walk_adjustment(AutoAddEnv|AdjustReifyFnPointer)");
-                        let cmt_unadjusted =
-                            return_if_err!(self.mc.cat_expr_unadjusted(expr));
-                        self.delegate_consume(expr.id, expr.span, cmt_unadjusted);
-                    }
-                    ty::AdjustDerefRef(ty::AutoDerefRef {
-                        autoref: ref opt_autoref,
-                        autoderefs: n
-                    }) => {
-                        self.walk_autoderefs(expr, n);
-
-                        match *opt_autoref {
-                            None => { }
-                            Some(ref r) => {
-                                self.walk_autoref(expr, r, n);
-                            }
-                        }
-                    }
+        if let Some(adjustment) = typer.adjustments().borrow().get(&expr.id) {
+            match *adjustment {
+                ty::AdjustReifyFnPointer |
+                ty::AdjustUnsafeFnPointer => {
+                    // Creating a closure/fn-pointer or unsizing consumes
+                    // the input and stores it into the resulting rvalue.
+                    debug!("walk_adjustment(AdjustReifyFnPointer|AdjustUnsafeFnPointer)");
+                    let cmt_unadjusted =
+                        return_if_err!(self.mc.cat_expr_unadjusted(expr));
+                    self.delegate_consume(expr.id, expr.span, cmt_unadjusted);
+                }
+                ty::AdjustDerefRef(ref adj) => {
+                    self.walk_autoderefref(expr, adj);
                 }
             }
         }
@@ -822,11 +810,11 @@ impl<'d,'t,'tcx,TYPER:mc::Typer<'tcx>> ExprUseVisitor<'d,'t,'tcx,TYPER> {
     /// `deref()` is declared with `&self`, this is an autoref of `x`.
     fn walk_autoderefs(&mut self,
                        expr: &ast::Expr,
-                       autoderefs: uint) {
+                       autoderefs: usize) {
         debug!("walk_autoderefs expr={} autoderefs={}", expr.repr(self.tcx()), autoderefs);
 
         for i in 0..autoderefs {
-            let deref_id = ty::MethodCall::autoderef(expr.id, i);
+            let deref_id = ty::MethodCall::autoderef(expr.id, i as u32);
             match self.typer.node_method_ty(deref_id) {
                 None => {}
                 Some(method_ty) => {
@@ -851,45 +839,104 @@ impl<'d,'t,'tcx,TYPER:mc::Typer<'tcx>> ExprUseVisitor<'d,'t,'tcx,TYPER> {
         }
     }
 
-    fn walk_autoref(&mut self,
-                    expr: &ast::Expr,
-                    autoref: &ty::AutoRef,
-                    n: uint) {
-        debug!("walk_autoref expr={}", expr.repr(self.tcx()));
+    fn walk_autoderefref(&mut self,
+                         expr: &ast::Expr,
+                         adj: &ty::AutoDerefRef<'tcx>) {
+        debug!("walk_autoderefref expr={} adj={}",
+               expr.repr(self.tcx()),
+               adj.repr(self.tcx()));
 
-        // Match for unique trait coercions first, since we don't need the
-        // call to cat_expr_autoderefd.
-        match *autoref {
-            ty::AutoUnsizeUniq(ty::UnsizeVtable(..)) |
-            ty::AutoUnsize(ty::UnsizeVtable(..)) => {
-                assert!(n == 1, format!("Expected exactly 1 deref with Uniq \
-                                         AutoRefs, found: {}", n));
-                let cmt_unadjusted =
-                    return_if_err!(self.mc.cat_expr_unadjusted(expr));
-                self.delegate_consume(expr.id, expr.span, cmt_unadjusted);
-                return;
-            }
-            _ => {}
-        }
+        self.walk_autoderefs(expr, adj.autoderefs);
 
-        let cmt_derefd = return_if_err!(
-            self.mc.cat_expr_autoderefd(expr, n));
-        debug!("walk_adjustment: cmt_derefd={}",
-               cmt_derefd.repr(self.tcx()));
+        let cmt_derefd =
+            return_if_err!(self.mc.cat_expr_autoderefd(expr, adj.autoderefs));
 
-        match *autoref {
-            ty::AutoPtr(r, m, _) => {
-                self.delegate.borrow(expr.id,
-                                     expr.span,
-                                     cmt_derefd,
-                                     r,
-                                     ty::BorrowKind::from_mutbl(m),
-                                     AutoRef);
-            }
-            ty::AutoUnsizeUniq(_) | ty::AutoUnsize(_) | ty::AutoUnsafe(..) => {}
+        let cmt_refd =
+            self.walk_autoref(expr, cmt_derefd, adj.autoref);
+
+        if adj.unsize.is_some() {
+            // Unsizing consumes the thin pointer and produces a fat one.
+            self.delegate_consume(expr.id, expr.span, cmt_refd);
         }
     }
 
+
+    /// Walks the autoref `opt_autoref` applied to the autoderef'd
+    /// `expr`. `cmt_derefd` is the mem-categorized form of `expr`
+    /// after all relevant autoderefs have occurred. Because AutoRefs
+    /// can be recursive, this function is recursive: it first walks
+    /// deeply all the way down the autoref chain, and then processes
+    /// the autorefs on the way out. At each point, it returns the
+    /// `cmt` for the rvalue that will be produced by introduced an
+    /// autoref.
+    fn walk_autoref(&mut self,
+                    expr: &ast::Expr,
+                    cmt_base: mc::cmt<'tcx>,
+                    opt_autoref: Option<ty::AutoRef<'tcx>>)
+                    -> mc::cmt<'tcx>
+    {
+        debug!("walk_autoref(expr.id={} cmt_derefd={} opt_autoref={:?})",
+               expr.id,
+               cmt_base.repr(self.tcx()),
+               opt_autoref);
+
+        let cmt_base_ty = cmt_base.ty;
+
+        let autoref = match opt_autoref {
+            Some(ref autoref) => autoref,
+            None => {
+                // No AutoRef.
+                return cmt_base;
+            }
+        };
+
+        match *autoref {
+            ty::AutoPtr(r, m) => {
+                self.delegate.borrow(expr.id,
+                                     expr.span,
+                                     cmt_base,
+                                     *r,
+                                     ty::BorrowKind::from_mutbl(m),
+                                     AutoRef);
+            }
+
+            ty::AutoUnsafe(m) => {
+                debug!("walk_autoref: expr.id={} cmt_base={}",
+                       expr.id,
+                       cmt_base.repr(self.tcx()));
+
+                // Converting from a &T to *T (or &mut T to *mut T) is
+                // treated as borrowing it for the enclosing temporary
+                // scope.
+                let r = ty::ReScope(region::CodeExtent::from_node_id(expr.id));
+
+                self.delegate.borrow(expr.id,
+                                     expr.span,
+                                     cmt_base,
+                                     r,
+                                     ty::BorrowKind::from_mutbl(m),
+                                     AutoUnsafe);
+            }
+        }
+
+        // Construct the categorization for the result of the autoref.
+        // This is always an rvalue, since we are producing a new
+        // (temporary) indirection.
+
+        let adj_ty =
+            ty::adjust_ty_for_autoref(self.tcx(),
+                                      cmt_base_ty,
+                                      opt_autoref);
+
+        self.mc.cat_rvalue_node(expr.id, expr.span, adj_ty)
+    }
+
+
+    // When this returns true, it means that the expression *is* a
+    // method-call (i.e. via the operator-overload).  This true result
+    // also implies that walk_overloaded_operator already took care of
+    // recursively processing the input arguments, and thus the caller
+    // should not do so.
     fn walk_overloaded_operator(&mut self,
                                 expr: &ast::Expr,
                                 receiver: &ast::Expr,
@@ -1017,7 +1064,7 @@ impl<'d,'t,'tcx,TYPER:mc::Typer<'tcx>> ExprUseVisitor<'d,'t,'tcx,TYPER> {
 
                 // Each match binding is effectively an assignment to the
                 // binding being produced.
-                let def = def_map.borrow()[pat.id].full_def();
+                let def = def_map.borrow().get(&pat.id).unwrap().full_def();
                 match mc.cat_def(pat.id, pat.span, pat_ty, def) {
                     Ok(binding_cmt) => {
                         delegate.mutate(pat.id, pat.span, binding_cmt, Init);
@@ -1074,7 +1121,7 @@ impl<'d,'t,'tcx,TYPER:mc::Typer<'tcx>> ExprUseVisitor<'d,'t,'tcx,TYPER> {
                         // that case we can adjust the length of the
                         // original vec accordingly, but we'd have to
                         // make trans do the right thing, and it would
-                        // only work for `~` vectors. It seems simpler
+                        // only work for `Box<[T]>`s. It seems simpler
                         // to just require that people call
                         // `vec.pop()` or `vec.unshift()`.
                         let slice_bk = ty::BorrowKind::from_mutbl(slice_mutbl);
@@ -1096,7 +1143,8 @@ impl<'d,'t,'tcx,TYPER:mc::Typer<'tcx>> ExprUseVisitor<'d,'t,'tcx,TYPER> {
             let tcx = typer.tcx();
 
             match pat.node {
-                ast::PatEnum(_, _) | ast::PatIdent(_, _, None) | ast::PatStruct(..) => {
+                ast::PatEnum(_, _) | ast::PatQPath(..) |
+                ast::PatIdent(_, _, None) | ast::PatStruct(..) => {
                     match def_map.get(&pat.id).map(|d| d.full_def()) {
                         None => {
                             // no definition found: pat is not a
@@ -1132,6 +1180,7 @@ impl<'d,'t,'tcx,TYPER:mc::Typer<'tcx>> ExprUseVisitor<'d,'t,'tcx,TYPER> {
                         }
 
                         Some(def::DefConst(..)) |
+                        Some(def::DefAssociatedConst(..)) |
                         Some(def::DefLocal(..)) => {
                             // This is a leaf (i.e. identifier binding
                             // or constant value to match); thus no

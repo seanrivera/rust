@@ -9,16 +9,18 @@
 // except according to those terms.
 
 
-use back::{link};
+use back::link;
 use llvm::{ValueRef, CallConv, get_param};
 use llvm;
 use middle::weak_lang_items;
+use trans::attributes;
 use trans::base::{llvm_linkage_by_name, push_ctxt};
 use trans::base;
 use trans::build::*;
 use trans::cabi;
 use trans::common::*;
 use trans::debuginfo::DebugLoc;
+use trans::declare;
 use trans::machine;
 use trans::monomorphize;
 use trans::type_::Type;
@@ -27,7 +29,6 @@ use trans::type_of;
 use middle::ty::{self, Ty};
 use middle::subst::Substs;
 
-use std::ffi::CString;
 use std::cmp;
 use libc::c_uint;
 use syntax::abi::{Cdecl, Aapcs, C, Win64, Abi};
@@ -35,7 +36,7 @@ use syntax::abi::{RustIntrinsic, Rust, RustCall, Stdcall, Fastcall, System};
 use syntax::codemap::Span;
 use syntax::parse::token::{InternedString, special_idents};
 use syntax::parse::token;
-use syntax::{ast};
+use syntax::ast;
 use syntax::{attr, ast_map};
 use syntax::print::pprust;
 use util::ppaux::Repr;
@@ -135,9 +136,7 @@ pub fn register_static(ccx: &CrateContext,
             };
             unsafe {
                 // Declare a symbol `foo` with the desired linkage.
-                let buf = CString::new(ident.as_bytes()).unwrap();
-                let g1 = llvm::LLVMAddGlobal(ccx.llmod(), llty2.to_ref(),
-                                             buf.as_ptr());
+                let g1 = declare::declare_global(ccx, &ident[..], llty2);
                 llvm::SetLinkage(g1, linkage);
 
                 // Declare an internal global `extern_with_linkage_foo` which
@@ -148,20 +147,35 @@ pub fn register_static(ccx: &CrateContext,
                 // zero.
                 let mut real_name = "_rust_extern_with_linkage_".to_string();
                 real_name.push_str(&ident);
-                let real_name = CString::new(real_name).unwrap();
-                let g2 = llvm::LLVMAddGlobal(ccx.llmod(), llty.to_ref(),
-                                             real_name.as_ptr());
+                let g2 = declare::define_global(ccx, &real_name[..], llty).unwrap_or_else(||{
+                    ccx.sess().span_fatal(foreign_item.span,
+                                          &format!("symbol `{}` is already defined", ident))
+                });
                 llvm::SetLinkage(g2, llvm::InternalLinkage);
                 llvm::LLVMSetInitializer(g2, g1);
                 g2
             }
         }
-        None => unsafe {
-            // Generate an external declaration.
-            let buf = CString::new(ident.as_bytes()).unwrap();
-            llvm::LLVMAddGlobal(ccx.llmod(), llty.to_ref(), buf.as_ptr())
-        }
+        None => // Generate an external declaration.
+            declare::declare_global(ccx, &ident[..], llty),
     }
+}
+
+// only use this for foreign function ABIs and glue, use `get_extern_rust_fn` for Rust functions
+pub fn get_extern_fn(ccx: &CrateContext,
+                     externs: &mut ExternMap,
+                     name: &str,
+                     cc: llvm::CallConv,
+                     ty: Type,
+                     output: Ty)
+                     -> ValueRef {
+    match externs.get(name) {
+        Some(n) => return *n,
+        None => {}
+    }
+    let f = declare::declare_fn(ccx, name, cc, ty, ty::FnConverging(output));
+    externs.insert(name.to_string(), f);
+    f
 }
 
 /// Registers a foreign function found in a library. Just adds a LLVM global.
@@ -189,14 +203,8 @@ pub fn register_foreign_item_fn<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
     // Create the LLVM value for the C extern fn
     let llfn_ty = lltype_for_fn_from_foreign_types(ccx, &tys);
 
-    let llfn = base::get_extern_fn(ccx,
-                                   &mut *ccx.externs().borrow_mut(),
-                                   name,
-                                   cc,
-                                   llfn_ty,
-                                   fty);
+    let llfn = get_extern_fn(ccx, &mut *ccx.externs().borrow_mut(), name, cc, llfn_ty, fty);
     add_argument_attributes(&tys, llfn);
-
     llfn
 }
 
@@ -341,8 +349,8 @@ pub fn trans_native_call<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
         // The outptr can be noalias and nocapture because it's entirely
         // invisible to the program. We also know it's nonnull as well
         // as how many bytes we can dereference
-        attrs.arg(1, llvm::NoAliasAttribute)
-             .arg(1, llvm::NoCaptureAttribute)
+        attrs.arg(1, llvm::Attribute::NoAlias)
+             .arg(1, llvm::Attribute::NoCapture)
              .arg(1, llvm::DereferenceableAttribute(llret_sz));
     };
 
@@ -470,8 +478,8 @@ pub fn trans_foreign_mod(ccx: &CrateContext, foreign_mod: &ast::ForeignMod) {
                                                      "foreign fn's sty isn't a bare_fn_ty?")
                     }
 
-                    register_foreign_item_fn(ccx, abi, ty,
-                                             &lname);
+                    let llfn = register_foreign_item_fn(ccx, abi, ty, &lname);
+                    attributes::from_fn_attrs(ccx, &foreign_item.attrs, llfn);
                     // Unlike for other items, we shouldn't call
                     // `base::update_linkage` here.  Foreign items have
                     // special linkage requirements, which are handled
@@ -522,7 +530,8 @@ pub fn decl_rust_fn_with_foreign_abi<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
         }
         _ => panic!("expected bare fn in decl_rust_fn_with_foreign_abi")
     };
-    let llfn = base::decl_fn(ccx, name, cconv, llfn_ty, ty::FnConverging(ty::mk_nil(ccx.tcx())));
+    let llfn = declare::declare_fn(ccx, name, cconv, llfn_ty,
+                                   ty::FnConverging(ty::mk_nil(ccx.tcx())));
     add_argument_attributes(&tys, llfn);
     debug!("decl_rust_fn_with_foreign_abi(llfn_ty={}, llfn={})",
            ccx.tn().type_to_string(llfn_ty), ccx.tn().val_to_string(llfn));
@@ -611,8 +620,10 @@ pub fn trans_rust_fn_with_foreign_abi<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
                ccx.tcx().map.path_to_string(id),
                id, t.repr(tcx));
 
-        let llfn = base::decl_internal_rust_fn(ccx, t, &ps[..]);
-        base::set_llvm_fn_attrs(ccx, attrs, llfn);
+        let llfn = declare::define_internal_rust_fn(ccx, &ps[..], t).unwrap_or_else(||{
+            ccx.sess().bug(&format!("symbol `{}` already defined", ps));
+        });
+        attributes::from_fn_attrs(ccx, attrs, llfn);
         base::trans_fn(ccx, decl, body, llfn, param_substs, id, &[]);
         llfn
     }
@@ -641,6 +652,11 @@ pub fn trans_rust_fn_with_foreign_abi<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
         //         foo0(&r, NULL, i);
         //         return r;
         //     }
+
+        if llvm::LLVMCountBasicBlocks(llwrapfn) != 0 {
+            ccx.sess().bug("wrapping a function inside non-empty wrapper, most likely cause is \
+                           multiple functions being wrapped");
+        }
 
         let ptr = "the block\0".as_ptr();
         let the_block = llvm::LLVMAppendBasicBlockInContext(ccx.llcx(), llwrapfn,
@@ -786,7 +802,9 @@ pub fn trans_rust_fn_with_foreign_abi<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
                     // appropriately sized integer and we have to convert it
                     let tmp = builder.bitcast(llforeign_arg,
                                               type_of::arg_type_of(ccx, rust_ty).ptr_to());
-                    builder.load(tmp)
+                    let load = builder.load(tmp);
+                    llvm::LLVMSetAlignment(load, type_of::align_of(ccx, rust_ty));
+                    load
                 } else {
                     builder.load(llforeign_arg)
                 }
@@ -800,7 +818,7 @@ pub fn trans_rust_fn_with_foreign_abi<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
         // Perform the call itself
         debug!("calling llrustfn = {}, t = {}",
                ccx.tn().val_to_string(llrustfn), t.repr(ccx.tcx()));
-        let attributes = base::get_fn_llvm_attributes(ccx, t);
+        let attributes = attributes::from_fn_type(ccx, t);
         let llrust_ret_val = builder.call(llrustfn, &llrust_args, Some(attributes));
 
         // Get the return value where the foreign fn expects it.

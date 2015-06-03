@@ -8,8 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 pub fn main() {
-    let i: int = 'Q' as int;
+    let i: isize = 'Q' as isize;
     assert_eq!(i, 0x51);
     let u: u32 = i as u32;
     assert_eq!(u, 0x51 as u32);

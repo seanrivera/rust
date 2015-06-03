@@ -38,9 +38,9 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
 // OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// ignore-android see #10393 #13206
+// ignore-android: FIXME(#10393) hangs without output
 
-#![feature(box_syntax)]
+#![feature(box_syntax, std_misc, collections)]
 
 use std::ascii::OwnedAsciiExt;
 use std::env;
@@ -64,7 +64,7 @@ static OCCURRENCES: [&'static str;5] = [
 
 // Code implementation
 
-#[derive(Copy, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 struct Code(u64);
 
 impl Code {
@@ -252,7 +252,7 @@ fn generate_frequencies(mut input: &[u8], frame: usize) -> Table {
     }
     frequencies.lookup(code, BumpCallback);
 
-    while input.len() != 0 && input[0] != ('>' as u8) {
+    while !input.is_empty() && input[0] != ('>' as u8) {
         code = code.rotate(input[0], frame);
         frequencies.lookup(code, BumpCallback);
         input = &input[1..];
@@ -307,17 +307,17 @@ fn main() {
 
     let nb_freqs: Vec<_> = (1..3).map(|i| {
         let input = input.clone();
-        (i, thread::scoped(move|| generate_frequencies(&input, i)))
+        (i, thread::spawn(move|| generate_frequencies(&input, i)))
     }).collect();
     let occ_freqs: Vec<_> = OCCURRENCES.iter().map(|&occ| {
         let input = input.clone();
-        thread::scoped(move|| generate_frequencies(&input, occ.len()))
+        thread::spawn(move|| generate_frequencies(&input, occ.len()))
     }).collect();
 
     for (i, freq) in nb_freqs {
-        print_frequencies(&freq.join(), i);
+        print_frequencies(&freq.join().unwrap(), i);
     }
     for (&occ, freq) in OCCURRENCES.iter().zip(occ_freqs.into_iter()) {
-        print_occurrences(&mut freq.join(), occ);
+        print_occurrences(&mut freq.join().unwrap(), occ);
     }
 }

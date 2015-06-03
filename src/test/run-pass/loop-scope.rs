@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 pub fn main() {
     let x = vec!(10, 20, 30);
     let mut sum = 0;

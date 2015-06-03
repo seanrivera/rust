@@ -8,11 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 //
-// ignore-lexer-test FIXME #15679
 
 #![feature(non_ascii_idents)]
-
-use std::num::Float;
 
 pub fn main() {
     let ε = 0.00001f64;
@@ -22,7 +19,7 @@ pub fn main() {
     assert_eq!(საჭმელად_გემრიელი_სადილი(), 0);
 }
 
-fn საჭმელად_გემრიელი_სადილი() -> int {
+fn საჭმელად_გემრიელი_სადილი() -> isize {
 
     // Lunch in several languages.
 

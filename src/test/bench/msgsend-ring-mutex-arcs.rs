@@ -8,7 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// This test creates a bunch of tasks that simultaneously send to each
+// This test creates a bunch of threads that simultaneously send to each
 // other in a ring. The messages should all be basically
 // independent.
 // This is like msgsend-ring-pipes but adapted to use Arcs.
@@ -16,22 +16,23 @@
 // This also serves as a pipes test, because Arcs are implemented with pipes.
 
 // no-pretty-expanded FIXME #15189
-// ignore-lexer-test FIXME #15679
+
+#![feature(duration, duration_span, std_misc)]
 
 use std::env;
 use std::sync::{Arc, Future, Mutex, Condvar};
 use std::time::Duration;
 
 // A poor man's pipe.
-type pipe = Arc<(Mutex<Vec<uint>>, Condvar)>;
+type pipe = Arc<(Mutex<Vec<usize>>, Condvar)>;
 
-fn send(p: &pipe, msg: uint) {
+fn send(p: &pipe, msg: usize) {
     let &(ref lock, ref cond) = &**p;
     let mut arr = lock.lock().unwrap();
     arr.push(msg);
     cond.notify_one();
 }
-fn recv(p: &pipe) -> uint {
+fn recv(p: &pipe) -> usize {
     let &(ref lock, ref cond) = &**p;
     let mut arr = lock.lock().unwrap();
     while arr.is_empty() {
@@ -46,12 +47,12 @@ fn init() -> (pipe,pipe) {
 }
 
 
-fn thread_ring(i: uint, count: uint, num_chan: pipe, num_port: pipe) {
+fn thread_ring(i: usize, count: usize, num_chan: pipe, num_port: pipe) {
     let mut num_chan = Some(num_chan);
     let mut num_port = Some(num_port);
     // Send/Receive lots of messages.
     for j in 0..count {
-        //println!("task %?, iter %?", i, j);
+        //println!("thread %?, iter %?", i, j);
         let num_chan2 = num_chan.take().unwrap();
         let num_port2 = num_port.take().unwrap();
         send(&num_chan2, i * j);
@@ -72,8 +73,8 @@ fn main() {
         args.collect()
     };
 
-    let num_tasks = args[1].parse::<uint>().unwrap();
-    let msg_per_task = args[2].parse::<uint>().unwrap();
+    let num_tasks = args[1].parse::<usize>().unwrap();
+    let msg_per_task = args[2].parse::<usize>().unwrap();
 
     let (num_chan, num_port) = init();
 
@@ -106,9 +107,9 @@ fn main() {
 
     // all done, report stats.
     let num_msgs = num_tasks * msg_per_task;
-    let rate = (num_msgs as f64) / (dur.num_milliseconds() as f64);
+    let rate = (num_msgs as f64) / (dur.secs() as f64);
 
-    println!("Sent {} messages in {} ms", num_msgs, dur.num_milliseconds());
-    println!("  {} messages / second", rate / 1000.0);
-    println!("  {} μs / message", 1000000. / rate / 1000.0);
+    println!("Sent {} messages in {}", num_msgs, dur);
+    println!("  {} messages / second", rate);
+    println!("  {} μs / message", 1000000. / rate);
 }

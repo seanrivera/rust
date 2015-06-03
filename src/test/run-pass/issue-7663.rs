@@ -8,12 +8,13 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 #![allow(unused_imports, dead_code)]
 
 mod test1 {
 
-    mod foo { pub fn p() -> int { 1 } }
-    mod bar { pub fn p() -> int { 2 } }
+    mod foo { pub fn p() -> isize { 1 } }
+    mod bar { pub fn p() -> isize { 2 } }
 
     pub mod baz {
         use test1::bar::p;
@@ -24,8 +25,8 @@ mod test1 {
 
 mod test2 {
 
-    mod foo { pub fn p() -> int { 1 } }
-    mod bar { pub fn p() -> int { 2 } }
+    mod foo { pub fn p() -> isize { 1 } }
+    mod bar { pub fn p() -> isize { 2 } }
 
     pub mod baz {
         use test2::bar::p;

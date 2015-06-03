@@ -10,7 +10,7 @@
 
 // Check that an associated type cannot be bound in an expression path.
 
-trait Foo : ::std::marker::MarkerTrait {
+trait Foo {
     type A;
     fn bar() -> isize;
 }
@@ -22,5 +22,5 @@ impl Foo for isize {
 
 pub fn main() {
     let x: isize = Foo::<A=usize>::bar();
-    //~^ERROR unexpected binding of associated item in expression path
+    //~^ ERROR unexpected binding of associated item in expression path
 }

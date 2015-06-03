@@ -10,14 +10,15 @@
 
 // Test associated type references in a struct literal. Issue #20535.
 
+
 pub trait Foo {
     type Bar;
 
     fn dummy(&self) { }
 }
 
-impl Foo for int {
-    type Bar = int;
+impl Foo for isize {
+    type Bar = isize;
 }
 
 struct Thing<F: Foo> {

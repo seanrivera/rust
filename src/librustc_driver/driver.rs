@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use syntax::ast;
 use syntax::ast_map;
 use syntax::attr;
-use syntax::attr::{AttrMetaMethods};
+use syntax::attr::AttrMetaMethods;
 use syntax::diagnostics;
 use syntax::parse;
 use syntax::parse::token;
@@ -52,11 +52,11 @@ pub fn compile_input(sess: Session,
                      output: &Option<PathBuf>,
                      addl_plugins: Option<Vec<String>>,
                      control: CompileController) {
-    macro_rules! controller_entry_point{($point: ident, $make_state: expr) => ({
-        {
-            let state = $make_state;
-            (control.$point.callback)(state);
-        }
+    macro_rules! controller_entry_point{($point: ident, $tsess: expr, $make_state: expr) => ({
+        let state = $make_state;
+        (control.$point.callback)(state);
+
+        $tsess.abort_if_errors();
         if control.$point.stop == Compilation::Stop {
             return;
         }
@@ -70,6 +70,7 @@ pub fn compile_input(sess: Session,
             let krate = phase_1_parse_input(&sess, cfg, input);
 
             controller_entry_point!(after_parse,
+                                    sess,
                                     CompileState::state_after_parse(input,
                                                                     &sess,
                                                                     outdir,
@@ -96,6 +97,7 @@ pub fn compile_input(sess: Session,
         };
 
         controller_entry_point!(after_expand,
+                                sess,
                                 CompileState::state_after_expand(input,
                                                                  &sess,
                                                                  outdir,
@@ -109,6 +111,7 @@ pub fn compile_input(sess: Session,
         write_out_deps(&sess, input, &outputs, &id[..]);
 
         controller_entry_point!(after_write_deps,
+                                sess,
                                 CompileState::state_after_write_deps(input,
                                                                      &sess,
                                                                      outdir,
@@ -123,6 +126,7 @@ pub fn compile_input(sess: Session,
                                                    control.make_glob_map);
 
         controller_entry_point!(after_analysis,
+                                analysis.ty_cx.sess,
                                 CompileState::state_after_analysis(input,
                                                                    &analysis.ty_cx.sess,
                                                                    outdir,
@@ -149,6 +153,7 @@ pub fn compile_input(sess: Session,
     phase_5_run_llvm_passes(&sess, &trans, &outputs);
 
     controller_entry_point!(after_llvm,
+                            sess,
                             CompileState::state_after_llvm(input,
                                                            &sess,
                                                            outdir,
@@ -378,6 +383,17 @@ pub fn phase_2_configure_and_expand(sess: &Session,
                                     -> Option<ast::Crate> {
     let time_passes = sess.time_passes();
 
+    // strip before anything else because crate metadata may use #[cfg_attr]
+    // and so macros can depend on configuration variables, such as
+    //
+    //   #[macro_use] #[cfg(foo)]
+    //   mod bar { macro_rules! baz!(() => {{}}) }
+    //
+    // baz! should not use this definition unless foo is enabled.
+
+    krate = time(time_passes, "configuration 1", krate, |krate|
+                 syntax::config::strip_unconfigured_items(sess.diagnostic(), krate));
+
     *sess.crate_types.borrow_mut() =
         collect_crate_types(sess, &krate.attrs);
     *sess.crate_metadata.borrow_mut() =
@@ -386,14 +402,6 @@ pub fn phase_2_configure_and_expand(sess: &Session,
     time(time_passes, "recursion limit", (), |_| {
         middle::recursion_limit::update_recursion_limit(sess, &krate);
     });
-
-    // strip before expansion to allow macros to depend on
-    // configuration variables e.g/ in
-    //
-    //   #[macro_use] #[cfg(foo)]
-    //   mod bar { macro_rules! baz!(() => {{}}) }
-    //
-    // baz! should not use this definition unless foo is enabled.
 
     time(time_passes, "gated macro checking", (), |_| {
         let features =
@@ -406,8 +414,6 @@ pub fn phase_2_configure_and_expand(sess: &Session,
         sess.abort_if_errors();
     });
 
-    krate = time(time_passes, "configuration 1", krate, |krate|
-                 syntax::config::strip_unconfigured_items(sess.diagnostic(), krate));
 
     krate = time(time_passes, "crate injection", krate, |krate|
                  syntax::std_inject::maybe_inject_crates_ref(krate,
@@ -438,7 +444,8 @@ pub fn phase_2_configure_and_expand(sess: &Session,
         }
     });
 
-    let Registry { syntax_exts, lint_passes, lint_groups, .. } = registry;
+    let Registry { syntax_exts, lint_passes, lint_groups,
+                   llvm_passes, attributes, .. } = registry;
 
     {
         let mut ls = sess.lint_store.borrow_mut();
@@ -449,6 +456,9 @@ pub fn phase_2_configure_and_expand(sess: &Session,
         for (name, to) in lint_groups {
             ls.register_group(Some(sess), true, name, to);
         }
+
+        *sess.plugin_llvm_passes.borrow_mut() = llvm_passes;
+        *sess.plugin_attributes.borrow_mut() = attributes.clone();
     }
 
     // Lint plugins are registered; now we can process command line flags.
@@ -468,10 +478,11 @@ pub fn phase_2_configure_and_expand(sess: &Session,
             // dependent dlls. Note that this uses cfg!(windows) as opposed to
             // targ_cfg because syntax extensions are always loaded for the host
             // compiler, not for the target.
-            let mut _old_path = OsString::from_str("");
+            let mut _old_path = OsString::new();
             if cfg!(windows) {
                 _old_path = env::var_os("PATH").unwrap_or(_old_path);
-                let mut new_path = sess.host_filesearch(PathKind::All).get_dylib_search_paths();
+                let mut new_path = sess.host_filesearch(PathKind::All)
+                                       .get_dylib_search_paths();
                 new_path.extend(env::split_paths(&_old_path));
                 env::set_var("PATH", &env::join_paths(new_path.iter()).unwrap());
             }
@@ -480,6 +491,7 @@ pub fn phase_2_configure_and_expand(sess: &Session,
                 crate_name: crate_name.to_string(),
                 features: Some(&features),
                 recursion_limit: sess.recursion_limit.get(),
+                trace_mac: sess.opts.debugging_opts.trace_macros,
             };
             let ret = syntax::ext::expand::expand_crate(&sess.parse_sess,
                                               cfg,
@@ -501,8 +513,7 @@ pub fn phase_2_configure_and_expand(sess: &Session,
         let features =
             syntax::feature_gate::check_crate(sess.codemap(),
                                               &sess.parse_sess.span_diagnostic,
-                                              &krate,
-                                              true);
+                                              &krate, &attributes);
         *sess.features.borrow_mut() = features;
         sess.abort_if_errors();
     });
@@ -532,8 +543,7 @@ pub fn phase_2_configure_and_expand(sess: &Session,
         let features =
             syntax::feature_gate::check_crate(sess.codemap(),
                                               &sess.parse_sess.span_diagnostic,
-                                              &krate,
-                                              false);
+                                              &krate, &attributes);
         *sess.features.borrow_mut() = features;
         sess.abort_if_errors();
     });
@@ -643,7 +653,7 @@ pub fn phase_3_run_analysis_passes<'tcx>(sess: Session,
 
     // Do not move this check past lint
     time(time_passes, "stability index", (), |_|
-         ty_cx.stability.borrow_mut().build(&ty_cx.sess, krate, &public_items));
+         ty_cx.stability.borrow_mut().build(&ty_cx, krate, &public_items));
 
     time(time_passes, "intrinsic checking", (), |_|
          middle::intrinsicck::check_crate(&ty_cx));
@@ -752,7 +762,7 @@ pub fn phase_5_run_llvm_passes(sess: &Session,
 pub fn phase_6_link_output(sess: &Session,
                            trans: &trans::CrateTranslation,
                            outputs: &OutputFilenames) {
-    let old_path = env::var_os("PATH").unwrap_or(OsString::from_str(""));
+    let old_path = env::var_os("PATH").unwrap_or(OsString::new());
     let mut new_path = sess.host_filesearch(PathKind::All).get_tools_search_paths();
     new_path.extend(env::split_paths(&old_path));
     env::set_var("PATH", &env::join_paths(new_path.iter()).unwrap());
@@ -864,11 +874,8 @@ pub fn collect_crate_types(session: &Session,
                     None
                 }
                 _ => {
-                    session.add_lint(lint::builtin::UNKNOWN_CRATE_TYPES,
-                                     ast::CRATE_NODE_ID,
-                                     a.span,
-                                     "`crate_type` requires a \
-                                      value".to_string());
+                    session.span_err(a.span, "`crate_type` requires a value");
+                    session.note("for example: `#![crate_type=\"lib\"]`");
                     None
                 }
             }
@@ -887,9 +894,9 @@ pub fn collect_crate_types(session: &Session,
     // command line, then reuse the empty `base` Vec to hold the types that
     // will be found in crate attributes.
     let mut base = session.opts.crate_types.clone();
-    if base.len() == 0 {
+    if base.is_empty() {
         base.extend(attr_types.into_iter());
-        if base.len() == 0 {
+        if base.is_empty() {
             base.push(link::default_output_for_target(session));
         }
         base.sort();
@@ -927,7 +934,7 @@ pub fn build_output_filenames(input: &Input,
             // We want to toss everything after the final '.'
             let dirpath = match *odir {
                 Some(ref d) => d.clone(),
-                None => PathBuf::new(".")
+                None => PathBuf::new()
             };
 
             // If a crate name is present, we use it as the link name
@@ -954,8 +961,11 @@ pub fn build_output_filenames(input: &Input,
             if *odir != None {
                 sess.warn("ignoring --out-dir flag due to -o flag.");
             }
+
+            let cur_dir = Path::new("");
+
             OutputFilenames {
-                out_directory: out_file.parent().unwrap().to_path_buf(),
+                out_directory: out_file.parent().unwrap_or(cur_dir).to_path_buf(),
                 out_filestem: out_file.file_stem().unwrap()
                                       .to_str().unwrap().to_string(),
                 single_output_file: ofile,

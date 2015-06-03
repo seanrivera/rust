@@ -12,7 +12,8 @@
 // pattern-bound var is an upvar (when translating
 // the for-each body)
 
-fn foo(src: uint) {
+
+fn foo(src: usize) {
 
     match Some(src) {
       Some(src_id) => {

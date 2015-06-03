@@ -8,7 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-struct Pair { x: int, y: int }
+
+struct Pair { x: isize, y: isize }
 
 pub fn main() {
     for elt in &(vec!(Pair {x: 10, y: 20}, Pair {x: 30, y: 0})) {

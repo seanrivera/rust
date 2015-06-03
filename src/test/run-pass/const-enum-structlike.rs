@@ -8,9 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 enum E {
     S0 { s: String },
-    S1 { u: uint }
+    S1 { u: usize }
 }
 
 static C: E = E::S1 { u: 23 };

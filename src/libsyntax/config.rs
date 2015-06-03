@@ -118,13 +118,13 @@ fn fold_item_underscore<F>(cx: &mut Context<F>, item: ast::Item_) -> ast::Item_ 
     let item = match item {
         ast::ItemImpl(u, o, a, b, c, impl_items) => {
             let impl_items = impl_items.into_iter()
-                                       .filter(|ii| impl_item_in_cfg(cx, ii))
+                                       .filter(|ii| (cx.in_cfg)(&ii.attrs))
                                        .collect();
             ast::ItemImpl(u, o, a, b, c, impl_items)
         }
         ast::ItemTrait(u, a, b, methods) => {
             let methods = methods.into_iter()
-                                 .filter(|m| trait_method_in_cfg(cx, m))
+                                 .filter(|ti| (cx.in_cfg)(&ti.attrs))
                                  .collect();
             ast::ItemTrait(u, a, b, methods)
         }
@@ -246,25 +246,6 @@ fn foreign_item_in_cfg<F>(cx: &mut Context<F>, item: &ast::ForeignItem) -> bool 
     return (cx.in_cfg)(&item.attrs);
 }
 
-fn trait_method_in_cfg<F>(cx: &mut Context<F>, meth: &ast::TraitItem) -> bool where
-    F: FnMut(&[ast::Attribute]) -> bool
-{
-    match *meth {
-        ast::RequiredMethod(ref meth) => (cx.in_cfg)(&meth.attrs),
-        ast::ProvidedMethod(ref meth) => (cx.in_cfg)(&meth.attrs),
-        ast::TypeTraitItem(ref typ) => (cx.in_cfg)(&typ.attrs),
-    }
-}
-
-fn impl_item_in_cfg<F>(cx: &mut Context<F>, impl_item: &ast::ImplItem) -> bool where
-    F: FnMut(&[ast::Attribute]) -> bool
-{
-    match *impl_item {
-        ast::MethodImplItem(ref meth) => (cx.in_cfg)(&meth.attrs),
-        ast::TypeImplItem(ref typ) => (cx.in_cfg)(&typ.attrs),
-    }
-}
-
 // Determine if an item should be translated in the current crate
 // configuration based on the item's attributes
 fn in_cfg(diagnostic: &SpanHandler, cfg: &[P<ast::MetaItem>], attrs: &[ast::Attribute]) -> bool {
@@ -303,8 +284,15 @@ impl<'a> fold::Folder for CfgAttrFolder<'a> {
             return fold::noop_fold_attribute(attr, self);
         }
 
-        let (cfg, mi) = match attr.meta_item_list() {
-            Some([ref cfg, ref mi]) => (cfg, mi),
+        let attr_list = match attr.meta_item_list() {
+            Some(attr_list) => attr_list,
+            None => {
+                self.diag.span_err(attr.span, "expected `#[cfg_attr(<cfg pattern>, <attr>)]`");
+                return None;
+            }
+        };
+        let (cfg, mi) = match (attr_list.len(), attr_list.get(0), attr_list.get(1)) {
+            (2, Some(cfg), Some(mi)) => (cfg, mi),
             _ => {
                 self.diag.span_err(attr.span, "expected `#[cfg_attr(<cfg pattern>, <attr>)]`");
                 return None;

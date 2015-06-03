@@ -8,7 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(unsafe_destructor, box_syntax)]
+#![feature(box_syntax, duration, duration_span, collections)]
 
 use std::env;
 use std::thread;
@@ -29,7 +29,7 @@ fn main() {
     run(repeat, depth);
 }
 
-fn run(repeat: int, depth: int) {
+fn run(repeat: isize, depth: isize) {
     for _ in 0..repeat {
         let dur = Duration::span(|| {
             let _ = thread::spawn(move|| {
@@ -54,7 +54,6 @@ struct r {
   _l: Box<nillist>,
 }
 
-#[unsafe_destructor]
 impl Drop for r {
     fn drop(&mut self) {}
 }
@@ -65,7 +64,7 @@ fn r(l: Box<nillist>) -> r {
     }
 }
 
-fn recurse_or_panic(depth: int, st: Option<State>) {
+fn recurse_or_panic(depth: isize, st: Option<State>) {
     if depth == 0 {
         panic!();
     } else {

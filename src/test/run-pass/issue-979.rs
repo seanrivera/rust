@@ -8,22 +8,19 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(unsafe_destructor)]
-
 use std::cell::Cell;
 
 struct r<'a> {
-    b: &'a Cell<int>,
+    b: &'a Cell<isize>,
 }
 
-#[unsafe_destructor]
 impl<'a> Drop for r<'a> {
     fn drop(&mut self) {
         self.b.set(self.b.get() + 1);
     }
 }
 
-fn r(b: &Cell<int>) -> r {
+fn r(b: &Cell<isize>) -> r {
     r {
         b: b
     }

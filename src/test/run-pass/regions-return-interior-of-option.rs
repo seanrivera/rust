@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 fn get<T>(opt: &Option<T>) -> &T {
     match *opt {
       Some(ref v) => v,

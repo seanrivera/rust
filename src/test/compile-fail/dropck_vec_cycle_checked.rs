@@ -12,16 +12,16 @@
 //
 // (Compare against compile-fail/dropck_arr_cycle_checked.rs)
 
-#![feature(unsafe_destructor)]
+#![feature(const_fn)]
 
 use std::cell::Cell;
 use id::Id;
 
 mod s {
     #![allow(unstable)]
-    use std::sync::atomic::{AtomicUint, ATOMIC_UINT_INIT, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    static S_COUNT: AtomicUint = ATOMIC_UINT_INIT;
+    static S_COUNT: AtomicUsize = AtomicUsize::new(0);
 
     pub fn next_count() -> usize {
         S_COUNT.fetch_add(1, Ordering::SeqCst) + 1
@@ -68,7 +68,6 @@ struct CheckId<T:HasId> {
 #[allow(non_snake_case)]
 fn CheckId<T:HasId>(t: T) -> CheckId<T> { CheckId{ v: t } }
 
-#[unsafe_destructor]
 impl<T:HasId> Drop for CheckId<T> {
     fn drop(&mut self) {
         assert!(self.v.count() > 0);

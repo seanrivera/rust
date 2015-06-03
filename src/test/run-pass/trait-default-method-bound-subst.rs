@@ -9,6 +9,7 @@
 // except according to those terms.
 
 
+
 trait A<T> {
     fn g<U>(&self, x: T, y: U) -> (T, U) { (x, y) }
 }

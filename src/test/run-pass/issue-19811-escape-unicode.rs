@@ -8,6 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
+#![feature(collections)]
+
 fn main() {
     let mut escaped = String::from_str("");
     for c in '\u{10401}'.escape_unicode() {

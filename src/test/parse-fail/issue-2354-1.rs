@@ -8,5 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-static foo: isize = 2; } //~ ERROR incorrect close delimiter:
+// compile-flags: -Z parse-only
 
+static foo: isize = 2; } //~ ERROR incorrect close delimiter:

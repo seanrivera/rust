@@ -8,9 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::marker::MarkerTrait;
+// pretty-expanded FIXME #23616
 
-trait Foo : MarkerTrait {
+trait Foo {
     fn quux(u8) {}
 }
 

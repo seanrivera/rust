@@ -8,11 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 use std::cell::Cell;
 
 #[derive(Copy)]
 struct Foo {
-    x: int
+    x: isize
 }
 
 impl Clone for Foo {

@@ -8,8 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::iter::AdditiveIterator;
+
+#![feature(core)]
+
 fn main() {
     let x: [u64; 3] = [1, 2, 3];
-    assert_eq!(6, (0..3).map(|i| x[i]).sum());
+    assert_eq!(6, (0..3).map(|i| x[i]).sum::<u64>());
 }

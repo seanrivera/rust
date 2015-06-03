@@ -8,7 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-struct Point(int, int);
+
+struct Point(isize, isize);
 
 fn main() {
     let mut x = Point(3, 2);

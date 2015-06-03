@@ -26,6 +26,7 @@ use util::ppaux::Repr;
 use std::cell::Cell;
 
 use syntax::ast;
+use syntax::ast_util;
 use syntax::codemap::{DUMMY_SP, Span};
 use syntax::print::pprust::pat_to_string;
 use syntax::visit;
@@ -40,7 +41,6 @@ pub fn resolve_type_vars_in_expr(fcx: &FnCtxt, e: &ast::Expr) {
     wbcx.visit_expr(e);
     wbcx.visit_upvar_borrow_map();
     wbcx.visit_closures();
-    wbcx.visit_object_cast_map();
 }
 
 pub fn resolve_type_vars_in_fn(fcx: &FnCtxt,
@@ -61,7 +61,6 @@ pub fn resolve_type_vars_in_fn(fcx: &FnCtxt,
     }
     wbcx.visit_upvar_borrow_map();
     wbcx.visit_closures();
-    wbcx.visit_object_cast_map();
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -83,6 +82,32 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
 
     fn tcx(&self) -> &'cx ty::ctxt<'tcx> {
         self.fcx.tcx()
+    }
+
+    // Hacky hack: During type-checking, we treat *all* operators
+    // as potentially overloaded. But then, during writeback, if
+    // we observe that something like `a+b` is (known to be)
+    // operating on scalars, we clear the overload.
+    fn fix_scalar_binary_expr(&mut self, e: &ast::Expr) {
+        if let ast::ExprBinary(ref op, ref lhs, ref rhs) = e.node {
+            let lhs_ty = self.fcx.node_ty(lhs.id);
+            let lhs_ty = self.fcx.infcx().resolve_type_vars_if_possible(&lhs_ty);
+
+            let rhs_ty = self.fcx.node_ty(rhs.id);
+            let rhs_ty = self.fcx.infcx().resolve_type_vars_if_possible(&rhs_ty);
+
+            if ty::type_is_scalar(lhs_ty) && ty::type_is_scalar(rhs_ty) {
+                self.fcx.inh.method_map.borrow_mut().remove(&MethodCall::expr(e.id));
+
+                // weird but true: the by-ref binops put an
+                // adjustment on the lhs but not the rhs; the
+                // adjustment for rhs is kind of baked into the
+                // system.
+                if !ast_util::is_by_value_binop(op.node) {
+                    self.fcx.inh.adjustments.borrow_mut().remove(&lhs.id);
+                }
+            }
+        }
     }
 }
 
@@ -113,18 +138,16 @@ impl<'cx, 'tcx, 'v> Visitor<'v> for WritebackCx<'cx, 'tcx> {
             return;
         }
 
+        self.fix_scalar_binary_expr(e);
+
         self.visit_node_id(ResolvingExpr(e.span), e.id);
         self.visit_method_map_entry(ResolvingExpr(e.span),
                                     MethodCall::expr(e.id));
 
-        match e.node {
-            ast::ExprClosure(_, ref decl, _) => {
-                for input in &decl.inputs {
-                    let _ = self.visit_node_id(ResolvingExpr(e.span),
-                                               input.id);
-                }
+        if let ast::ExprClosure(_, ref decl, _) = e.node {
+            for input in &decl.inputs {
+                self.visit_node_id(ResolvingExpr(e.span), input.id);
             }
-            _ => {}
         }
 
         visit::walk_expr(self, e);
@@ -169,7 +192,7 @@ impl<'cx, 'tcx, 'v> Visitor<'v> for WritebackCx<'cx, 'tcx> {
         match t.node {
             ast::TyFixedLengthVec(ref ty, ref count_expr) => {
                 self.visit_ty(&**ty);
-                write_ty_to_tcx(self.tcx(), count_expr.id, self.tcx().types.uint);
+                write_ty_to_tcx(self.tcx(), count_expr.id, self.tcx().types.usize);
             }
             _ => visit::walk_ty(self, t)
         }
@@ -214,27 +237,6 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
         }
     }
 
-    fn visit_object_cast_map(&self) {
-        if self.fcx.writeback_errors.get() {
-            return
-        }
-
-        for (&node_id, trait_ref) in self.fcx
-                                            .inh
-                                            .object_cast_map
-                                            .borrow()
-                                            .iter()
-        {
-            let span = ty::expr_span(self.tcx(), node_id);
-            let reason = ResolvingExpr(span);
-            let closure_ty = self.resolve(trait_ref, reason);
-            self.tcx()
-                .object_cast_map
-                .borrow_mut()
-                .insert(node_id, closure_ty);
-        }
-    }
-
     fn visit_node_id(&self, reason: ResolveReason, id: ast::NodeId) {
         // Resolve any borrowings for the node with id `id`
         self.visit_adjustments(reason, id);
@@ -259,26 +261,23 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
             }
 
             Some(adjustment) => {
-                let adj_object = ty::adjust_is_object(&adjustment);
                 let resolved_adjustment = match adjustment {
-                    ty::AdjustReifyFnPointer(def_id) => {
-                        ty::AdjustReifyFnPointer(def_id)
+                    ty::AdjustReifyFnPointer => ty::AdjustReifyFnPointer,
+
+                    ty::AdjustUnsafeFnPointer => {
+                        ty::AdjustUnsafeFnPointer
                     }
 
                     ty::AdjustDerefRef(adj) => {
                         for autoderef in 0..adj.autoderefs {
-                            let method_call = MethodCall::autoderef(id, autoderef);
-                            self.visit_method_map_entry(reason, method_call);
-                        }
-
-                        if adj_object {
-                            let method_call = MethodCall::autoobject(id);
+                            let method_call = MethodCall::autoderef(id, autoderef as u32);
                             self.visit_method_map_entry(reason, method_call);
                         }
 
                         ty::AdjustDerefRef(ty::AutoDerefRef {
                             autoderefs: adj.autoderefs,
                             autoref: self.resolve(&adj.autoref, reason),
+                            unsize: self.resolve(&adj.unsize, reason),
                         })
                     }
                 };
@@ -320,7 +319,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
 ///////////////////////////////////////////////////////////////////////////
 // Resolution reason.
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 enum ResolveReason {
     ResolvingExpr(Span),
     ResolvingLocal(Span),

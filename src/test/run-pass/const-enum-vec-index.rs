@@ -8,7 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-enum E { V1(int), V0 }
+
+enum E { V1(isize), V0 }
 const C: &'static [E] = &[E::V0, E::V1(0xDEADBEE)];
 static C0: E = C[0];
 static C1: E = C[1];

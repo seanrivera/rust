@@ -8,11 +8,14 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::num::Int;
 
-extern "C" fn foo<T: WrappingOps>(a: T, b: T) -> T { a.wrapping_add(b) }
+#![feature(core)]
+
+use std::ops::Add;
+
+extern "C" fn foo<T: Add>(a: T, b: T) -> T::Output { a + b }
 
 fn main() {
-    assert_eq!(99u8, foo(255u8, 100u8));
-    assert_eq!(99u16, foo(65535u16, 100u16));
+    assert_eq!(100u8, foo(0u8, 100u8));
+    assert_eq!(100u16, foo(0u16, 100u16));
 }

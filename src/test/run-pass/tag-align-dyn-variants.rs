@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 use std::mem;
 
 enum Tag<A,B> {
@@ -26,12 +27,12 @@ fn mk_rec<A,B>(a: A, b: B) -> Rec<A,B> {
     Rec { chA:0, tA:Tag::VarA(a), chB:1, tB:Tag::VarB(b) }
 }
 
-fn is_aligned<A>(amnt: uint, u: &A) -> bool {
-    let p: uint = unsafe { mem::transmute(u) };
+fn is_aligned<A>(amnt: usize, u: &A) -> bool {
+    let p: usize = unsafe { mem::transmute(u) };
     return (p & (amnt-1)) == 0;
 }
 
-fn variant_data_is_aligned<A,B>(amnt: uint, u: &Tag<A,B>) -> bool {
+fn variant_data_is_aligned<A,B>(amnt: usize, u: &Tag<A,B>) -> bool {
     match u {
       &Tag::VarA(ref a) => is_aligned(amnt, a),
       &Tag::VarB(ref b) => is_aligned(amnt, b)

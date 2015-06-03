@@ -15,6 +15,7 @@ pub use self::TypeBound::*;
 
 use syntax;
 use syntax::codemap::Span;
+use syntax::abi;
 use syntax::ast;
 use syntax::attr;
 use syntax::ast::{Ident, NodeId};
@@ -132,8 +133,10 @@ pub struct Function {
     pub vis: ast::Visibility,
     pub stab: Option<attr::Stability>,
     pub unsafety: ast::Unsafety,
+    pub constness: ast::Constness,
     pub whence: Span,
     pub generics: ast::Generics,
+    pub abi: abi::Abi,
 }
 
 pub struct Typedef {
@@ -174,7 +177,7 @@ pub struct Constant {
 pub struct Trait {
     pub unsafety: ast::Unsafety,
     pub name: Ident,
-    pub items: Vec<ast::TraitItem>, //should be TraitItem
+    pub items: Vec<P<ast::TraitItem>>, //should be TraitItem
     pub generics: ast::Generics,
     pub bounds: Vec<ast::TyParamBound>,
     pub attrs: Vec<ast::Attribute>,
@@ -190,7 +193,7 @@ pub struct Impl {
     pub generics: ast::Generics,
     pub trait_: Option<ast::TraitRef>,
     pub for_: P<ast::Ty>,
-    pub items: Vec<ast::ImplItem>,
+    pub items: Vec<P<ast::ImplItem>>,
     pub attrs: Vec<ast::Attribute>,
     pub whence: Span,
     pub vis: ast::Visibility,
@@ -202,6 +205,8 @@ pub struct DefaultImpl {
     pub unsafety: ast::Unsafety,
     pub trait_: ast::TraitRef,
     pub id: ast::NodeId,
+    pub attrs: Vec<ast::Attribute>,
+    pub whence: Span,
 }
 
 pub struct Macro {
@@ -210,6 +215,7 @@ pub struct Macro {
     pub attrs: Vec<ast::Attribute>,
     pub whence: Span,
     pub stab: Option<attr::Stability>,
+    pub imported_from: Option<Ident>,
 }
 
 pub struct ExternCrate {

@@ -10,16 +10,23 @@
 
 //! A wrapper around LLVM's archive (.a) code
 
-use libc;
 use ArchiveRef;
 
 use std::ffi::CString;
-use std::mem;
-use std::raw;
 use std::path::Path;
+use std::slice;
+use std::str;
 
-pub struct ArchiveRO {
-    ptr: ArchiveRef,
+pub struct ArchiveRO { ptr: ArchiveRef }
+
+pub struct Iter<'a> {
+    archive: &'a ArchiveRO,
+    ptr: ::ArchiveIteratorRef,
+}
+
+pub struct Child<'a> {
+    name: Option<&'a str>,
+    data: &'a [u8],
 }
 
 impl ArchiveRO {
@@ -43,8 +50,9 @@ impl ArchiveRO {
         #[cfg(unix)]
         fn path2cstr(p: &Path) -> CString {
             use std::os::unix::prelude::*;
-            use std::ffi::AsOsStr;
-            CString::new(p.as_os_str().as_bytes()).unwrap()
+            use std::ffi::OsStr;
+            let p: &OsStr = p.as_ref();
+            CString::new(p.as_bytes()).unwrap()
         }
         #[cfg(windows)]
         fn path2cstr(p: &Path) -> CString {
@@ -52,21 +60,9 @@ impl ArchiveRO {
         }
     }
 
-    /// Reads a file in the archive
-    pub fn read<'a>(&'a self, file: &str) -> Option<&'a [u8]> {
+    pub fn iter(&self) -> Iter {
         unsafe {
-            let mut size = 0 as libc::size_t;
-            let file = CString::new(file).unwrap();
-            let ptr = ::LLVMRustArchiveReadSection(self.ptr, file.as_ptr(),
-                                                   &mut size);
-            if ptr.is_null() {
-                None
-            } else {
-                Some(mem::transmute(raw::Slice {
-                    data: ptr,
-                    len: size as uint,
-                }))
-            }
+            Iter { ptr: ::LLVMRustArchiveIteratorNew(self.ptr), archive: self }
         }
     }
 }
@@ -77,4 +73,47 @@ impl Drop for ArchiveRO {
             ::LLVMRustDestroyArchive(self.ptr);
         }
     }
+}
+
+impl<'a> Iterator for Iter<'a> {
+    type Item = Child<'a>;
+
+    fn next(&mut self) -> Option<Child<'a>> {
+        unsafe {
+            let ptr = ::LLVMRustArchiveIteratorCurrent(self.ptr);
+            if ptr.is_null() {
+                return None
+            }
+            let mut name_len = 0;
+            let name_ptr = ::LLVMRustArchiveChildName(ptr, &mut name_len);
+            let mut data_len = 0;
+            let data_ptr = ::LLVMRustArchiveChildData(ptr, &mut data_len);
+            let child = Child {
+                name: if name_ptr.is_null() {
+                    None
+                } else {
+                    let name = slice::from_raw_parts(name_ptr as *const u8,
+                                                     name_len as usize);
+                    str::from_utf8(name).ok().map(|s| s.trim())
+                },
+                data: slice::from_raw_parts(data_ptr as *const u8,
+                                            data_len as usize),
+            };
+            ::LLVMRustArchiveIteratorNext(self.ptr);
+            Some(child)
+        }
+    }
+}
+
+impl<'a> Drop for Iter<'a> {
+    fn drop(&mut self) {
+        unsafe {
+            ::LLVMRustArchiveIteratorFree(self.ptr);
+        }
+    }
+}
+
+impl<'a> Child<'a> {
+    pub fn name(&self) -> Option<&'a str> { self.name }
+    pub fn data(&self) -> &'a [u8] { self.data }
 }

@@ -17,10 +17,10 @@ use core::clone::Clone;
 fn test_get_ptr() {
     unsafe {
         let x: Box<_> = box 0;
-        let addr_x: *const int = mem::transmute(&*x);
+        let addr_x: *const isize = mem::transmute(&*x);
         let opt = Some(x);
         let y = opt.unwrap();
-        let addr_y: *const int = mem::transmute(&*y);
+        let addr_y: *const isize = mem::transmute(&*y);
         assert_eq!(addr_x, addr_y);
     }
 }
@@ -41,11 +41,10 @@ fn test_get_resource() {
     use core::cell::RefCell;
 
     struct R {
-       i: Rc<RefCell<int>>,
+       i: Rc<RefCell<isize>>,
     }
 
-    #[unsafe_destructor]
-    impl Drop for R {
+        impl Drop for R {
        fn drop(&mut self) {
             let ii = &*self.i;
             let i = *ii.borrow();
@@ -53,7 +52,7 @@ fn test_get_resource() {
         }
     }
 
-    fn r(i: Rc<RefCell<int>>) -> R {
+    fn r(i: Rc<RefCell<isize>>) -> R {
         R {
             i: i
         }
@@ -80,7 +79,7 @@ fn test_option_dance() {
     assert!(y.is_none());
 }
 
-#[test] #[should_fail]
+#[test] #[should_panic]
 fn test_option_too_much_dance() {
     let mut y = Some(marker::NoCopy);
     let _y2 = y.take().unwrap();
@@ -89,44 +88,44 @@ fn test_option_too_much_dance() {
 
 #[test]
 fn test_and() {
-    let x: Option<int> = Some(1);
+    let x: Option<isize> = Some(1);
     assert_eq!(x.and(Some(2)), Some(2));
-    assert_eq!(x.and(None::<int>), None);
+    assert_eq!(x.and(None::<isize>), None);
 
-    let x: Option<int> = None;
+    let x: Option<isize> = None;
     assert_eq!(x.and(Some(2)), None);
-    assert_eq!(x.and(None::<int>), None);
+    assert_eq!(x.and(None::<isize>), None);
 }
 
 #[test]
 fn test_and_then() {
-    let x: Option<int> = Some(1);
+    let x: Option<isize> = Some(1);
     assert_eq!(x.and_then(|x| Some(x + 1)), Some(2));
-    assert_eq!(x.and_then(|_| None::<int>), None);
+    assert_eq!(x.and_then(|_| None::<isize>), None);
 
-    let x: Option<int> = None;
+    let x: Option<isize> = None;
     assert_eq!(x.and_then(|x| Some(x + 1)), None);
-    assert_eq!(x.and_then(|_| None::<int>), None);
+    assert_eq!(x.and_then(|_| None::<isize>), None);
 }
 
 #[test]
 fn test_or() {
-    let x: Option<int> = Some(1);
+    let x: Option<isize> = Some(1);
     assert_eq!(x.or(Some(2)), Some(1));
     assert_eq!(x.or(None), Some(1));
 
-    let x: Option<int> = None;
+    let x: Option<isize> = None;
     assert_eq!(x.or(Some(2)), Some(2));
     assert_eq!(x.or(None), None);
 }
 
 #[test]
 fn test_or_else() {
-    let x: Option<int> = Some(1);
+    let x: Option<isize> = Some(1);
     assert_eq!(x.or_else(|| Some(2)), Some(1));
     assert_eq!(x.or_else(|| None), Some(1));
 
-    let x: Option<int> = None;
+    let x: Option<isize> = None;
     assert_eq!(x.or_else(|| Some(2)), Some(2));
     assert_eq!(x.or_else(|| None), None);
 }
@@ -139,14 +138,14 @@ fn test_unwrap() {
 }
 
 #[test]
-#[should_fail]
+#[should_panic]
 fn test_unwrap_panic1() {
-    let x: Option<int> = None;
+    let x: Option<isize> = None;
     x.unwrap();
 }
 
 #[test]
-#[should_fail]
+#[should_panic]
 fn test_unwrap_panic2() {
     let x: Option<String> = None;
     x.unwrap();
@@ -154,19 +153,19 @@ fn test_unwrap_panic2() {
 
 #[test]
 fn test_unwrap_or() {
-    let x: Option<int> = Some(1);
+    let x: Option<isize> = Some(1);
     assert_eq!(x.unwrap_or(2), 1);
 
-    let x: Option<int> = None;
+    let x: Option<isize> = None;
     assert_eq!(x.unwrap_or(2), 2);
 }
 
 #[test]
 fn test_unwrap_or_else() {
-    let x: Option<int> = Some(1);
+    let x: Option<isize> = Some(1);
     assert_eq!(x.unwrap_or_else(|| 2), 1);
 
-    let x: Option<int> = None;
+    let x: Option<isize> = None;
     assert_eq!(x.unwrap_or_else(|| 2), 2);
 }
 
@@ -220,16 +219,15 @@ fn test_ord() {
     assert!(big > None);
 }
 
-/* FIXME(#20575)
 #[test]
 fn test_collect() {
-    let v: Option<Vec<int>> = (0..0).map(|_| Some(0)).collect();
+    let v: Option<Vec<isize>> = (0..0).map(|_| Some(0)).collect();
     assert!(v == Some(vec![]));
 
-    let v: Option<Vec<int>> = (0..3).map(|x| Some(x)).collect();
+    let v: Option<Vec<isize>> = (0..3).map(|x| Some(x)).collect();
     assert!(v == Some(vec![0, 1, 2]));
 
-    let v: Option<Vec<int>> = (0..3).map(|x| {
+    let v: Option<Vec<isize>> = (0..3).map(|x| {
         if x > 1 { None } else { Some(x) }
     }).collect();
     assert!(v == None);
@@ -242,31 +240,26 @@ fn test_collect() {
 
     assert!(v == None);
 }
-*/
+
 
 #[test]
 fn test_cloned() {
-    let val1 = 1u32;
-    let mut val2 = 2u32;
-    let val1_ref = &val1;
+    let val = 1u32;
+    let val_ref = &val;
     let opt_none: Option<&'static u32> = None;
-    let opt_ref = Some(&val1);
-    let opt_ref_ref = Some(&val1_ref);
-    let opt_mut_ref = Some(&mut val2);
+    let opt_ref = Some(&val);
+    let opt_ref_ref = Some(&val_ref);
 
     // None works
     assert_eq!(opt_none.clone(), None);
     assert_eq!(opt_none.cloned(), None);
 
-    // Mutable refs work
-    assert_eq!(opt_mut_ref.cloned(), Some(2u32));
-
     // Immutable ref works
-    assert_eq!(opt_ref.clone(), Some(&val1));
+    assert_eq!(opt_ref.clone(), Some(&val));
     assert_eq!(opt_ref.cloned(), Some(1u32));
 
     // Double Immutable ref works
-    assert_eq!(opt_ref_ref.clone(), Some(&val1_ref));
-    assert_eq!(opt_ref_ref.clone().cloned(), Some(&val1));
+    assert_eq!(opt_ref_ref.clone(), Some(&val_ref));
+    assert_eq!(opt_ref_ref.clone().cloned(), Some(&val));
     assert_eq!(opt_ref_ref.cloned().cloned(), Some(1u32));
 }

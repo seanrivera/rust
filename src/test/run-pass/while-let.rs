@@ -8,9 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
+#![feature(collections)]
+
 use std::collections::BinaryHeap;
 
-fn make_pq() -> BinaryHeap<int> {
+fn make_pq() -> BinaryHeap<isize> {
     BinaryHeap::from_vec(vec![1,2,3])
 }
 

@@ -1,4 +1,4 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2014-2015 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -9,7 +9,6 @@
 // except according to those terms.
 
 // no-pretty-expanded unnecessary unsafe block generated
-// ignore-lexer-test FIXME #15679
 
 #![deny(warnings)]
 #![allow(unused_must_use)]
@@ -72,6 +71,13 @@ pub fn main() {
     t!(format!("{:X}", 10_usize), "A");
     t!(format!("{}", "foo"), "foo");
     t!(format!("{}", "foo".to_string()), "foo");
+    if cfg!(target_pointer_width = "32") {
+        t!(format!("{:#p}", 0x1234 as *const isize), "0x00001234");
+        t!(format!("{:#p}", 0x1234 as *mut isize), "0x00001234");
+    } else {
+        t!(format!("{:#p}", 0x1234 as *const isize), "0x0000000000001234");
+        t!(format!("{:#p}", 0x1234 as *mut isize), "0x0000000000001234");
+    }
     t!(format!("{:p}", 0x1234 as *const isize), "0x1234");
     t!(format!("{:p}", 0x1234 as *mut isize), "0x1234");
     t!(format!("{:x}", A), "aloha");
@@ -85,9 +91,8 @@ pub fn main() {
     t!(format!("{}", 5 + 5), "10");
     t!(format!("{:#4}", C), "☃123");
 
-    // FIXME(#20676)
-    // let a: &fmt::Debug = &1;
-    // t!(format!("{:?}", a), "1");
+    let a: &fmt::Debug = &1;
+    t!(format!("{:?}", a), "1");
 
 
     // Formatting strings and their arguments
@@ -138,6 +143,12 @@ pub fn main() {
     t!(format!("{:+10.3e}", 1.2345e6f64),  "  +1.234e6");
     t!(format!("{:+10.3e}", -1.2345e6f64), "  -1.234e6");
 
+    // Float edge cases
+    t!(format!("{}", -0.0), "0");
+    t!(format!("{:?}", -0.0), "-0");
+    t!(format!("{:?}", 0.0), "0");
+
+
     // Test that pointers don't get truncated.
     {
         let val = usize::MAX;
@@ -184,9 +195,11 @@ fn test_write() {
         write!(w, "{}", "hello");
         writeln!(w, "{}", "line");
         writeln!(w, "{foo}", foo="bar");
+        w.write_char('☃');
+        w.write_str("str");
     }
 
-    t!(buf, "34helloline\nbar\n");
+    t!(buf, "34helloline\nbar\n☃str");
 }
 
 // Just make sure that the macros are defined, there's not really a lot that we

@@ -9,6 +9,7 @@
 // except according to those terms.
 
 
+
 pub fn main() {
     let (&x, &y) = (&3, &'a');
     assert_eq!(x, 3);

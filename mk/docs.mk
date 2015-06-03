@@ -71,8 +71,13 @@ RUSTBOOK_EXE = $(HBIN2_H_$(CFG_BUILD))/rustbook$(X_$(CFG_BUILD))
 # ./configure
 RUSTBOOK = $(RPATH_VAR2_T_$(CFG_BUILD)_H_$(CFG_BUILD)) $(RUSTBOOK_EXE)
 
+# The error-index-generator executable...
+ERR_IDX_GEN_EXE = $(HBIN2_H_$(CFG_BUILD))/error-index-generator$(X_$(CFG_BUILD))
+ERR_IDX_GEN = $(RPATH_VAR2_T_$(CFG_BUILD)_H_$(CFG_BUILD)) $(ERR_IDX_GEN_EXE)
+
 D := $(S)src/doc
 
+# FIXME (#25705) eventually may want to put error-index target back here.
 DOC_TARGETS := trpl style
 COMPILER_DOC_TARGETS :=
 DOC_L10N_TARGETS :=
@@ -250,16 +255,21 @@ endif
 doc/$(1)/:
 	$$(Q)mkdir -p $$@
 
-$(2) += doc/$(1)/index.html
 doc/$(1)/index.html: CFG_COMPILER_HOST_TRIPLE = $(CFG_TARGET)
 doc/$(1)/index.html: $$(LIB_DOC_DEP_$(1)) doc/$(1)/
 	@$$(call E, rustdoc: $$@)
 	$$(Q)CFG_LLVM_LINKAGE_FILE=$$(LLVM_LINKAGE_PATH_$(CFG_BUILD)) \
-		$$(RUSTDOC) --cfg dox --cfg stage2 $$<
+		$$(RUSTDOC) --cfg dox --cfg stage2 $$(RUSTFLAGS_$(1)) $$<
 endef
 
-$(foreach crate,$(DOC_CRATES),$(eval $(call DEF_LIB_DOC,$(crate),DOC_TARGETS)))
-$(foreach crate,$(COMPILER_DOC_CRATES),$(eval $(call DEF_LIB_DOC,$(crate),COMPILER_DOC_TARGETS)))
+$(foreach crate,$(CRATES),$(eval $(call DEF_LIB_DOC,$(crate))))
+
+COMPILER_DOC_TARGETS := $(CRATES:%=doc/%/index.html)
+ifdef CFG_COMPILER_DOCS
+  DOC_TARGETS += $(COMPILER_DOC_TARGETS)
+else
+  DOC_TARGETS += $(DOC_CRATES:%=doc/%/index.html)
+endif
 
 ifdef CFG_DISABLE_DOCS
   $(info cfg: disabling doc build (CFG_DISABLE_DOCS))
@@ -283,3 +293,9 @@ doc/style/index.html: $(RUSTBOOK_EXE) $(wildcard $(S)/src/doc/style/*.md) | doc/
 	@$(call E, rustbook: $@)
 	$(Q)rm -rf doc/style
 	$(Q)$(RUSTBOOK) build $(S)src/doc/style doc/style
+
+error-index: doc/error-index.html
+
+doc/error-index.html: $(ERR_IDX_GEN_EXE) | doc/
+	$(Q)$(call E, error-index-generator: $@)
+	$(Q)$(ERR_IDX_GEN)

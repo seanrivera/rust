@@ -1,9 +1,11 @@
 # The Rust Programming Language
 
-This is a compiler for Rust, including standard libraries, tools and
-documentation. Rust is a systems programming language that is fast,
-memory safe and multithreaded, but does not employ a garbage collector
-or otherwise impose significant runtime overhead.
+Rust is a systems programming language that is fast, memory safe and
+multithreaded, but does not employ a garbage collector or otherwise
+impose significant runtime overhead.
+
+This repo contains the code for `rustc`, the Rust compiler, as well
+as standard libraries, tools and documentation for Rust.
 
 ## Quick Start
 
@@ -64,7 +66,7 @@ Read ["Installing Rust"] from [The Book].
    # Choose one based on platform:
    $ pacman -S mingw-w64-i686-toolchain
    $ pacman -S mingw-w64-x86_64-toolchain
-   
+
    $ pacman -S base-devel
    ```
 
@@ -87,9 +89,11 @@ fetch snapshots, and an OS that can execute the available snapshot binaries.
 
 Snapshot binaries are currently built and tested on several platforms:
 
-* Windows (7, 8, Server 2008 R2), x86 and x86-64 (64-bit support added in Rust 0.12.0)
-* Linux (2.6.18 or later, various distributions), x86 and x86-64
-* OSX 10.7 (Lion) or greater, x86 and x86-64
+| Platform \ Architecture        | x86 | x86_64 |
+|--------------------------------|-----|--------|
+| Windows (7, 8, Server 2008 R2) | ✓   | ✓      |
+| Linux (2.6.18 or later)        | ✓   | ✓      |
+| OSX (10.7 Lion or later)       | ✓   | ✓      |
 
 You may find that other platforms work, but these are our officially
 supported build environments that are most likely to work.
@@ -115,7 +119,7 @@ The Rust community congregates in a few places:
 
 ## Contributing
 
-To contribute to Rust, please see [CONTRIBUTING.md](CONTRIBUTING.md).
+To contribute to Rust, please see [CONTRIBUTING](CONTRIBUTING.md).
 
 Rust has an [IRC] culture and most real-time collaboration happens in a
 variety of channels on Mozilla's IRC network, irc.mozilla.org. The
@@ -131,4 +135,4 @@ Rust is primarily distributed under the terms of both the MIT license
 and the Apache License (Version 2.0), with portions covered by various
 BSD-like licenses.
 
-See LICENSE-APACHE, LICENSE-MIT, and COPYRIGHT for details.
+See [LICENSE-APACHE](LICENSE-APACHE), [LICENSE-MIT](LICENSE-MIT), and [COPYRIGHT](COPYRIGHT) for details.

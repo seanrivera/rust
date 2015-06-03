@@ -11,6 +11,7 @@
 // min-lldb-version: 310
 
 // aux-build:issue13213aux.rs
+
 extern crate issue13213aux;
 
 // compile-flags:-g
@@ -20,5 +21,5 @@ extern crate issue13213aux;
 // be available because they have been optimized out from the exporting crate.
 fn main() {
     let b: issue13213aux::S = issue13213aux::A;
-    ::std::old_io::println("Nothing to do here...");
+    println!("Nothing to do here...");
 }

@@ -8,8 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 enum E {
-    Foo{f : int},
+    Foo{f : isize},
     Bar
 }
 

@@ -13,7 +13,7 @@
 // that we don't die in a large ball of fire
 
 use std::env;
-use std::old_io::process;
+use std::process::{Command, Stdio};
 
 pub fn main () {
     let args: Vec<String> = env::args().collect();
@@ -27,7 +27,7 @@ pub fn main () {
         return;
     }
 
-    let mut p = process::Command::new(&args[0]);
-    p.arg("child").stdout(process::Ignored).stderr(process::Ignored);
+    let mut p = Command::new(&args[0]);
+    p.arg("child").stdout(Stdio::null()).stderr(Stdio::null());
     println!("{:?}", p.spawn().unwrap().wait());
 }

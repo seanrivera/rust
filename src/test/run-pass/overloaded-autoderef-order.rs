@@ -8,10 +8,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 use std::rc::Rc;
 use std::ops::Deref;
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 struct DerefWrapper<X, Y> {
     x: X,
     y: Y
@@ -34,7 +35,7 @@ impl<X, Y> Deref for DerefWrapper<X, Y> {
 mod priv_test {
     use std::ops::Deref;
 
-    #[derive(Copy)]
+    #[derive(Copy, Clone)]
     pub struct DerefWrapperHideX<X, Y> {
         x: X,
         pub y: Y

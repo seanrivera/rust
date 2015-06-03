@@ -14,6 +14,7 @@
 
 // These constants were chosen because they aren't used anywhere
 // in the rest of the generated code so they're easily grep-able.
+
 pub fn main() {
     let mut x: u8 = 19; // 0x13
 

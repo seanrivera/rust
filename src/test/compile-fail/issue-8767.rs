@@ -8,11 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// ignore-tidy-linelength
-
 impl B { //~ ERROR use of undeclared type name `B`
 }
 
 fn main() {
 }
-

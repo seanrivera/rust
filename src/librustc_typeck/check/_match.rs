@@ -11,12 +11,14 @@
 use middle::const_eval;
 use middle::def;
 use middle::infer;
-use middle::pat_util::{PatIdMap, pat_id_map, pat_is_binding, pat_is_const};
-use middle::subst::{Substs};
+use middle::pat_util::{PatIdMap, pat_id_map, pat_is_binding};
+use middle::pat_util::pat_is_resolved_const;
+use middle::privacy::{AllPublic, LastMod};
+use middle::subst::Substs;
 use middle::ty::{self, Ty};
 use check::{check_expr, check_expr_has_type, check_expr_with_expectation};
 use check::{check_expr_coercable_to_type, demand, FnCtxt, Expectation};
-use check::{instantiate_path, structurally_resolved_type};
+use check::{instantiate_path, resolve_ty_and_def_ufcs, structurally_resolved_type};
 use require_same_types;
 use util::nodemap::FnvHashMap;
 use util::ppaux::Repr;
@@ -48,7 +50,23 @@ pub fn check_pat<'a, 'tcx>(pcx: &pat_ctxt<'a, 'tcx>,
         ast::PatLit(ref lt) => {
             check_expr(fcx, &**lt);
             let expr_ty = fcx.expr_ty(&**lt);
-            fcx.write_ty(pat.id, expr_ty);
+
+            // Byte string patterns behave the same way as array patterns
+            // They can denote both statically and dynamically sized byte arrays
+            let mut pat_ty = expr_ty;
+            if let ast::ExprLit(ref lt) = lt.node {
+                if let ast::LitBinary(_) = lt.node {
+                    let expected_ty = structurally_resolved_type(fcx, pat.span, expected);
+                    if let ty::ty_rptr(_, mt) = expected_ty.sty {
+                        if let ty::ty_vec(_, None) = mt.ty.sty {
+                            pat_ty = ty::mk_slice(tcx, tcx.mk_region(ty::ReStatic),
+                                ty::mt{ ty: tcx.types.u8, mutbl: ast::MutImmutable })
+                        }
+                    }
+                }
+            }
+
+            fcx.write_ty(pat.id, pat_ty);
 
             // somewhat surprising: in this case, the subtyping
             // relation goes the opposite way as the other
@@ -62,7 +80,7 @@ pub fn check_pat<'a, 'tcx>(pcx: &pat_ctxt<'a, 'tcx>,
             //     &'static str <: expected
             //
             // that's equivalent to there existing a LUB.
-            demand::suptype(fcx, pat.span, expected, expr_ty);
+            demand::suptype(fcx, pat.span, expected, pat_ty);
         }
         ast::PatRange(ref begin, ref end) => {
             check_expr(fcx, &**begin);
@@ -80,7 +98,9 @@ pub fn check_pat<'a, 'tcx>(pcx: &pat_ctxt<'a, 'tcx>,
                 lhs_eq_rhs && (ty::type_is_numeric(lhs_ty) || ty::type_is_char(lhs_ty));
 
             if numeric_or_char {
-                match const_eval::compare_lit_exprs(tcx, &**begin, &**end, Some(lhs_ty)) {
+                match const_eval::compare_lit_exprs(tcx, &**begin, &**end, Some(lhs_ty),
+                                                    |id| {fcx.item_substs()[&id].substs
+                                                             .clone()}) {
                     Some(Ordering::Less) |
                     Some(Ordering::Equal) => {}
                     Some(Ordering::Greater) => {
@@ -102,8 +122,8 @@ pub fn check_pat<'a, 'tcx>(pcx: &pat_ctxt<'a, 'tcx>,
             // subtyping doesn't matter here, as the value is some kind of scalar
             demand::eqtype(fcx, pat.span, expected, lhs_ty);
         }
-        ast::PatEnum(..) | ast::PatIdent(..) if pat_is_const(&tcx.def_map, pat) => {
-            let const_did = tcx.def_map.borrow()[pat.id].def_id();
+        ast::PatEnum(..) | ast::PatIdent(..) if pat_is_resolved_const(&tcx.def_map, pat) => {
+            let const_did = tcx.def_map.borrow().get(&pat.id).unwrap().def_id();
             let const_scheme = ty::lookup_item_type(tcx, const_did);
             assert!(const_scheme.generics.is_empty());
             let const_ty = pcx.fcx.instantiate_type_scheme(pat.span,
@@ -147,7 +167,7 @@ pub fn check_pat<'a, 'tcx>(pcx: &pat_ctxt<'a, 'tcx>,
 
             // if there are multiple arms, make sure they all agree on
             // what the type of the binding `x` ought to be
-            let canon_id = pcx.map[path.node];
+            let canon_id = *pcx.map.get(&path.node).unwrap();
             if canon_id != pat.id {
                 let ct = fcx.local_ty(pat.span, canon_id);
                 demand::eqtype(fcx, pat.span, ct, typ);
@@ -164,6 +184,37 @@ pub fn check_pat<'a, 'tcx>(pcx: &pat_ctxt<'a, 'tcx>,
         ast::PatEnum(ref path, ref subpats) => {
             let subpats = subpats.as_ref().map(|v| &v[..]);
             check_pat_enum(pcx, pat, path, subpats, expected);
+        }
+        ast::PatQPath(ref qself, ref path) => {
+            let self_ty = fcx.to_ty(&qself.ty);
+            let path_res = if let Some(&d) = tcx.def_map.borrow().get(&pat.id) {
+                d
+            } else if qself.position == 0 {
+                def::PathResolution {
+                    // This is just a sentinel for finish_resolving_def_to_ty.
+                    base_def: def::DefMod(ast_util::local_def(ast::CRATE_NODE_ID)),
+                    last_private: LastMod(AllPublic),
+                    depth: path.segments.len()
+                }
+            } else {
+                tcx.sess.span_bug(pat.span,
+                                  &format!("unbound path {}", pat.repr(tcx)))
+            };
+            if let Some((opt_ty, segments, def)) =
+                    resolve_ty_and_def_ufcs(fcx, path_res, Some(self_ty),
+                                            path, pat.span, pat.id) {
+                if check_assoc_item_is_const(pcx, def, pat.span) {
+                    let scheme = ty::lookup_item_type(tcx, def.def_id());
+                    let predicates = ty::lookup_predicates(tcx, def.def_id());
+                    instantiate_path(fcx, segments,
+                                     scheme, &predicates,
+                                     opt_ty, def, pat.span, pat.id);
+                    let const_ty = fcx.node_ty(pat.id);
+                    demand::suptype(fcx, pat.span, expected, const_ty);
+                } else {
+                    fcx.write_error(pat.id)
+                }
+            }
         }
         ast::PatStruct(ref path, ref fields, etc) => {
             check_pat_struct(pcx, pat, path, fields, etc, expected);
@@ -271,10 +322,11 @@ pub fn check_pat<'a, 'tcx>(pcx: &pat_ctxt<'a, 'tcx>,
     // (nmatsakis) an hour or two debugging to remember, so I thought
     // I'd write them down this time.
     //
-    // 1. Most importantly, there is no loss of expressiveness
-    // here. What we are saying is that the type of `x`
-    // becomes *exactly* what is expected. This might seem
-    // like it will cause errors in a case like this:
+    // 1. There is no loss of expressiveness here, though it does
+    // cause some inconvenience. What we are saying is that the type
+    // of `x` becomes *exactly* what is expected. This can cause unnecessary
+    // errors in some cases, such as this one:
+    // it will cause errors in a case like this:
     //
     // ```
     // fn foo<'x>(x: &'x int) {
@@ -314,6 +366,21 @@ pub fn check_pat<'a, 'tcx>(pcx: &pat_ctxt<'a, 'tcx>,
     // subtyping.
 }
 
+fn check_assoc_item_is_const(pcx: &pat_ctxt, def: def::Def, span: Span) -> bool {
+    match def {
+        def::DefAssociatedConst(..) => true,
+        def::DefMethod(..) => {
+            span_err!(pcx.fcx.ccx.tcx.sess, span, E0327,
+                      "associated items in match patterns must be constants");
+            false
+        }
+        _ => {
+            pcx.fcx.ccx.tcx.sess.span_bug(span, "non-associated item in
+                                                 check_assoc_item_is_const");
+        }
+    }
+}
+
 pub fn check_dereferencable<'a, 'tcx>(pcx: &pat_ctxt<'a, 'tcx>,
                                       span: Span, expected: Ty<'tcx>,
                                       inner: &ast::Pat) -> bool {
@@ -345,8 +412,21 @@ pub fn check_match<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>,
                              match_src: ast::MatchSource) {
     let tcx = fcx.ccx.tcx;
 
-    let discrim_ty = fcx.infcx().next_ty_var();
-    check_expr_has_type(fcx, discrim, discrim_ty);
+    // Not entirely obvious: if matches may create ref bindings, we
+    // want to use the *precise* type of the discriminant, *not* some
+    // supertype, as the "discriminant type" (issue #23116).
+    let contains_ref_bindings = arms.iter().any(|a| tcx.arm_contains_ref_binding(a));
+    let discrim_ty;
+    if contains_ref_bindings {
+        check_expr(fcx, discrim);
+        discrim_ty = fcx.expr_ty(discrim);
+    } else {
+        // ...but otherwise we want to use any supertype of the
+        // discriminant. This is sort of a workaround, see note (*) in
+        // `check_pat` for some details.
+        discrim_ty = fcx.infcx().next_ty_var();
+        check_expr_has_type(fcx, discrim, discrim_ty);
+    };
 
     // Typecheck the patterns first, so that we get types for all the
     // bindings.
@@ -433,7 +513,7 @@ pub fn check_pat_struct<'a, 'tcx>(pcx: &pat_ctxt<'a, 'tcx>, pat: &'tcx ast::Pat,
     let fcx = pcx.fcx;
     let tcx = pcx.fcx.ccx.tcx;
 
-    let def = tcx.def_map.borrow()[pat.id].full_def();
+    let def = tcx.def_map.borrow().get(&pat.id).unwrap().full_def();
     let (enum_def_id, variant_def_id) = match def {
         def::DefTrait(_) => {
             let name = pprust::path_to_string(path);
@@ -502,7 +582,24 @@ pub fn check_pat_enum<'a, 'tcx>(pcx: &pat_ctxt<'a, 'tcx>,
     let fcx = pcx.fcx;
     let tcx = pcx.fcx.ccx.tcx;
 
-    let def = tcx.def_map.borrow()[pat.id].full_def();
+    let path_res = *tcx.def_map.borrow().get(&pat.id).unwrap();
+
+    let (opt_ty, segments, def) = match resolve_ty_and_def_ufcs(fcx, path_res,
+                                                                None, path,
+                                                                pat.span, pat.id) {
+        Some(resolution) => resolution,
+        // Error handling done inside resolve_ty_and_def_ufcs, so if
+        // resolution fails just return.
+        None => {return;}
+    };
+
+    // Items that were partially resolved before should have been resolved to
+    // associated constants (i.e. not methods).
+    if path_res.depth != 0 && !check_assoc_item_is_const(pcx, def, pat.span) {
+        fcx.write_error(pat.id);
+        return;
+    }
+
     let enum_def = def.variant_def_ids()
         .map_or_else(|| def.def_id(), |(enum_def, _)| enum_def);
 
@@ -517,12 +614,22 @@ pub fn check_pat_enum<'a, 'tcx>(pcx: &pat_ctxt<'a, 'tcx>,
     } else {
         ctor_scheme
     };
-    instantiate_path(pcx.fcx, &path.segments,
+    instantiate_path(pcx.fcx, segments,
                      path_scheme, &ctor_predicates,
-                     None, def, pat.span, pat.id);
+                     opt_ty, def, pat.span, pat.id);
+
+    // If we didn't have a fully resolved path to start with, we had an
+    // associated const, and we should quit now, since the rest of this
+    // function uses checks specific to structs and enums.
+    if path_res.depth != 0 {
+        let pat_ty = fcx.node_ty(pat.id);
+        demand::suptype(fcx, pat.span, expected, pat_ty);
+        return;
+    }
 
     let pat_ty = fcx.node_ty(pat.id);
     demand::eqtype(fcx, pat.span, expected, pat_ty);
+
 
     let real_path_ty = fcx.node_ty(pat.id);
     let (arg_tys, kind_name): (Vec<_>, &'static str) = match real_path_ty.sty {
@@ -564,7 +671,7 @@ pub fn check_pat_enum<'a, 'tcx>(pcx: &pat_ctxt<'a, 'tcx>,
             for (subpat, arg_ty) in subpats.iter().zip(arg_tys.iter()) {
                 check_pat(pcx, &**subpat, *arg_ty);
             }
-        } else if arg_tys.len() == 0 {
+        } else if arg_tys.is_empty() {
             span_err!(tcx.sess, pat.span, E0024,
                       "this pattern has {} field{}, but the corresponding {} has no fields",
                       subpats.len(), if subpats.len() == 1 {""} else {"s"}, kind_name);

@@ -35,7 +35,7 @@ pub struct ErrorReported;
 pub fn time<T, U, F>(do_it: bool, what: &str, u: U, f: F) -> T where
     F: FnOnce(U) -> T,
 {
-    thread_local!(static DEPTH: Cell<uint> = Cell::new(0));
+    thread_local!(static DEPTH: Cell<usize> = Cell::new(0));
     if !do_it { return f(u); }
 
     let old = DEPTH.with(|slot| {
@@ -44,19 +44,24 @@ pub fn time<T, U, F>(do_it: bool, what: &str, u: U, f: F) -> T where
         r
     });
 
-    let mut u = Some(u);
     let mut rv = None;
     let dur = {
         let ref mut rvp = rv;
 
         Duration::span(move || {
-            *rvp = Some(f(u.take().unwrap()))
+            *rvp = Some(f(u))
         })
     };
     let rv = rv.unwrap();
 
-    println!("{}time: {}.{:03} \t{}", repeat("  ").take(old).collect::<String>(),
-             dur.num_seconds(), dur.num_milliseconds() % 1000, what);
+    // Hack up our own formatting for the duration to make it easier for scripts
+    // to parse (always use the same number of decimal places and the same unit).
+    const NANOS_PER_SEC: f64 = 1_000_000_000.0;
+    let secs = dur.secs() as f64;
+    let secs = secs + dur.extra_nanos() as f64 / NANOS_PER_SEC;
+    println!("{}time: {:.3} \t{}", repeat("  ").take(old).collect::<String>(),
+             secs, what);
+
     DEPTH.with(|slot| slot.set(old));
 
     rv
@@ -193,13 +198,13 @@ pub fn can_reach<T, S>(edges_map: &HashMap<T, Vec<T>, S>, source: T,
 /// ```
 /// but currently it is not possible.
 ///
-/// # Example
+/// # Examples
 /// ```
 /// struct Context {
-///    cache: RefCell<HashMap<uint, uint>>
+///    cache: RefCell<HashMap<usize, usize>>
 /// }
 ///
-/// fn factorial(ctxt: &Context, n: uint) -> uint {
+/// fn factorial(ctxt: &Context, n: usize) -> usize {
 ///     memoized(&ctxt.cache, n, |n| match n {
 ///         0 | 1 => n,
 ///         _ => factorial(ctxt, n - 2) + factorial(ctxt, n - 1)
@@ -228,8 +233,9 @@ pub fn memoized<T, U, S, F>(cache: &RefCell<HashMap<T, U, S>>, arg: T, f: F) -> 
 #[cfg(unix)]
 pub fn path2cstr(p: &Path) -> CString {
     use std::os::unix::prelude::*;
-    use std::ffi::AsOsStr;
-    CString::new(p.as_os_str().as_bytes()).unwrap()
+    use std::ffi::OsStr;
+    let p: &OsStr = p.as_ref();
+    CString::new(p.as_bytes()).unwrap()
 }
 #[cfg(windows)]
 pub fn path2cstr(p: &Path) -> CString {

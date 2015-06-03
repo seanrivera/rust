@@ -8,9 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 enum blah { a, b, }
 
-fn or_alt(q: blah) -> int {
+fn or_alt(q: blah) -> isize {
   match q { blah::a | blah::b => { 42 } }
 }
 

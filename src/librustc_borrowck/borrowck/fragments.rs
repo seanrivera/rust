@@ -15,10 +15,10 @@
 use self::Fragment::*;
 
 use borrowck::InteriorKind::{InteriorField, InteriorElement};
-use borrowck::{LoanPath};
+use borrowck::LoanPath;
 use borrowck::LoanPathKind::{LpVar, LpUpvar, LpDowncast, LpExtend};
 use borrowck::LoanPathElem::{LpDeref, LpInterior};
-use borrowck::move_data::{InvalidMovePathIndex};
+use borrowck::move_data::InvalidMovePathIndex;
 use borrowck::move_data::{MoveData, MovePathIndex};
 use rustc::middle::ty;
 use rustc::middle::mem_categorization as mc;
@@ -26,7 +26,6 @@ use rustc::util::ppaux::{Repr, UserString};
 use std::mem;
 use std::rc::Rc;
 use syntax::ast;
-use syntax::ast_map;
 use syntax::attr::AttrMetaMethods;
 use syntax::codemap::Span;
 
@@ -119,24 +118,9 @@ pub fn instrument_move_fragments<'tcx>(this: &MoveData<'tcx>,
                                        tcx: &ty::ctxt<'tcx>,
                                        sp: Span,
                                        id: ast::NodeId) {
-    let (span_err, print) = {
-        let attrs : &[ast::Attribute];
-        attrs = match tcx.map.find(id) {
-            Some(ast_map::NodeItem(ref item)) =>
-                &item.attrs,
-            Some(ast_map::NodeImplItem(&ast::MethodImplItem(ref m))) =>
-                &m.attrs,
-            Some(ast_map::NodeTraitItem(&ast::ProvidedMethod(ref m))) =>
-                &m.attrs,
-            _ => &[],
-        };
-
-        let span_err =
-            attrs.iter().any(|a| a.check_name("rustc_move_fragments"));
-        let print = tcx.sess.opts.debugging_opts.print_move_fragments;
-
-        (span_err, print)
-    };
+    let span_err = tcx.map.attrs(id).iter()
+                          .any(|a| a.check_name("rustc_move_fragments"));
+    let print = tcx.sess.opts.debugging_opts.print_move_fragments;
 
     if !span_err && !print { return; }
 
@@ -412,11 +396,11 @@ fn add_fragment_siblings_for_extension<'tcx>(this: &MoveData<'tcx>,
             match *origin_field_name {
                 mc::NamedField(ast_name) => {
                     let variant_arg_names = variant_info.arg_names.as_ref().unwrap();
-                    for variant_arg_ident in variant_arg_names {
-                        if variant_arg_ident.name == ast_name {
+                    for &variant_arg_name in variant_arg_names {
+                        if variant_arg_name == ast_name {
                             continue;
                         }
-                        let field_name = mc::NamedField(variant_arg_ident.name);
+                        let field_name = mc::NamedField(variant_arg_name);
                         add_fragment_sibling_local(field_name, Some(variant_info.id));
                     }
                 }

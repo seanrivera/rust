@@ -10,12 +10,13 @@
 
 // Test method calls with self as an argument
 
+
 #![allow(unknown_features)]
 #![feature(box_syntax)]
 
 static mut COUNT: u64 = 1;
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 struct Foo;
 
 trait Bar : Sized {

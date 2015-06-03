@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+// ignore-bitrig
 // compile-flags: -C codegen-units=3
 
 // Test unwinding through multiple compilation units.
@@ -19,9 +20,10 @@
 // In any case, this test should let us know if enabling parallel codegen ever
 // breaks unwinding.
 
+
 use std::thread;
 
-fn pad() -> uint { 0 }
+fn pad() -> usize { 0 }
 
 mod a {
     pub fn f() {

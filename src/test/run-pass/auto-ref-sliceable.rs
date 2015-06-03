@@ -9,6 +9,7 @@
 // except according to those terms.
 
 
+
 trait Pushable<T> {
     fn push_val(&mut self, t: T);
 }

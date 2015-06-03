@@ -16,30 +16,24 @@
 #![crate_type = "dylib"]
 #![crate_type = "rlib"]
 #![doc(html_logo_url = "http://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-       html_favicon_url = "http://www.rust-lang.org/favicon.ico",
-       html_root_url = "http://doc.rust-lang.org/nightly/",
-       html_playground_url = "http://play.rust-lang.org/")]
+   html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
+   html_root_url = "http://doc.rust-lang.org/nightly/",
+   html_playground_url = "http://play.rust-lang.org/")]
 
 #![feature(box_patterns)]
 #![feature(box_syntax)]
 #![feature(collections)]
-#![feature(core)]
 #![feature(exit_status)]
-#![feature(int_uint)]
-#![feature(old_io)]
+#![feature(set_stdio)]
 #![feature(libc)]
-#![feature(os)]
-#![feature(old_path)]
 #![feature(rustc_private)]
 #![feature(staged_api)]
 #![feature(std_misc)]
 #![feature(test)]
 #![feature(unicode)]
-#![feature(str_words)]
-#![feature(io)]
-#![feature(path)]
-#![feature(file_path)]
 #![feature(path_ext)]
+#![feature(path_relative_from)]
+#![feature(slice_patterns)]
 
 extern crate arena;
 extern crate getopts;
@@ -52,10 +46,11 @@ extern crate rustc_lint;
 extern crate rustc_back;
 extern crate serialize;
 extern crate syntax;
-extern crate "test" as testing;
+extern crate test as testing;
+extern crate rustc_unicode;
 #[macro_use] extern crate log;
 
-extern crate "serialize" as rustc_serialize; // used by deriving
+extern crate serialize as rustc_serialize; // used by deriving
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -94,7 +89,6 @@ pub mod html {
 pub mod markdown;
 pub mod passes;
 pub mod plugins;
-pub mod stability_summary;
 pub mod visit_ast;
 pub mod test;
 mod flock;
@@ -133,10 +127,10 @@ struct Output {
 
 pub fn main() {
     const STACK_SIZE: usize = 32000000; // 32MB
-    let res = std::thread::Builder::new().stack_size(STACK_SIZE).scoped(move || {
+    let res = std::thread::Builder::new().stack_size(STACK_SIZE).spawn(move || {
         let s = env::args().collect::<Vec<_>>();
         main_args(&s)
-    }).unwrap().join();
+    }).unwrap().join().unwrap();
     env::set_exit_status(res as i32);
 }
 
@@ -157,8 +151,9 @@ pub fn opts() -> Vec<getopts::OptGroup> {
         optmulti("", "cfg", "pass a --cfg to rustc", ""),
         optmulti("", "extern", "pass an --extern to rustc", "NAME=PATH"),
         optmulti("", "plugin-path", "directory to load plugins from", "DIR"),
-        optmulti("", "passes", "space separated list of passes to also run, a \
-                                value of `list` will print available passes",
+        optmulti("", "passes", "list of passes to also run, you might want \
+                                to pass it multiple times; a value of `list` \
+                                will print available passes",
                  "PASSES"),
         optmulti("", "plugins", "space separated list of plugins to also load",
                  "PLUGINS"),
@@ -193,7 +188,7 @@ pub fn usage(argv0: &str) {
                             &opts()));
 }
 
-pub fn main_args(args: &[String]) -> int {
+pub fn main_args(args: &[String]) -> isize {
     let matches = match getopts::getopts(args.tail(), &opts()) {
         Ok(m) => m,
         Err(err) => {
@@ -221,7 +216,7 @@ pub fn main_args(args: &[String]) -> int {
         return 0;
     }
 
-    if matches.free.len() == 0 {
+    if matches.free.is_empty() {
         println!("expected an input file to act on");
         return 1;
     } if matches.free.len() > 1 {
@@ -244,14 +239,14 @@ pub fn main_args(args: &[String]) -> int {
 
     let test_args = matches.opt_strs("test-args");
     let test_args: Vec<String> = test_args.iter()
-                                          .flat_map(|s| s.words())
+                                          .flat_map(|s| s.split_whitespace())
                                           .map(|s| s.to_string())
                                           .collect();
 
     let should_test = matches.opt_present("test");
     let markdown_input = input.ends_with(".md") || input.ends_with(".markdown");
 
-    let output = matches.opt_str("o").map(|s| PathBuf::new(&s));
+    let output = matches.opt_str("o").map(|s| PathBuf::from(&s));
     let cfgs = matches.opt_strs("cfg");
 
     let external_html = match ExternalHtml::load(
@@ -271,7 +266,7 @@ pub fn main_args(args: &[String]) -> int {
             return test::run(input, cfgs, libs, externs, test_args, crate_name)
         }
         (false, true) => return markdown::render(input,
-                                                 output.unwrap_or(PathBuf::new("doc")),
+                                                 output.unwrap_or(PathBuf::from("doc")),
                                                  &matches, &external_html,
                                                  !matches.opt_present("markdown-no-toc")),
         (false, false) => {}
@@ -289,7 +284,7 @@ pub fn main_args(args: &[String]) -> int {
     match matches.opt_str("w").as_ref().map(|s| &**s) {
         Some("html") | None => {
             match html::render::run(krate, &external_html,
-                                    output.unwrap_or(PathBuf::new("doc")),
+                                    output.unwrap_or(PathBuf::from("doc")),
                                     passes.into_iter().collect()) {
                 Ok(()) => {}
                 Err(e) => panic!("failed to generate documentation: {}", e),
@@ -297,7 +292,7 @@ pub fn main_args(args: &[String]) -> int {
         }
         Some("json") => {
             match json_output(krate, json_plugins,
-                              output.unwrap_or(PathBuf::new("doc.json"))) {
+                              output.unwrap_or(PathBuf::from("doc.json"))) {
                 Ok(()) => {}
                 Err(e) => panic!("failed to write json: {}", e),
             }
@@ -336,7 +331,7 @@ fn acquire_input(input: &str,
 fn parse_externs(matches: &getopts::Matches) -> Result<core::Externs, String> {
     let mut externs = HashMap::new();
     for arg in &matches.opt_strs("extern") {
-        let mut parts = arg.splitn(1, '=');
+        let mut parts = arg.splitn(2, '=');
         let name = match parts.next() {
             Some(s) => s,
             None => {
@@ -350,9 +345,7 @@ fn parse_externs(matches: &getopts::Matches) -> Result<core::Externs, String> {
             }
         };
         let name = name.to_string();
-        let locs = externs.entry(name).get().unwrap_or_else(
-            |vacant_entry| vacant_entry.insert(Vec::with_capacity(1)));
-        locs.push(location.to_string());
+        externs.entry(name).or_insert(vec![]).push(location.to_string());
     }
     Ok(externs)
 }
@@ -362,6 +355,7 @@ fn parse_externs(matches: &getopts::Matches) -> Result<core::Externs, String> {
 /// generated from the cleaned AST of the crate.
 ///
 /// This form of input will run all of the plug/cleaning passes
+#[allow(deprecated)] // for old Path in plugin manager
 fn rust_input(cratefile: &str, externs: core::Externs, matches: &getopts::Matches) -> Output {
     let mut default_passes = !matches.opt_present("no-defaults");
     let mut passes = matches.opt_strs("passes");
@@ -375,7 +369,7 @@ fn rust_input(cratefile: &str, externs: core::Externs, matches: &getopts::Matche
     let cfgs = matches.opt_strs("cfg");
     let triple = matches.opt_str("target");
 
-    let cr = PathBuf::new(cratefile);
+    let cr = PathBuf::from(cratefile);
     info!("starting to run rustc");
 
     let (tx, rx) = channel();
@@ -409,13 +403,13 @@ fn rust_input(cratefile: &str, externs: core::Externs, matches: &getopts::Matche
                     }
                     clean::NameValue(ref x, ref value)
                             if "passes" == *x => {
-                        for pass in value.words() {
+                        for pass in value.split_whitespace() {
                             passes.push(pass.to_string());
                         }
                     }
                     clean::NameValue(ref x, ref value)
                             if "plugins" == *x => {
-                        for p in value.words() {
+                        for p in value.split_whitespace() {
                             plugins.push(p.to_string());
                         }
                     }
@@ -434,7 +428,7 @@ fn rust_input(cratefile: &str, externs: core::Externs, matches: &getopts::Matche
     // Load all plugins/passes into a PluginManager
     let path = matches.opt_str("plugin-path")
                       .unwrap_or("/tmp/rustdoc/plugins".to_string());
-    let mut pm = plugins::PluginManager::new(Path::new(path));
+    let mut pm = plugins::PluginManager::new(PathBuf::from(path));
     for pass in &passes {
         let plugin = match PASSES.iter()
                                  .position(|&(p, _, _)| {
@@ -464,7 +458,7 @@ fn rust_input(cratefile: &str, externs: core::Externs, matches: &getopts::Matche
 fn json_input(input: &str) -> Result<Output, String> {
     let mut bytes = Vec::new();
     match File::open(input).and_then(|mut f| f.read_to_end(&mut bytes)) {
-        Ok(()) => {}
+        Ok(_) => {}
         Err(e) => return Err(format!("couldn't open {}: {}", input, e)),
     };
     match json::from_reader(&mut &bytes[..]) {

@@ -12,20 +12,21 @@
 // closed over do not contain managed values, and thus the boxes do
 // not have headers.
 
+
 #![allow(unknown_features)]
 #![feature(box_syntax)]
 
 
 trait FooTrait {
-    fn foo(&self) -> uint;
+    fn foo(&self) -> usize;
 }
 
 struct BarStruct {
-    x: uint
+    x: usize
 }
 
 impl FooTrait for BarStruct {
-    fn foo(&self) -> uint {
+    fn foo(&self) -> usize {
         self.x
     }
 }

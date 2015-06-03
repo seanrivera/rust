@@ -10,14 +10,15 @@
 
 // Test paths to associated types using the type-parameter-only sugar.
 
+
 pub trait Foo {
     type A;
     fn boo(&self) -> Self::A;
 }
 
-impl Foo for int {
-    type A = uint;
-    fn boo(&self) -> uint {
+impl Foo for isize {
+    type A = usize;
+    fn boo(&self) -> usize {
         5
     }
 }
@@ -41,5 +42,5 @@ impl<T: Foo> C for B<T> {
 }
 
 pub fn main() {
-    let z: uint = bar(2, 4);
+    let z: usize = bar(2, 4);
 }

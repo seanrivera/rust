@@ -37,7 +37,6 @@ impl Drop for Handler {
           target_os = "bitrig",
           target_os = "openbsd"))]
 mod imp {
-    use core::prelude::*;
     use sys_common::stack;
 
     use super::Handler;
@@ -61,7 +60,7 @@ mod imp {
 
 
     // This is initialized in init() and only read from after
-    static mut PAGE_SIZE: uint = 0;
+    static mut PAGE_SIZE: usize = 0;
 
     #[no_stack_check]
     unsafe extern fn signal_handler(signum: libc::c_int,
@@ -82,8 +81,8 @@ mod imp {
         // We're calling into functions with stack checks
         stack::record_sp_limit(0);
 
-        let guard = thread_info::stack_guard();
-        let addr = (*info).si_addr as uint;
+        let guard = thread_info::stack_guard().unwrap_or(0);
+        let addr = (*info).si_addr as usize;
 
         if guard == 0 || addr < guard - PAGE_SIZE || addr >= guard {
             term(signum);
@@ -102,7 +101,7 @@ mod imp {
             panic!("failed to get page size");
         }
 
-        PAGE_SIZE = psize as uint;
+        PAGE_SIZE = psize as usize;
 
         let mut action: sigaction = mem::zeroed();
         action.sa_flags = SA_SIGINFO | SA_ONSTACK;
@@ -145,7 +144,7 @@ mod imp {
         munmap(handler._data, SIGSTKSZ);
     }
 
-    type sighandler_t = *mut libc::c_void;
+    pub type sighandler_t = *mut libc::c_void;
 
     #[cfg(any(all(target_os = "linux", target_arch = "x86"), // may not match
               all(target_os = "linux", target_arch = "x86_64"),
@@ -157,7 +156,7 @@ mod imp {
               target_os = "android"))] // may not match
     mod signal {
         use libc;
-        use super::sighandler_t;
+        pub use super::sighandler_t;
 
         pub static SA_ONSTACK: libc::c_int = 0x08000000;
         pub static SA_SIGINFO: libc::c_int = 0x00000004;
@@ -211,7 +210,7 @@ mod imp {
               target_os = "openbsd"))]
     mod signal {
         use libc;
-        use super::sighandler_t;
+        pub use super::sighandler_t;
 
         pub const SA_ONSTACK: libc::c_int = 0x0001;
         pub const SA_SIGINFO: libc::c_int = 0x0040;

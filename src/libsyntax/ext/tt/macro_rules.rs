@@ -17,7 +17,6 @@ use ext::tt::macro_parser::{NamedMatch, MatchedSeq, MatchedNonterminal};
 use ext::tt::macro_parser::{parse, parse_or_else};
 use parse::lexer::new_tt_reader;
 use parse::parser::Parser;
-use parse::attr::ParserAttr;
 use parse::token::{self, special_idents, gensym_ident, NtTT, Token};
 use parse::token::Token::*;
 use print;
@@ -30,6 +29,11 @@ use std::rc::Rc;
 
 struct ParserAnyMacro<'a> {
     parser: RefCell<Parser<'a>>,
+
+    /// Span of the expansion site of the macro this parser is for
+    site_span: Span,
+    /// The ident of the macro we're parsing
+    macro_ident: ast::Ident
 }
 
 impl<'a> ParserAnyMacro<'a> {
@@ -42,7 +46,7 @@ impl<'a> ParserAnyMacro<'a> {
     fn ensure_complete_parse(&self, allow_semi: bool) {
         let mut parser = self.parser.borrow_mut();
         if allow_semi && parser.token == token::Semi {
-            parser.bump()
+            panictry!(parser.bump())
         }
         if parser.token != token::Eof {
             let token_str = parser.this_token_to_string();
@@ -51,6 +55,12 @@ impl<'a> ParserAnyMacro<'a> {
                               token_str);
             let span = parser.span;
             parser.span_err(span, &msg[..]);
+
+            let name = token::get_ident(self.macro_ident);
+            let msg = format!("caused by the macro expansion here; the usage \
+                               of `{}` is likely invalid in this context",
+                               name);
+            parser.span_note(self.site_span, &msg[..]);
         }
     }
 }
@@ -68,39 +78,44 @@ impl<'a> MacResult for ParserAnyMacro<'a> {
     }
     fn make_items(self: Box<ParserAnyMacro<'a>>) -> Option<SmallVector<P<ast::Item>>> {
         let mut ret = SmallVector::zero();
-        loop {
-            let mut parser = self.parser.borrow_mut();
-            // so... do outer attributes attached to the macro invocation
-            // just disappear? This question applies to make_methods, as
-            // well.
-            match parser.parse_item_with_outer_attributes() {
-                Some(item) => ret.push(item),
-                None => break
-            }
+        while let Some(item) = self.parser.borrow_mut().parse_item() {
+            ret.push(item);
         }
         self.ensure_complete_parse(false);
         Some(ret)
     }
 
-    fn make_methods(self: Box<ParserAnyMacro<'a>>) -> Option<SmallVector<P<ast::Method>>> {
+    fn make_impl_items(self: Box<ParserAnyMacro<'a>>)
+                       -> Option<SmallVector<P<ast::ImplItem>>> {
         let mut ret = SmallVector::zero();
         loop {
             let mut parser = self.parser.borrow_mut();
             match parser.token {
                 token::Eof => break,
-                _ => {
-                    ret.push(parser.parse_method_with_outer_attributes());
-                }
+                _ => ret.push(panictry!(parser.parse_impl_item()))
             }
         }
         self.ensure_complete_parse(false);
         Some(ret)
     }
 
-    fn make_stmt(self: Box<ParserAnyMacro<'a>>) -> Option<P<ast::Stmt>> {
-        let attrs = self.parser.borrow_mut().parse_outer_attributes();
-        let ret = self.parser.borrow_mut().parse_stmt(attrs);
-        self.ensure_complete_parse(true);
+    fn make_stmts(self: Box<ParserAnyMacro<'a>>)
+                 -> Option<SmallVector<P<ast::Stmt>>> {
+        let mut ret = SmallVector::zero();
+        loop {
+            let mut parser = self.parser.borrow_mut();
+            match parser.token {
+                token::Eof => break,
+                _ => match parser.parse_stmt_nopanic() {
+                    Ok(maybe_stmt) => match maybe_stmt {
+                        Some(stmt) => ret.push(stmt),
+                        None => (),
+                    },
+                    Err(_) => break,
+                }
+            }
+        }
+        self.ensure_complete_parse(false);
         Some(ret)
     }
 }
@@ -152,7 +167,7 @@ fn generic_extension<'cx>(cx: &'cx ExtCtxt,
           MatchedNonterminal(NtTT(ref lhs_tt)) => {
             let lhs_tt = match **lhs_tt {
                 TtDelimited(_, ref delim) => &delim.tts[..],
-                _ => cx.span_fatal(sp, "malformed macro lhs")
+                _ => panic!(cx.span_fatal(sp, "malformed macro lhs"))
             };
 
             match TokenTree::parse(cx, lhs_tt, arg) {
@@ -163,7 +178,7 @@ fn generic_extension<'cx>(cx: &'cx ExtCtxt,
                         match **tt {
                             // ignore delimiters
                             TtDelimited(_, ref delimed) => delimed.tts.clone(),
-                            _ => cx.span_fatal(sp, "macro rhs must be delimited"),
+                            _ => panic!(cx.span_fatal(sp, "macro rhs must be delimited")),
                         }
                     },
                     _ => cx.span_bug(sp, "bad thing in rhs")
@@ -174,24 +189,30 @@ fn generic_extension<'cx>(cx: &'cx ExtCtxt,
                                            imported_from,
                                            rhs);
                 let mut p = Parser::new(cx.parse_sess(), cx.cfg(), Box::new(trncbr));
-                p.check_unknown_macro_variable();
+                panictry!(p.check_unknown_macro_variable());
                 // Let the context choose how to interpret the result.
                 // Weird, but useful for X-macros.
-                return box ParserAnyMacro {
+                return Box::new(ParserAnyMacro {
                     parser: RefCell::new(p),
-                } as Box<MacResult+'cx>
+
+                    // Pass along the original expansion site and the name of the macro
+                    // so we can print a useful error message if the parse of the expanded
+                    // macro leaves unparsed tokens.
+                    site_span: sp,
+                    macro_ident: name
+                })
               }
               Failure(sp, ref msg) => if sp.lo >= best_fail_spot.lo {
                 best_fail_spot = sp;
                 best_fail_msg = (*msg).clone();
               },
-              Error(sp, ref msg) => cx.span_fatal(sp, &msg[..])
+              Error(sp, ref msg) => panic!(cx.span_fatal(sp, &msg[..]))
             }
           }
           _ => cx.bug("non-matcher found in parsed lhses")
         }
     }
-    cx.span_fatal(best_fail_spot, &best_fail_msg[..]);
+    panic!(cx.span_fatal(best_fail_spot, &best_fail_msg[..]));
 }
 
 // Note that macro-by-example's input is also matched against a token tree:
@@ -246,7 +267,7 @@ pub fn compile<'cx>(cx: &'cx mut ExtCtxt,
                                      argument_gram);
 
     // Extract the arguments:
-    let lhses = match *argument_map[lhs_nm] {
+    let lhses = match **argument_map.get(&lhs_nm).unwrap() {
         MatchedSeq(ref s, _) => /* FIXME (#2543) */ (*s).clone(),
         _ => cx.span_bug(def.span, "wrong-structured lhs")
     };
@@ -255,17 +276,17 @@ pub fn compile<'cx>(cx: &'cx mut ExtCtxt,
         check_lhs_nt_follows(cx, &**lhs, def.span);
     }
 
-    let rhses = match *argument_map[rhs_nm] {
+    let rhses = match **argument_map.get(&rhs_nm).unwrap() {
         MatchedSeq(ref s, _) => /* FIXME (#2543) */ (*s).clone(),
         _ => cx.span_bug(def.span, "wrong-structured rhs")
     };
 
-    let exp: Box<_> = box MacroRulesMacroExpander {
+    let exp: Box<_> = Box::new(MacroRulesMacroExpander {
         name: def.ident,
         imported_from: def.imported_from,
         lhses: lhses,
         rhses: rhses,
-    };
+    });
 
     NormalTT(exp, Some(def.span), def.allow_internal_unstable)
 }
@@ -304,42 +325,55 @@ fn check_matcher<'a, I>(cx: &mut ExtCtxt, matcher: I, follow: &Token)
         last = match *token {
             TtToken(sp, MatchNt(ref name, ref frag_spec, _, _)) => {
                 // ii. If T is a simple NT, look ahead to the next token T' in
-                // M.
-                let next_token = match tokens.peek() {
-                    // If T' closes a complex NT, replace T' with F
-                    Some(&&TtToken(_, CloseDelim(_))) => follow.clone(),
-                    Some(&&TtToken(_, ref tok)) => tok.clone(),
-                    Some(&&TtSequence(sp, _)) => {
-                        cx.span_err(sp,
-                                    &format!("`${0}:{1}` is followed by a \
-                                              sequence repetition, which is not \
-                                              allowed for `{1}` fragments",
-                                             name.as_str(), frag_spec.as_str())
+                // M. If T' is in the set FOLLOW(NT), continue. Else; reject.
+                if can_be_followed_by_any(frag_spec.as_str()) {
+                    continue
+                } else {
+                    let next_token = match tokens.peek() {
+                        // If T' closes a complex NT, replace T' with F
+                        Some(&&TtToken(_, CloseDelim(_))) => follow.clone(),
+                        Some(&&TtToken(_, ref tok)) => tok.clone(),
+                        Some(&&TtSequence(sp, _)) => {
+                            // Be conservative around sequences: to be
+                            // more specific, we would need to
+                            // consider FIRST sets, but also the
+                            // possibility that the sequence occurred
+                            // zero times (in which case we need to
+                            // look at the token that follows the
+                            // sequence, which may itself a sequence,
+                            // and so on).
+                            cx.span_err(sp,
+                                        &format!("`${0}:{1}` is followed by a \
+                                                  sequence repetition, which is not \
+                                                  allowed for `{1}` fragments",
+                                                 name.as_str(), frag_spec.as_str())
                                         );
-                        Eof
-                    },
-                    // die next iteration
-                    Some(&&TtDelimited(_, ref delim)) => delim.close_token(),
-                    // else, we're at the end of the macro or sequence
-                    None => follow.clone()
-                };
+                            Eof
+                        },
+                        // die next iteration
+                        Some(&&TtDelimited(_, ref delim)) => delim.close_token(),
+                        // else, we're at the end of the macro or sequence
+                        None => follow.clone()
+                    };
 
-                let tok = if let TtToken(_, ref tok) = *token { tok } else { unreachable!() };
-                // If T' is in the set FOLLOW(NT), continue. Else, reject.
-                match (&next_token, is_in_follow(cx, &next_token, frag_spec.as_str())) {
-                    (_, Err(msg)) => {
-                        cx.span_err(sp, &msg);
-                        continue
+                    let tok = if let TtToken(_, ref tok) = *token { tok } else { unreachable!() };
+
+                    // If T' is in the set FOLLOW(NT), continue. Else, reject.
+                    match (&next_token, is_in_follow(cx, &next_token, frag_spec.as_str())) {
+                        (_, Err(msg)) => {
+                            cx.span_err(sp, &msg);
+                            continue
+                        }
+                        (&Eof, _) => return Some((sp, tok.clone())),
+                        (_, Ok(true)) => continue,
+                        (next, Ok(false)) => {
+                            cx.span_err(sp, &format!("`${0}:{1}` is followed by `{2}`, which \
+                                                      is not allowed for `{1}` fragments",
+                                                     name.as_str(), frag_spec.as_str(),
+                                                     token_to_string(next)));
+                            continue
+                        },
                     }
-                    (&Eof, _) => return Some((sp, tok.clone())),
-                    (_, Ok(true)) => continue,
-                    (next, Ok(false)) => {
-                        cx.span_err(sp, &format!("`${0}:{1}` is followed by `{2}`, which \
-                                                  is not allowed for `{1}` fragments",
-                                                 name.as_str(), frag_spec.as_str(),
-                                                 token_to_string(next)));
-                        continue
-                    },
                 }
             },
             TtSequence(sp, ref seq) => {
@@ -406,8 +440,39 @@ fn check_matcher<'a, I>(cx: &mut ExtCtxt, matcher: I, follow: &Token)
     last
 }
 
+/// True if a fragment of type `frag` can be followed by any sort of
+/// token.  We use this (among other things) as a useful approximation
+/// for when `frag` can be followed by a repetition like `$(...)*` or
+/// `$(...)+`. In general, these can be a bit tricky to reason about,
+/// so we adopt a conservative position that says that any fragment
+/// specifier which consumes at most one token tree can be followed by
+/// a fragment specifier (indeed, these fragments can be followed by
+/// ANYTHING without fear of future compatibility hazards).
+fn can_be_followed_by_any(frag: &str) -> bool {
+    match frag {
+        "item" |  // always terminated by `}` or `;`
+        "block" | // exactly one token tree
+        "ident" | // exactly one token tree
+        "meta" |  // exactly one token tree
+        "tt" =>    // exactly one token tree
+            true,
+
+        _ =>
+            false,
+    }
+}
+
+/// True if `frag` can legally be followed by the token `tok`. For
+/// fragments that can consume an unbounded numbe of tokens, `tok`
+/// must be within a well-defined follow set. This is intended to
+/// guarantee future compatibility: for example, without this rule, if
+/// we expanded `expr` to include a new binary operator, we might
+/// break macros that were relying on that binary operator as a
+/// separator.
 fn is_in_follow(_: &ExtCtxt, tok: &Token, frag: &str) -> Result<bool, String> {
     if let &CloseDelim(_) = tok {
+        // closing a token tree can never be matched by any fragment;
+        // iow, we always require that `(` and `)` match, etc.
         Ok(true)
     } else {
         match frag {
@@ -430,6 +495,7 @@ fn is_in_follow(_: &ExtCtxt, tok: &Token, frag: &str) -> Result<bool, String> {
             "pat" => {
                 match *tok {
                     FatArrow | Comma | Eq => Ok(true),
+                    Ident(i, _) if i.as_str() == "if" || i.as_str() == "in" => Ok(true),
                     _ => Ok(false)
                 }
             },

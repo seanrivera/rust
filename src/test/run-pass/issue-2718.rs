@@ -1,4 +1,3 @@
-
 // Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
@@ -9,11 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 //
-// ignore-lexer-test FIXME #15883
 
-#![feature(unsafe_destructor)]
+#![feature(std_misc)]
 
-pub type Task = int;
+pub type Task = isize;
 
 // tjc: I don't know why
 pub mod pipes {
@@ -22,7 +20,7 @@ pub mod pipes {
     use std::mem::{forget, transmute};
     use std::mem::{replace, swap};
     use std::mem;
-    use std::thread::Thread;
+    use std::thread;
     use std::marker::Send;
 
     pub struct Stuff<T> {
@@ -32,7 +30,7 @@ pub mod pipes {
     }
 
     #[derive(PartialEq, Debug)]
-    #[repr(int)]
+    #[repr(isize)]
     pub enum state {
         empty,
         full,
@@ -60,9 +58,9 @@ pub mod pipes {
     }
 
     mod rusti {
-      pub fn atomic_xchg(_dst: &mut int, _src: int) -> int { panic!(); }
-      pub fn atomic_xchg_acq(_dst: &mut int, _src: int) -> int { panic!(); }
-      pub fn atomic_xchg_rel(_dst: &mut int, _src: int) -> int { panic!(); }
+      pub fn atomic_xchg(_dst: &mut isize, _src: isize) -> isize { panic!(); }
+      pub fn atomic_xchg_acq(_dst: &mut isize, _src: isize) -> isize { panic!(); }
+      pub fn atomic_xchg_rel(_dst: &mut isize, _src: isize) -> isize { panic!(); }
     }
 
     // We should consider moving this to ::std::unsafe, although I
@@ -73,13 +71,13 @@ pub mod pipes {
 
     pub fn swap_state_acq(dst: &mut state, src: state) -> state {
         unsafe {
-            transmute(rusti::atomic_xchg_acq(transmute(dst), src as int))
+            transmute(rusti::atomic_xchg_acq(transmute(dst), src as isize))
         }
     }
 
     pub fn swap_state_rel(dst: &mut state, src: state) -> state {
         unsafe {
-            transmute(rusti::atomic_xchg_rel(transmute(dst), src as int))
+            transmute(rusti::atomic_xchg_rel(transmute(dst), src as isize))
         }
     }
 
@@ -116,7 +114,7 @@ pub mod pipes {
             let old_state = swap_state_acq(&mut (*p).state,
                                            blocked);
             match old_state {
-              empty | blocked => { Thread::yield_now(); }
+              empty | blocked => { thread::yield_now(); }
               full => {
                 let payload = replace(&mut p.payload, None);
                 return Some(payload.unwrap())
@@ -163,17 +161,16 @@ pub mod pipes {
         }
     }
 
-    pub struct send_packet<T> {
+    pub struct send_packet<T:Send> {
         p: Option<*const packet<T>>,
     }
 
-    #[unsafe_destructor]
-    impl<T:Send> Drop for send_packet<T> {
+        impl<T:Send> Drop for send_packet<T> {
         fn drop(&mut self) {
             unsafe {
                 if self.p != None {
                     let self_p: &mut Option<*const packet<T>> =
-                        mem::transmute(&self.p);
+                        mem::transmute(&mut self.p);
                     let p = replace(self_p, None);
                     sender_terminate(p.unwrap())
                 }
@@ -193,17 +190,16 @@ pub mod pipes {
         }
     }
 
-    pub struct recv_packet<T> {
+    pub struct recv_packet<T:Send> {
         p: Option<*const packet<T>>,
     }
 
-    #[unsafe_destructor]
-    impl<T:Send> Drop for recv_packet<T> {
+        impl<T:Send> Drop for recv_packet<T> {
         fn drop(&mut self) {
             unsafe {
                 if self.p != None {
                     let self_p: &mut Option<*const packet<T>> =
-                        mem::transmute(&self.p);
+                        mem::transmute(&mut self.p);
                     let p = replace(self_p, None);
                     receiver_terminate(p.unwrap())
                 }

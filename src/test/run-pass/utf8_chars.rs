@@ -8,13 +8,14 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 //
-// ignore-lexer-test FIXME #15679
+
+#![feature(collections, core, str_char)]
 
 use std::str;
 
 pub fn main() {
     // Chars of 1, 2, 3, and 4 bytes
-    let chs: Vec<char> = vec!('e', 'é', '€', '\U00010000');
+    let chs: Vec<char> = vec!('e', 'é', '€', '\u{10000}');
     let s: String = chs.iter().cloned().collect();
     let schs: Vec<char> = s.chars().collect();
 

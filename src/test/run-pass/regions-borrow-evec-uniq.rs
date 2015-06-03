@@ -9,7 +9,8 @@
 // except according to those terms.
 
 
-fn foo(x: &[int]) -> int {
+
+fn foo(x: &[isize]) -> isize {
     x[0]
 }
 

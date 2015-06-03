@@ -16,11 +16,12 @@ use io::{self, Read, Write, ErrorKind, BufRead};
 
 /// Copies the entire contents of a reader into a writer.
 ///
-/// This function will continuously read data from `r` and then write it into
-/// `w` in a streaming fashion until `r` returns EOF.
+/// This function will continuously read data from `reader` and then
+/// write it into `writer` in a streaming fashion until `reader`
+/// returns EOF.
 ///
-/// On success the total number of bytes that were copied from `r` to `w` is
-/// returned.
+/// On success, the total number of bytes that were copied from
+/// `reader` to `writer` is returned.
 ///
 /// # Errors
 ///
@@ -28,17 +29,17 @@ use io::{self, Read, Write, ErrorKind, BufRead};
 /// `write` returns an error. All instances of `ErrorKind::Interrupted` are
 /// handled by this function and the underlying operation is retried.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub fn copy<R: Read, W: Write>(r: &mut R, w: &mut W) -> io::Result<u64> {
+pub fn copy<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> io::Result<u64> {
     let mut buf = [0; super::DEFAULT_BUF_SIZE];
     let mut written = 0;
     loop {
-        let len = match r.read(&mut buf) {
+        let len = match reader.read(&mut buf) {
             Ok(0) => return Ok(written),
             Ok(len) => len,
             Err(ref e) if e.kind() == ErrorKind::Interrupted => continue,
             Err(e) => return Err(e),
         };
-        try!(w.write_all(&buf[..len]));
+        try!(writer.write_all(&buf[..len]));
         written += len as u64;
     }
 }
@@ -102,7 +103,7 @@ impl Write for Sink {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use prelude::v1::*;
 
     use io::prelude::*;
@@ -111,33 +112,33 @@ mod test {
     #[test]
     fn sink_sinks() {
         let mut s = sink();
-        assert_eq!(s.write(&[]), Ok(0));
-        assert_eq!(s.write(&[0]), Ok(1));
-        assert_eq!(s.write(&[0; 1024]), Ok(1024));
-        assert_eq!(s.by_ref().write(&[0; 1024]), Ok(1024));
+        assert_eq!(s.write(&[]).unwrap(), 0);
+        assert_eq!(s.write(&[0]).unwrap(), 1);
+        assert_eq!(s.write(&[0; 1024]).unwrap(), 1024);
+        assert_eq!(s.by_ref().write(&[0; 1024]).unwrap(), 1024);
     }
 
     #[test]
     fn empty_reads() {
         let mut e = empty();
-        assert_eq!(e.read(&mut []), Ok(0));
-        assert_eq!(e.read(&mut [0]), Ok(0));
-        assert_eq!(e.read(&mut [0; 1024]), Ok(0));
-        assert_eq!(e.by_ref().read(&mut [0; 1024]), Ok(0));
+        assert_eq!(e.read(&mut []).unwrap(), 0);
+        assert_eq!(e.read(&mut [0]).unwrap(), 0);
+        assert_eq!(e.read(&mut [0; 1024]).unwrap(), 0);
+        assert_eq!(e.by_ref().read(&mut [0; 1024]).unwrap(), 0);
     }
 
     #[test]
     fn repeat_repeats() {
         let mut r = repeat(4);
         let mut b = [0; 1024];
-        assert_eq!(r.read(&mut b), Ok(1024));
+        assert_eq!(r.read(&mut b).unwrap(), 1024);
         assert!(b.iter().all(|b| *b == 4));
     }
 
     #[test]
     fn take_some_bytes() {
         assert_eq!(repeat(4).take(100).bytes().count(), 100);
-        assert_eq!(repeat(4).take(100).bytes().next(), Some(Ok(4)));
+        assert_eq!(repeat(4).take(100).bytes().next().unwrap().unwrap(), 4);
         assert_eq!(repeat(1).take(10).chain(repeat(2).take(10)).bytes().count(), 20);
     }
 
@@ -146,7 +147,7 @@ mod test {
         let mut buf = [0; 10];
         {
             let mut ptr: &mut [u8] = &mut buf;
-            assert_eq!(repeat(4).tee(&mut ptr).take(5).read(&mut [0; 10]), Ok(5));
+            assert_eq!(repeat(4).tee(&mut ptr).take(5).read(&mut [0; 10]).unwrap(), 5);
         }
         assert_eq!(buf, [4, 4, 4, 4, 4, 0, 0, 0, 0, 0]);
     }
@@ -160,7 +161,7 @@ mod test {
             let mut ptr2: &mut [u8] = &mut buf2;
 
             assert_eq!((&mut ptr1).broadcast(&mut ptr2)
-                                  .write(&[1, 2, 3]), Ok(3));
+                                  .write(&[1, 2, 3]).unwrap(), 3);
         }
         assert_eq!(buf1, buf2);
         assert_eq!(buf1, [1, 2, 3, 0, 0, 0, 0, 0, 0, 0]);

@@ -21,7 +21,7 @@ use middle::ty::{mt, Ty, ParamTy};
 use middle::ty::{ty_bool, ty_char, ty_struct, ty_enum};
 use middle::ty::{ty_err, ty_str, ty_vec, ty_float, ty_bare_fn};
 use middle::ty::{ty_param, ty_ptr, ty_rptr, ty_tup};
-use middle::ty::{ty_closure};
+use middle::ty::ty_closure;
 use middle::ty::{ty_uniq, ty_trait, ty_int, ty_uint, ty_infer};
 use middle::ty;
 use middle::ty_fold::TypeFoldable;
@@ -113,9 +113,12 @@ pub fn explain_region_and_span(cx: &ctxt, region: ty::Region)
         };
         let scope_decorated_tag = match scope {
             region::CodeExtent::Misc(_) => tag,
+            region::CodeExtent::ParameterScope { .. } => {
+                "scope of parameters for function"
+            }
             region::CodeExtent::DestructionScope(_) => {
                 new_string = format!("destruction scope surrounding {}", tag);
-                new_string.as_slice()
+                &*new_string
             }
             region::CodeExtent::Remainder(r) => {
                 new_string = format!("block suffix following statement {}",
@@ -160,8 +163,8 @@ pub fn explain_region_and_span(cx: &ctxt, region: ty::Region)
 
       ReEmpty => { ("the empty lifetime".to_string(), None) }
 
-      ReEarlyBound(_, _, _, name) => {
-        (format!("{}", token::get_name(name)), None)
+      ReEarlyBound(ref data) => {
+        (format!("{}", token::get_name(data.name)), None)
       }
 
       // I believe these cases should not occur (except when debugging,
@@ -220,8 +223,8 @@ pub fn region_to_string(cx: &ctxt, prefix: &str, space: bool, region: Region) ->
     // `explain_region()` or `note_and_explain_region()`.
     match region {
         ty::ReScope(_) => prefix.to_string(),
-        ty::ReEarlyBound(_, _, _, name) => {
-            token::get_name(name).to_string()
+        ty::ReEarlyBound(ref data) => {
+            token::get_name(data.name).to_string()
         }
         ty::ReLateBound(_, br) => bound_region_to_string(cx, prefix, space, br),
         ty::ReFree(ref fr) => bound_region_to_string(cx, prefix, space, fr.bound_region),
@@ -346,7 +349,8 @@ pub fn ty_to_string<'tcx>(cx: &ctxt<'tcx>, typ: &ty::TyS<'tcx>) -> String {
             ty::FloatVar(ref vid) if print_var_ids => vid.repr(cx),
             ty::TyVar(_) | ty::IntVar(_) | ty::FloatVar(_) => format!("_"),
             ty::FreshTy(v) => format!("FreshTy({})", v),
-            ty::FreshIntTy(v) => format!("FreshIntTy({})", v)
+            ty::FreshIntTy(v) => format!("FreshIntTy({})", v),
+            ty::FreshFloatTy(v) => format!("FreshFloatTy({})", v)
         }
     }
 
@@ -384,13 +388,7 @@ pub fn ty_to_string<'tcx>(cx: &ctxt<'tcx>, typ: &ty::TyS<'tcx>) -> String {
         }
         ty_infer(infer_ty) => infer_ty_to_string(cx, infer_ty),
         ty_err => "[type error]".to_string(),
-        ty_param(ref param_ty) => {
-            if cx.sess.verbose() {
-                param_ty.repr(cx)
-            } else {
-                param_ty.user_string(cx)
-            }
-        }
+        ty_param(ref param_ty) => param_ty.user_string(cx),
         ty_enum(did, substs) | ty_struct(did, substs) => {
             let base = ty::item_path_str(cx, did);
             parameterized(cx, &base, substs, did, &[],
@@ -561,7 +559,7 @@ pub fn parameterized<'tcx,GG>(cx: &ctxt<'tcx>,
                     &strs[0][..]
                 },
                 tail)
-    } else if strs.len() > 0 {
+    } else if !strs.is_empty() {
         format!("{}<{}>", base, strs.connect(", "))
     } else {
         format!("{}", base)
@@ -640,7 +638,7 @@ impl<'tcx, T:Repr<'tcx>> Repr<'tcx> for OwnedSlice<T> {
     }
 }
 
-// This is necessary to handle types like Option<~[T]>, for which
+// This is necessary to handle types like Option<Vec<T>>, for which
 // autoderef cannot convert the &[T] handler
 impl<'tcx, T:Repr<'tcx>> Repr<'tcx> for Vec<T> {
     fn repr(&self, tcx: &ctxt<'tcx>) -> String {
@@ -674,7 +672,7 @@ impl<'tcx> Repr<'tcx> for def::Def {
 /// projection bounds, so we just stuff them altogether. But in
 /// reality we should eventually sort things out better.
 type TraitAndProjections<'tcx> =
-    (Rc<ty::TraitRef<'tcx>>, Vec<ty::ProjectionPredicate<'tcx>>);
+    (ty::TraitRef<'tcx>, Vec<ty::ProjectionPredicate<'tcx>>);
 
 impl<'tcx> UserString<'tcx> for TraitAndProjections<'tcx> {
     fn user_string(&self, tcx: &ctxt<'tcx>) -> String {
@@ -813,8 +811,12 @@ impl<'tcx> Repr<'tcx> for ty::TraitRef<'tcx> {
         // to enumerate the `for<...>` etc because the debruijn index
         // tells you everything you need to know.
         let base = ty::item_path_str(tcx, self.def_id);
-        parameterized(tcx, &base, self.substs, self.def_id, &[],
-                      || ty::lookup_trait_def(tcx, self.def_id).generics.clone())
+        let result = parameterized(tcx, &base, self.substs, self.def_id, &[],
+                      || ty::lookup_trait_def(tcx, self.def_id).generics.clone());
+        match self.substs.self_ty() {
+            None => result,
+            Some(sty) => format!("<{} as {}>", sty.repr(tcx), result)
+        }
     }
 }
 
@@ -828,14 +830,12 @@ impl<'tcx> Repr<'tcx> for ty::TraitDef<'tcx> {
 
 impl<'tcx> Repr<'tcx> for ast::TraitItem {
     fn repr(&self, _tcx: &ctxt) -> String {
-        match *self {
-            ast::RequiredMethod(ref data) => format!("RequiredMethod({}, id={})",
-                                                     data.ident, data.id),
-            ast::ProvidedMethod(ref data) => format!("ProvidedMethod(id={})",
-                                                     data.id),
-            ast::TypeTraitItem(ref data) => format!("TypeTraitItem({}, id={})",
-                                                     data.ty_param.ident, data.ty_param.id),
-        }
+        let kind = match self.node {
+            ast::ConstTraitItem(..) => "ConstTraitItem",
+            ast::MethodTraitItem(..) => "MethodTraitItem",
+            ast::TypeTraitItem(..) => "TypeTraitItem",
+        };
+        format!("{}({}, id={})", kind, self.ident, self.id)
     }
 }
 
@@ -905,12 +905,12 @@ impl<'tcx> Repr<'tcx> for ty::BoundRegion {
 impl<'tcx> Repr<'tcx> for ty::Region {
     fn repr(&self, tcx: &ctxt) -> String {
         match *self {
-            ty::ReEarlyBound(id, space, index, name) => {
+            ty::ReEarlyBound(ref data) => {
                 format!("ReEarlyBound({}, {:?}, {}, {})",
-                               id,
-                               space,
-                               index,
-                               token::get_name(name))
+                        data.param_id,
+                        data.space,
+                        data.index,
+                        token::get_name(data.name))
             }
 
             ty::ReLateBound(binder_id, ref bound_region) => {
@@ -961,6 +961,8 @@ impl<'tcx> Repr<'tcx> for ty::FreeRegion {
 impl<'tcx> Repr<'tcx> for region::CodeExtent {
     fn repr(&self, _tcx: &ctxt) -> String {
         match *self {
+            region::CodeExtent::ParameterScope { fn_id, body_id } =>
+                format!("ParameterScope({}, {})", fn_id, body_id),
             region::CodeExtent::Misc(node_id) =>
                 format!("Misc({})", node_id),
             region::CodeExtent::DestructionScope(node_id) =>
@@ -1054,12 +1056,43 @@ impl<'tcx> Repr<'tcx> for ty::Variance {
     }
 }
 
+impl<'tcx> Repr<'tcx> for ty::ImplOrTraitItem<'tcx> {
+    fn repr(&self, tcx: &ctxt<'tcx>) -> String {
+        format!("ImplOrTraitItem({})",
+                match *self {
+                    ty::ImplOrTraitItem::MethodTraitItem(ref i) => i.repr(tcx),
+                    ty::ImplOrTraitItem::ConstTraitItem(ref i) => i.repr(tcx),
+                    ty::ImplOrTraitItem::TypeTraitItem(ref i) => i.repr(tcx),
+                })
+    }
+}
+
+impl<'tcx> Repr<'tcx> for ty::AssociatedConst<'tcx> {
+    fn repr(&self, tcx: &ctxt<'tcx>) -> String {
+        format!("AssociatedConst(name: {}, ty: {}, vis: {}, def_id: {})",
+                self.name.repr(tcx),
+                self.ty.repr(tcx),
+                self.vis.repr(tcx),
+                self.def_id.repr(tcx))
+    }
+}
+
+impl<'tcx> Repr<'tcx> for ty::AssociatedType<'tcx> {
+    fn repr(&self, tcx: &ctxt<'tcx>) -> String {
+        format!("AssociatedType(name: {}, vis: {}, def_id: {})",
+                self.name.repr(tcx),
+                self.vis.repr(tcx),
+                self.def_id.repr(tcx))
+    }
+}
+
 impl<'tcx> Repr<'tcx> for ty::Method<'tcx> {
     fn repr(&self, tcx: &ctxt<'tcx>) -> String {
-        format!("method(name: {}, generics: {}, fty: {}, \
+        format!("Method(name: {}, generics: {}, predicates: {}, fty: {}, \
                  explicit_self: {}, vis: {}, def_id: {})",
                 self.name.repr(tcx),
                 self.generics.repr(tcx),
+                self.predicates.repr(tcx),
                 self.fty.repr(tcx),
                 self.explicit_self.repr(tcx),
                 self.vis.repr(tcx),
@@ -1217,17 +1250,17 @@ impl<'tcx> Repr<'tcx> for ty::ExistentialBounds<'tcx> {
     fn repr(&self, tcx: &ctxt<'tcx>) -> String {
         let mut res = Vec::new();
 
-        let region_str = self.region_bound.user_string(tcx);
+        let region_str = self.region_bound.repr(tcx);
         if !region_str.is_empty() {
             res.push(region_str);
         }
 
         for bound in &self.builtin_bounds {
-            res.push(bound.user_string(tcx));
+            res.push(bound.repr(tcx));
         }
 
         for projection_bound in &self.projection_bounds {
-            res.push(projection_bound.user_string(tcx));
+            res.push(projection_bound.repr(tcx));
         }
 
         res.connect("+")
@@ -1272,7 +1305,7 @@ impl<'tcx, T> UserString<'tcx> for ty::Binder<T>
         let names: Vec<_> = names.iter().map(|s| &s[..]).collect();
 
         let value_str = unbound_value.user_string(tcx);
-        if names.len() == 0 {
+        if names.is_empty() {
             value_str
         } else {
             format!("for<{}> {}", names.connect(","), value_str)
@@ -1507,8 +1540,7 @@ impl<'tcx> UserString<'tcx> for ty::ProjectionPredicate<'tcx> {
 
 impl<'tcx> Repr<'tcx> for ty::ProjectionTy<'tcx> {
     fn repr(&self, tcx: &ctxt<'tcx>) -> String {
-        format!("<{} as {}>::{}",
-                self.trait_ref.substs.self_ty().repr(tcx),
+        format!("{}::{}",
                 self.trait_ref.repr(tcx),
                 self.item_name.repr(tcx))
     }
@@ -1532,5 +1564,11 @@ impl<'tcx> UserString<'tcx> for ty::Predicate<'tcx> {
             ty::Predicate::TypeOutlives(ref predicate) => predicate.user_string(tcx),
             ty::Predicate::Projection(ref predicate) => predicate.user_string(tcx),
         }
+    }
+}
+
+impl<'tcx> Repr<'tcx> for ast::Unsafety {
+    fn repr(&self, _: &ctxt<'tcx>) -> String {
+        format!("{:?}", *self)
     }
 }

@@ -22,7 +22,7 @@ pub use sys::backtrace::write;
 // For now logging is turned off by default, and this function checks to see
 // whether the magical environment variable is present to see if it's turned on.
 pub fn log_enabled() -> bool {
-    static ENABLED: atomic::AtomicIsize = atomic::ATOMIC_ISIZE_INIT;
+    static ENABLED: atomic::AtomicIsize = atomic::AtomicIsize::new(0);
     match ENABLED.load(Ordering::SeqCst) {
         1 => return false,
         2 => return true,
@@ -38,7 +38,7 @@ pub fn log_enabled() -> bool {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use prelude::v1::*;
     use sys_common;
     macro_rules! t { ($a:expr, $b:expr) => ({

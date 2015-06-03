@@ -14,10 +14,9 @@
 use core::prelude::*;
 
 use core::cmp::Ordering::{self, Less, Greater, Equal};
-use core::default::Default;
 use core::fmt::Debug;
 use core::fmt;
-use core::iter::{Peekable, Map, FromIterator, IntoIterator};
+use core::iter::{Peekable, Map, FromIterator};
 use core::ops::{BitOr, BitAnd, BitXor, Sub};
 
 use borrow::Borrow;
@@ -30,6 +29,10 @@ use Bound;
 ///
 /// See BTreeMap's documentation for a detailed discussion of this collection's performance
 /// benefits and drawbacks.
+///
+/// It is a logic error for an item to be modified in such a way that the item's ordering relative
+/// to any other item, as determined by the `Ord` trait, changes while it is in the set. This is
+/// normally only possible through `Cell`, `RefCell`, global state, I/O, or unsafe code.
 #[derive(Clone, Hash, PartialEq, Eq, Ord, PartialOrd)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct BTreeSet<T>{
@@ -120,32 +123,12 @@ impl<T> BTreeSet<T> {
     ///     println!("{}", x);
     /// }
     ///
-    /// let v: Vec<usize> = set.iter().cloned().collect();
+    /// let v: Vec<_> = set.iter().cloned().collect();
     /// assert_eq!(v, [1, 2, 3, 4]);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn iter(&self) -> Iter<T> {
         Iter { iter: self.map.keys() }
-    }
-
-    /// Gets an iterator for moving out the BtreeSet's contents.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use std::collections::BTreeSet;
-    ///
-    /// let set: BTreeSet<usize> = [1, 2, 3, 4].iter().cloned().collect();
-    ///
-    /// let v: Vec<usize> = set.into_iter().collect();
-    /// assert_eq!(v, [1, 2, 3, 4]);
-    /// ```
-    #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn into_iter(self) -> IntoIter<T> {
-        fn first<A, B>((a, _): (A, B)) -> A { a }
-        let first: fn((T, ())) -> T = first; // coerce to fn pointer
-
-        IntoIter { iter: self.map.into_iter().map(first) }
     }
 }
 
@@ -158,6 +141,7 @@ impl<T: Ord> BTreeSet<T> {
     /// # Examples
     ///
     /// ```
+    /// # #![feature(collections)]
     /// use std::collections::BTreeSet;
     /// use std::collections::Bound::{Included, Unbounded};
     ///
@@ -196,7 +180,7 @@ impl<T: Ord> BTreeSet<T> {
     /// b.insert(2);
     /// b.insert(3);
     ///
-    /// let diff: Vec<usize> = a.difference(&b).cloned().collect();
+    /// let diff: Vec<_> = a.difference(&b).cloned().collect();
     /// assert_eq!(diff, [1]);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -219,7 +203,7 @@ impl<T: Ord> BTreeSet<T> {
     /// b.insert(2);
     /// b.insert(3);
     ///
-    /// let sym_diff: Vec<usize> = a.symmetric_difference(&b).cloned().collect();
+    /// let sym_diff: Vec<_> = a.symmetric_difference(&b).cloned().collect();
     /// assert_eq!(sym_diff, [1, 3]);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -243,7 +227,7 @@ impl<T: Ord> BTreeSet<T> {
     /// b.insert(2);
     /// b.insert(3);
     ///
-    /// let intersection: Vec<usize> = a.intersection(&b).cloned().collect();
+    /// let intersection: Vec<_> = a.intersection(&b).cloned().collect();
     /// assert_eq!(intersection, [2]);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -265,7 +249,7 @@ impl<T: Ord> BTreeSet<T> {
     /// let mut b = BTreeSet::new();
     /// b.insert(2);
     ///
-    /// let union: Vec<usize> = a.union(&b).cloned().collect();
+    /// let union: Vec<_> = a.union(&b).cloned().collect();
     /// assert_eq!(union, [1, 2]);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -273,7 +257,7 @@ impl<T: Ord> BTreeSet<T> {
         Union{a: self.iter().peekable(), b: other.iter().peekable()}
     }
 
-    /// Return the number of elements in the set
+    /// Returns the number of elements in the set.
     ///
     /// # Examples
     ///
@@ -288,7 +272,7 @@ impl<T: Ord> BTreeSet<T> {
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn len(&self) -> usize { self.map.len() }
 
-    /// Returns true if the set contains no elements
+    /// Returns true if the set contains no elements.
     ///
     /// # Examples
     ///
@@ -485,8 +469,23 @@ impl<T> IntoIterator for BTreeSet<T> {
     type Item = T;
     type IntoIter = IntoIter<T>;
 
+    /// Gets an iterator for moving out the BtreeSet's contents.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::BTreeSet;
+    ///
+    /// let set: BTreeSet<usize> = [1, 2, 3, 4].iter().cloned().collect();
+    ///
+    /// let v: Vec<_> = set.into_iter().collect();
+    /// assert_eq!(v, [1, 2, 3, 4]);
+    /// ```
     fn into_iter(self) -> IntoIter<T> {
-        self.into_iter()
+        fn first<A, B>((a, _): (A, B)) -> A { a }
+        let first: fn((T, ())) -> T = first; // coerce to fn pointer
+
+        IntoIter { iter: self.map.into_iter().map(first) }
     }
 }
 
@@ -613,17 +612,13 @@ impl<'a, 'b, T: Ord + Clone> BitOr<&'b BTreeSet<T>> for &'a BTreeSet<T> {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: Debug> Debug for BTreeSet<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        try!(write!(f, "{{"));
-
-        for (i, x) in self.iter().enumerate() {
-            if i != 0 { try!(write!(f, ", ")); }
-            try!(write!(f, "{:?}", *x));
-        }
-
-        write!(f, "}}")
+        f.debug_set().entries(self.iter()).finish()
     }
 }
 
+impl<'a, T> Clone for Iter<'a, T> {
+    fn clone(&self) -> Iter<'a, T> { Iter { iter: self.iter.clone() } }
+}
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, T> Iterator for Iter<'a, T> {
     type Item = &'a T;
@@ -654,6 +649,9 @@ impl<T> DoubleEndedIterator for IntoIter<T> {
 impl<T> ExactSizeIterator for IntoIter<T> {}
 
 
+impl<'a, T> Clone for Range<'a, T> {
+    fn clone(&self) -> Range<'a, T> { Range { iter: self.iter.clone() } }
+}
 impl<'a, T> Iterator for Range<'a, T> {
     type Item = &'a T;
 
@@ -673,6 +671,11 @@ fn cmp_opt<T: Ord>(x: Option<&T>, y: Option<&T>,
     }
 }
 
+impl<'a, T> Clone for Difference<'a, T> {
+    fn clone(&self) -> Difference<'a, T> {
+        Difference { a: self.a.clone(), b: self.b.clone() }
+    }
+}
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, T: Ord> Iterator for Difference<'a, T> {
     type Item = &'a T;
@@ -688,6 +691,11 @@ impl<'a, T: Ord> Iterator for Difference<'a, T> {
     }
 }
 
+impl<'a, T> Clone for SymmetricDifference<'a, T> {
+    fn clone(&self) -> SymmetricDifference<'a, T> {
+        SymmetricDifference { a: self.a.clone(), b: self.b.clone() }
+    }
+}
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, T: Ord> Iterator for SymmetricDifference<'a, T> {
     type Item = &'a T;
@@ -703,6 +711,11 @@ impl<'a, T: Ord> Iterator for SymmetricDifference<'a, T> {
     }
 }
 
+impl<'a, T> Clone for Intersection<'a, T> {
+    fn clone(&self) -> Intersection<'a, T> {
+        Intersection { a: self.a.clone(), b: self.b.clone() }
+    }
+}
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, T: Ord> Iterator for Intersection<'a, T> {
     type Item = &'a T;
@@ -724,6 +737,11 @@ impl<'a, T: Ord> Iterator for Intersection<'a, T> {
     }
 }
 
+impl<'a, T> Clone for Union<'a, T> {
+    fn clone(&self) -> Union<'a, T> {
+        Union { a: self.a.clone(), b: self.b.clone() }
+    }
+}
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, T: Ord> Iterator for Union<'a, T> {
     type Item = &'a T;
@@ -736,182 +754,5 @@ impl<'a, T: Ord> Iterator for Union<'a, T> {
                 Greater => return self.b.next(),
             }
         }
-    }
-}
-
-
-#[cfg(test)]
-mod test {
-    use prelude::*;
-
-    use super::BTreeSet;
-    use std::hash::{self, SipHasher};
-
-    #[test]
-    fn test_clone_eq() {
-      let mut m = BTreeSet::new();
-
-      m.insert(1);
-      m.insert(2);
-
-      assert!(m.clone() == m);
-    }
-
-    #[test]
-    fn test_hash() {
-      let mut x = BTreeSet::new();
-      let mut y = BTreeSet::new();
-
-      x.insert(1);
-      x.insert(2);
-      x.insert(3);
-
-      y.insert(3);
-      y.insert(2);
-      y.insert(1);
-
-      assert!(hash::hash::<_, SipHasher>(&x) == hash::hash::<_, SipHasher>(&y));
-    }
-
-    struct Counter<'a, 'b> {
-        i: &'a mut usize,
-        expected: &'b [i32],
-    }
-
-    impl<'a, 'b, 'c> FnMut<(&'c i32,)> for Counter<'a, 'b> {
-        type Output = bool;
-
-        extern "rust-call" fn call_mut(&mut self, (&x,): (&'c i32,)) -> bool {
-            assert_eq!(x, self.expected[*self.i]);
-            *self.i += 1;
-            true
-        }
-    }
-
-    fn check<F>(a: &[i32], b: &[i32], expected: &[i32], f: F) where
-        // FIXME Replace Counter with `Box<FnMut(_) -> _>`
-        F: FnOnce(&BTreeSet<i32>, &BTreeSet<i32>, Counter) -> bool,
-    {
-        let mut set_a = BTreeSet::new();
-        let mut set_b = BTreeSet::new();
-
-        for x in a { assert!(set_a.insert(*x)) }
-        for y in b { assert!(set_b.insert(*y)) }
-
-        let mut i = 0;
-        f(&set_a, &set_b, Counter { i: &mut i, expected: expected });
-        assert_eq!(i, expected.len());
-    }
-
-    #[test]
-    fn test_intersection() {
-        fn check_intersection(a: &[i32], b: &[i32], expected: &[i32]) {
-            check(a, b, expected, |x, y, f| x.intersection(y).all(f))
-        }
-
-        check_intersection(&[], &[], &[]);
-        check_intersection(&[1, 2, 3], &[], &[]);
-        check_intersection(&[], &[1, 2, 3], &[]);
-        check_intersection(&[2], &[1, 2, 3], &[2]);
-        check_intersection(&[1, 2, 3], &[2], &[2]);
-        check_intersection(&[11, 1, 3, 77, 103, 5, -5],
-                           &[2, 11, 77, -9, -42, 5, 3],
-                           &[3, 5, 11, 77]);
-    }
-
-    #[test]
-    fn test_difference() {
-        fn check_difference(a: &[i32], b: &[i32], expected: &[i32]) {
-            check(a, b, expected, |x, y, f| x.difference(y).all(f))
-        }
-
-        check_difference(&[], &[], &[]);
-        check_difference(&[1, 12], &[], &[1, 12]);
-        check_difference(&[], &[1, 2, 3, 9], &[]);
-        check_difference(&[1, 3, 5, 9, 11],
-                         &[3, 9],
-                         &[1, 5, 11]);
-        check_difference(&[-5, 11, 22, 33, 40, 42],
-                         &[-12, -5, 14, 23, 34, 38, 39, 50],
-                         &[11, 22, 33, 40, 42]);
-    }
-
-    #[test]
-    fn test_symmetric_difference() {
-        fn check_symmetric_difference(a: &[i32], b: &[i32], expected: &[i32]) {
-            check(a, b, expected, |x, y, f| x.symmetric_difference(y).all(f))
-        }
-
-        check_symmetric_difference(&[], &[], &[]);
-        check_symmetric_difference(&[1, 2, 3], &[2], &[1, 3]);
-        check_symmetric_difference(&[2], &[1, 2, 3], &[1, 3]);
-        check_symmetric_difference(&[1, 3, 5, 9, 11],
-                                   &[-2, 3, 9, 14, 22],
-                                   &[-2, 1, 5, 11, 14, 22]);
-    }
-
-    #[test]
-    fn test_union() {
-        fn check_union(a: &[i32], b: &[i32], expected: &[i32]) {
-            check(a, b, expected, |x, y, f| x.union(y).all(f))
-        }
-
-        check_union(&[], &[], &[]);
-        check_union(&[1, 2, 3], &[2], &[1, 2, 3]);
-        check_union(&[2], &[1, 2, 3], &[1, 2, 3]);
-        check_union(&[1, 3, 5, 9, 11, 16, 19, 24],
-                    &[-2, 1, 5, 9, 13, 19],
-                    &[-2, 1, 3, 5, 9, 11, 13, 16, 19, 24]);
-    }
-
-    #[test]
-    fn test_zip() {
-        let mut x = BTreeSet::new();
-        x.insert(5);
-        x.insert(12);
-        x.insert(11);
-
-        let mut y = BTreeSet::new();
-        y.insert("foo");
-        y.insert("bar");
-
-        let x = x;
-        let y = y;
-        let mut z = x.iter().zip(y.iter());
-
-        // FIXME: #5801: this needs a type hint to compile...
-        let result: Option<(&usize, & &'static str)> = z.next();
-        assert_eq!(result.unwrap(), (&5, &("bar")));
-
-        let result: Option<(&usize, & &'static str)> = z.next();
-        assert_eq!(result.unwrap(), (&11, &("foo")));
-
-        let result: Option<(&usize, & &'static str)> = z.next();
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_from_iter() {
-        let xs = [1, 2, 3, 4, 5, 6, 7, 8, 9];
-
-        let set: BTreeSet<_> = xs.iter().cloned().collect();
-
-        for x in &xs {
-            assert!(set.contains(x));
-        }
-    }
-
-    #[test]
-    fn test_show() {
-        let mut set = BTreeSet::new();
-        let empty = BTreeSet::<i32>::new();
-
-        set.insert(1);
-        set.insert(2);
-
-        let set_str = format!("{:?}", set);
-
-        assert_eq!(set_str, "{1, 2}");
-        assert_eq!(format!("{:?}", empty), "{}");
     }
 }

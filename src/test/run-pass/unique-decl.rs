@@ -9,10 +9,11 @@
 // except according to those terms.
 
 
+
 pub fn main() {
-    let _: Box<int>;
+    let _: Box<isize>;
 }
 
-fn f(_i: Box<int>) -> Box<int> {
+fn f(_i: Box<isize>) -> Box<isize> {
     panic!();
 }

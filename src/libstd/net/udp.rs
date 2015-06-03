@@ -8,12 +8,17 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![unstable(feature = "udp", reason = "remaining functions have not been \
+                                       scrutinized enough to be stabilized")]
+
 use prelude::v1::*;
 
+use fmt;
 use io::{self, Error, ErrorKind};
 use net::{ToSocketAddrs, SocketAddr, IpAddr};
-use sys_common::net2 as net_imp;
-use sys_common::AsInner;
+use sys_common::net as net_imp;
+use sys_common::{AsInner, FromInner};
+use time::Duration;
 
 /// A User Datagram Protocol socket.
 ///
@@ -21,7 +26,7 @@ use sys_common::AsInner;
 /// IPv6 addresses, and there is no corresponding notion of a server because UDP
 /// is a datagram protocol.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```no_run
 /// use std::net::UdpSocket;
@@ -41,86 +46,138 @@ use sys_common::AsInner;
 /// # Ok(())
 /// # }
 /// ```
+#[stable(feature = "rust1", since = "1.0.0")]
 pub struct UdpSocket(net_imp::UdpSocket);
 
 impl UdpSocket {
     /// Creates a UDP socket from the given address.
     ///
-    /// Address type can be any implementor of `ToSocketAddr` trait. See its
-    /// documentation for concrete examples.
-    pub fn bind<A: ToSocketAddrs + ?Sized>(addr: &A) -> io::Result<UdpSocket> {
+    /// The address type can be any implementor of `ToSocketAddr` trait. See
+    /// its documentation for concrete examples.
+    #[stable(feature = "rust1", since = "1.0.0")]
+    pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<UdpSocket> {
         super::each_addr(addr, net_imp::UdpSocket::bind).map(UdpSocket)
     }
 
     /// Receives data from the socket. On success, returns the number of bytes
     /// read and the address from whence the data came.
+    #[stable(feature = "rust1", since = "1.0.0")]
     pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
         self.0.recv_from(buf)
     }
 
-    /// Sends data on the socket to the given address. Returns nothing on
-    /// success.
+    /// Sends data on the socket to the given address. On success, returns the
+    /// number of bytes written.
     ///
     /// Address type can be any implementor of `ToSocketAddrs` trait. See its
     /// documentation for concrete examples.
-    pub fn send_to<A: ToSocketAddrs + ?Sized>(&self, buf: &[u8], addr: &A)
-                                              -> io::Result<usize> {
+    #[stable(feature = "rust1", since = "1.0.0")]
+    pub fn send_to<A: ToSocketAddrs>(&self, buf: &[u8], addr: A)
+                                     -> io::Result<usize> {
         match try!(addr.to_socket_addrs()).next() {
             Some(addr) => self.0.send_to(buf, &addr),
             None => Err(Error::new(ErrorKind::InvalidInput,
-                                   "no addresses to send data to", None)),
+                                   "no addresses to send data to")),
         }
     }
 
     /// Returns the socket address that this socket was created from.
-    pub fn socket_addr(&self) -> io::Result<SocketAddr> {
+    #[stable(feature = "rust1", since = "1.0.0")]
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.0.socket_addr()
     }
 
-    /// Create a new independently owned handle to the underlying socket.
+    /// Creates a new independently owned handle to the underlying socket.
     ///
     /// The returned `UdpSocket` is a reference to the same socket that this
     /// object references. Both handles will read and write the same port, and
     /// options set on one socket will be propagated to the other.
+    #[stable(feature = "rust1", since = "1.0.0")]
     pub fn try_clone(&self) -> io::Result<UdpSocket> {
         self.0.duplicate().map(UdpSocket)
     }
 
-    /// Sets the broadcast flag on or off
+    /// Sets the broadcast flag on or off.
     pub fn set_broadcast(&self, on: bool) -> io::Result<()> {
         self.0.set_broadcast(on)
     }
 
-    /// Set the multicast loop flag to the specified value
+    /// Sets the multicast loop flag to the specified value.
     ///
     /// This lets multicast packets loop back to local sockets (if enabled)
     pub fn set_multicast_loop(&self, on: bool) -> io::Result<()> {
         self.0.set_multicast_loop(on)
     }
 
-    /// Joins a multicast IP address (becomes a member of it)
+    /// Joins a multicast IP address (becomes a member of it).
     pub fn join_multicast(&self, multi: &IpAddr) -> io::Result<()> {
         self.0.join_multicast(multi)
     }
 
-    /// Leaves a multicast IP address (drops membership from it)
+    /// Leaves a multicast IP address (drops membership from it).
     pub fn leave_multicast(&self, multi: &IpAddr) -> io::Result<()> {
         self.0.leave_multicast(multi)
     }
 
-    /// Sets the multicast TTL
+    /// Sets the multicast TTL.
     pub fn set_multicast_time_to_live(&self, ttl: i32) -> io::Result<()> {
         self.0.multicast_time_to_live(ttl)
     }
 
-    /// Sets this socket's TTL
+    /// Sets this socket's TTL.
     pub fn set_time_to_live(&self, ttl: i32) -> io::Result<()> {
         self.0.time_to_live(ttl)
+    }
+
+    /// Sets the read timeout to the timeout specified.
+    ///
+    /// If the value specified is `None`, then `read` calls will block
+    /// indefinitely. It is an error to pass the zero `Duration` to this
+    /// method.
+    #[unstable(feature = "socket_timeout", reason = "RFC 1047 - recently added")]
+    pub fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        self.0.set_read_timeout(dur)
+    }
+
+    /// Sets the write timeout to the timeout specified.
+    ///
+    /// If the value specified is `None`, then `write` calls will block
+    /// indefinitely. It is an error to pass the zero `Duration` to this
+    /// method.
+    #[unstable(feature = "socket_timeout", reason = "RFC 1047 - recently added")]
+    pub fn set_write_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        self.0.set_write_timeout(dur)
+    }
+
+    /// Returns the read timeout of this socket.
+    ///
+    /// If the timeout is `None`, then `read` calls will block indefinitely.
+    #[unstable(feature = "socket_timeout", reason = "RFC 1047 - recently added")]
+    pub fn read_timeout(&self) -> io::Result<Option<Duration>> {
+        self.0.read_timeout()
+    }
+
+    /// Returns the write timeout of this socket.
+    ///
+    /// If the timeout is `None`, then `write` calls will block indefinitely.
+    #[unstable(feature = "socket_timeout", reason = "RFC 1047 - recently added")]
+    pub fn write_timeout(&self) -> io::Result<Option<Duration>> {
+        self.0.write_timeout()
     }
 }
 
 impl AsInner<net_imp::UdpSocket> for UdpSocket {
     fn as_inner(&self) -> &net_imp::UdpSocket { &self.0 }
+}
+
+impl FromInner<net_imp::UdpSocket> for UdpSocket {
+    fn from_inner(inner: net_imp::UdpSocket) -> UdpSocket { UdpSocket(inner) }
+}
+
+impl fmt::Debug for UdpSocket {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
 #[cfg(test)]
@@ -131,6 +188,8 @@ mod tests {
     use net::*;
     use net::test::{next_test_ip4, next_test_ip6};
     use sync::mpsc::channel;
+    use sys_common::AsInner;
+    use time::Duration;
     use thread;
 
     fn each_ip(f: &mut FnMut(SocketAddr, SocketAddr)) {
@@ -151,7 +210,7 @@ mod tests {
     #[cfg_attr(any(windows, target_os = "android"), ignore)]
     #[test]
     fn bind_error() {
-        let addr = SocketAddr::new(IpAddr::new_v4(0, 0, 0, 0), 1);
+        let addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 1);
         match UdpSocket::bind(&addr) {
             Ok(..) => panic!(),
             Err(e) => assert_eq!(e.kind(), ErrorKind::PermissionDenied),
@@ -186,7 +245,7 @@ mod tests {
     fn socket_name_ip4() {
         each_ip(&mut |addr, _| {
             let server = t!(UdpSocket::bind(&addr));
-            assert_eq!(addr, t!(server.socket_addr()));
+            assert_eq!(addr, t!(server.local_addr()));
         })
     }
 
@@ -198,7 +257,7 @@ mod tests {
 
             let _t = thread::spawn(move|| {
                 let mut buf = [0, 0];
-                assert_eq!(sock2.recv_from(&mut buf), Ok((1, addr1)));
+                assert_eq!(sock2.recv_from(&mut buf).unwrap(), (1, addr1));
                 assert_eq!(buf[0], 1);
                 t!(sock2.send_to(&[2], &addr1));
             });
@@ -214,7 +273,7 @@ mod tests {
             });
             tx1.send(()).unwrap();
             let mut buf = [0, 0];
-            assert_eq!(sock1.recv_from(&mut buf), Ok((1, addr2)));
+            assert_eq!(sock1.recv_from(&mut buf).unwrap(), (1, addr2));
             rx2.recv().unwrap();
         })
     }
@@ -287,5 +346,78 @@ mod tests {
             rx.recv().unwrap();
             serv_rx.recv().unwrap();
         })
+    }
+
+    #[test]
+    fn debug() {
+        let name = if cfg!(windows) {"socket"} else {"fd"};
+        let socket_addr = next_test_ip4();
+
+        let udpsock = t!(UdpSocket::bind(&socket_addr));
+        let udpsock_inner = udpsock.0.socket().as_inner();
+        let compare = format!("UdpSocket {{ addr: {:?}, {}: {:?} }}",
+                              socket_addr, name, udpsock_inner);
+        assert_eq!(format!("{:?}", udpsock), compare);
+    }
+
+    #[test]
+    fn timeouts() {
+        let addr = next_test_ip4();
+
+        let stream = t!(UdpSocket::bind(&addr));
+        let dur = Duration::new(15410, 0);
+
+        assert_eq!(None, t!(stream.read_timeout()));
+
+        t!(stream.set_read_timeout(Some(dur)));
+        assert_eq!(Some(dur), t!(stream.read_timeout()));
+
+        assert_eq!(None, t!(stream.write_timeout()));
+
+        t!(stream.set_write_timeout(Some(dur)));
+        assert_eq!(Some(dur), t!(stream.write_timeout()));
+
+        t!(stream.set_read_timeout(None));
+        assert_eq!(None, t!(stream.read_timeout()));
+
+        t!(stream.set_write_timeout(None));
+        assert_eq!(None, t!(stream.write_timeout()));
+    }
+
+    #[test]
+    fn test_read_timeout() {
+        let addr = next_test_ip4();
+
+        let mut stream = t!(UdpSocket::bind(&addr));
+        t!(stream.set_read_timeout(Some(Duration::from_millis(1000))));
+
+        let mut buf = [0; 10];
+        let wait = Duration::span(|| {
+            let kind = stream.recv_from(&mut buf).err().expect("expected error").kind();
+            assert!(kind == ErrorKind::WouldBlock || kind == ErrorKind::TimedOut);
+        });
+        assert!(wait > Duration::from_millis(400));
+        assert!(wait < Duration::from_millis(1600));
+    }
+
+    #[test]
+    fn test_read_with_timeout() {
+        let addr = next_test_ip4();
+
+        let mut stream = t!(UdpSocket::bind(&addr));
+        t!(stream.set_read_timeout(Some(Duration::from_millis(1000))));
+
+        t!(stream.send_to(b"hello world", &addr));
+
+        let mut buf = [0; 11];
+        t!(stream.recv_from(&mut buf));
+        assert_eq!(b"hello world", &buf[..]);
+
+        let wait = Duration::span(|| {
+            let kind = stream.recv_from(&mut buf).err().expect("expected error").kind();
+            assert!(kind == ErrorKind::WouldBlock || kind == ErrorKind::TimedOut);
+        });
+        assert!(wait > Duration::from_millis(400));
+        assert!(wait < Duration::from_millis(1600));
     }
 }

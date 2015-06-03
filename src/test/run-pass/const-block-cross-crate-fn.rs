@@ -10,6 +10,7 @@
 
 // aux-build:cci_const_block.rs
 
+
 extern crate cci_const_block;
 
 pub fn main() {

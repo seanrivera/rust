@@ -8,9 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 #[derive(PartialEq)]
 enum Test<'a> {
-    Slice(&'a int)
+    Slice(&'a isize)
 }
 
 fn main() {

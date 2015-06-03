@@ -21,9 +21,9 @@ use sys::c;
 use sys::cvt;
 use sys::handle::Handle;
 
-struct NoClose(Option<Handle>);
+pub struct NoClose(Option<Handle>);
 
-enum Output {
+pub enum Output {
     Console(NoClose),
     Pipe(NoClose),
 }
@@ -35,13 +35,13 @@ pub struct Stdin {
 pub struct Stdout(Output);
 pub struct Stderr(Output);
 
-fn get(handle: libc::DWORD) -> io::Result<Output> {
+pub fn get(handle: libc::DWORD) -> io::Result<Output> {
     let handle = unsafe { c::GetStdHandle(handle) };
     if handle == libc::INVALID_HANDLE_VALUE {
         Err(io::Error::last_os_error())
     } else if handle.is_null() {
         Err(io::Error::new(io::ErrorKind::Other,
-                           "no stdio handle available for this process", None))
+                           "no stdio handle available for this process"))
     } else {
         let ret = NoClose::new(handle);
         let mut out = 0;
@@ -135,6 +135,16 @@ impl Stderr {
     }
 }
 
+// FIXME: right now this raw stderr handle is used in a few places because
+//        std::io::stderr_raw isn't exposed, but once that's exposed this impl
+//        should go away
+impl io::Write for Stderr {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        Stderr::write(self, data)
+    }
+    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+}
+
 impl NoClose {
     fn new(handle: libc::HANDLE) -> NoClose {
         NoClose(Some(Handle::new(handle)))
@@ -149,7 +159,16 @@ impl Drop for NoClose {
     }
 }
 
+impl Output {
+    pub fn handle(&self) -> &Handle {
+        let nc = match *self {
+            Output::Console(ref c) => c,
+            Output::Pipe(ref c) => c,
+        };
+        nc.0.as_ref().unwrap()
+    }
+}
+
 fn invalid_encoding() -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidInput, "text was not valid unicode",
-                   None)
+    io::Error::new(io::ErrorKind::InvalidData, "text was not valid unicode")
 }

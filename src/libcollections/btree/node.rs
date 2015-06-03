@@ -19,11 +19,12 @@ pub use self::TraversalItem::*;
 use core::prelude::*;
 
 use core::cmp::Ordering::{Greater, Less, Equal};
+use core::intrinsics::arith_offset;
 use core::iter::Zip;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut, Index, IndexMut};
 use core::ptr::Unique;
-use core::{slice, mem, ptr, cmp, num, raw};
+use core::{slice, mem, ptr, cmp, raw};
 use alloc::heap::{self, EMPTY};
 
 use borrow::Borrow;
@@ -105,7 +106,7 @@ struct MutNodeSlice<'a, K: 'a, V: 'a> {
 /// Fails if `target_alignment` is not a power of two.
 #[inline]
 fn round_up_to_next(unrounded: usize, target_alignment: usize) -> usize {
-    assert!(num::UnsignedInt::is_power_of_two(target_alignment));
+    assert!(target_alignment.is_power_of_two());
     (unrounded + target_alignment - 1) & !(target_alignment - 1)
 }
 
@@ -209,7 +210,7 @@ impl<T> RawItems<T> {
         if mem::size_of::<T>() == 0 {
             RawItems {
                 head: ptr,
-                tail: (ptr as usize + len) as *const T,
+                tail: arith_offset(ptr as *const i8, len as isize) as *const T,
             }
         } else {
             RawItems {
@@ -223,7 +224,7 @@ impl<T> RawItems<T> {
         ptr::write(self.tail as *mut T, val);
 
         if mem::size_of::<T>() == 0 {
-            self.tail = (self.tail as usize + 1) as *const T;
+            self.tail = arith_offset(self.tail as *const i8, 1) as *const T;
         } else {
             self.tail = self.tail.offset(1);
         }
@@ -241,7 +242,7 @@ impl<T> Iterator for RawItems<T> {
                 let ret = Some(ptr::read(self.head));
 
                 if mem::size_of::<T>() == 0 {
-                    self.head = (self.head as usize + 1) as *const T;
+                    self.head = arith_offset(self.head as *const i8, 1) as *const T;
                 } else {
                     self.head = self.head.offset(1);
                 }
@@ -259,7 +260,7 @@ impl<T> DoubleEndedIterator for RawItems<T> {
         } else {
             unsafe {
                 if mem::size_of::<T>() == 0 {
-                    self.tail = (self.tail as usize - 1) as *const T;
+                    self.tail = arith_offset(self.tail as *const i8, -1) as *const T;
                 } else {
                     self.tail = self.tail.offset(-1);
                 }
@@ -270,19 +271,19 @@ impl<T> DoubleEndedIterator for RawItems<T> {
     }
 }
 
-#[unsafe_destructor]
 impl<T> Drop for RawItems<T> {
     fn drop(&mut self) {
         for _ in self.by_ref() {}
     }
 }
 
-#[unsafe_destructor]
 impl<K, V> Drop for Node<K, V> {
     fn drop(&mut self) {
-        if self.keys.is_null() {
+        if self.keys.is_null() ||
+            (unsafe { self.keys.get() as *const K as usize == mem::POST_DROP_USIZE })
+        {
             // Since we have #[unsafe_no_drop_flag], we have to watch
-            // out for a null value being stored in self.keys. (Using
+            // out for the sentinel value being stored in self.keys. (Using
             // null is technically a violation of the `Unique`
             // requirements, though.)
             return;
@@ -348,14 +349,8 @@ impl<K, V> Node<K, V> {
     #[inline]
     pub fn as_slices<'a>(&'a self) -> (&'a [K], &'a [V]) {
         unsafe {(
-            mem::transmute(raw::Slice {
-                data: *self.keys as *const K,
-                len: self.len()
-            }),
-            mem::transmute(raw::Slice {
-                data: *self.vals as *const V,
-                len: self.len()
-            })
+            slice::from_raw_parts(*self.keys, self.len()),
+            slice::from_raw_parts(*self.vals, self.len()),
         )}
     }
 
@@ -530,7 +525,7 @@ impl<K: Clone, V: Clone> Clone for Node<K, V> {
 ///     println!("Uninitialized memory: {:?}", handle.into_kv());
 /// }
 /// ```
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub struct Handle<NodeRef, Type, NodeType> {
     node: NodeRef,
     index: usize,
@@ -588,6 +583,9 @@ impl <K, V> Node<K, V> {
     pub fn len(&self) -> usize {
         self._len
     }
+
+    /// Does the node not contain any key-value pairs
+    pub fn is_empty(&self) -> bool { self.len() == 0 }
 
     /// How many key-value pairs the node can fit
     pub fn capacity(&self) -> usize {
@@ -1101,7 +1099,7 @@ impl<K, V> Node<K, V> {
     /// When a node has no keys or values and only a single edge, extract that edge.
     pub fn hoist_lone_child(&mut self) {
         // Necessary for correctness, but in a private module
-        debug_assert!(self.len() == 0);
+        debug_assert!(self.is_empty());
         debug_assert!(!self.is_leaf());
 
         unsafe {
@@ -1137,13 +1135,13 @@ impl<K, V> Node<K, V> {
     #[inline]
     unsafe fn insert_kv(&mut self, index: usize, key: K, val: V) -> &mut V {
         ptr::copy(
-            self.keys_mut().as_mut_ptr().offset(index as isize + 1),
             self.keys().as_ptr().offset(index as isize),
+            self.keys_mut().as_mut_ptr().offset(index as isize + 1),
             self.len() - index
         );
         ptr::copy(
-            self.vals_mut().as_mut_ptr().offset(index as isize + 1),
             self.vals().as_ptr().offset(index as isize),
+            self.vals_mut().as_mut_ptr().offset(index as isize + 1),
             self.len() - index
         );
 
@@ -1159,8 +1157,8 @@ impl<K, V> Node<K, V> {
     #[inline]
     unsafe fn insert_edge(&mut self, index: usize, edge: Node<K, V>) {
         ptr::copy(
-            self.edges_mut().as_mut_ptr().offset(index as isize + 1),
             self.edges().as_ptr().offset(index as isize),
+            self.edges_mut().as_mut_ptr().offset(index as isize + 1),
             self.len() - index
         );
         ptr::write(self.edges_mut().get_unchecked_mut(index), edge);
@@ -1192,13 +1190,13 @@ impl<K, V> Node<K, V> {
         let val = ptr::read(self.vals().get_unchecked(index));
 
         ptr::copy(
-            self.keys_mut().as_mut_ptr().offset(index as isize),
             self.keys().as_ptr().offset(index as isize + 1),
+            self.keys_mut().as_mut_ptr().offset(index as isize),
             self.len() - index - 1
         );
         ptr::copy(
-            self.vals_mut().as_mut_ptr().offset(index as isize),
             self.vals().as_ptr().offset(index as isize + 1),
+            self.vals_mut().as_mut_ptr().offset(index as isize),
             self.len() - index - 1
         );
 
@@ -1213,8 +1211,8 @@ impl<K, V> Node<K, V> {
         let edge = ptr::read(self.edges().get_unchecked(index));
 
         ptr::copy(
-            self.edges_mut().as_mut_ptr().offset(index as isize),
             self.edges().as_ptr().offset(index as isize + 1),
+            self.edges_mut().as_mut_ptr().offset(index as isize),
             // index can be == len+1, so do the +1 first to avoid underflow.
             (self.len() + 1) - index
         );
@@ -1229,7 +1227,7 @@ impl<K, V> Node<K, V> {
     /// because we have one too many, and our parent now has one too few
     fn split(&mut self) -> (K, V, Node<K, V>) {
         // Necessary for correctness, but in a private function
-        debug_assert!(self.len() > 0);
+        debug_assert!(!self.is_empty());
 
         let mut right = if self.is_leaf() {
             Node::new_leaf(self.capacity())
@@ -1241,19 +1239,19 @@ impl<K, V> Node<K, V> {
             right._len = self.len() / 2;
             let right_offset = self.len() - right.len();
             ptr::copy_nonoverlapping(
-                right.keys_mut().as_mut_ptr(),
                 self.keys().as_ptr().offset(right_offset as isize),
+                right.keys_mut().as_mut_ptr(),
                 right.len()
             );
             ptr::copy_nonoverlapping(
-                right.vals_mut().as_mut_ptr(),
                 self.vals().as_ptr().offset(right_offset as isize),
+                right.vals_mut().as_mut_ptr(),
                 right.len()
             );
             if !self.is_leaf() {
                 ptr::copy_nonoverlapping(
-                    right.edges_mut().as_mut_ptr(),
                     self.edges().as_ptr().offset(right_offset as isize),
+                    right.edges_mut().as_mut_ptr(),
                     right.len() + 1
                 );
             }
@@ -1282,19 +1280,19 @@ impl<K, V> Node<K, V> {
             ptr::write(self.vals_mut().get_unchecked_mut(old_len), val);
 
             ptr::copy_nonoverlapping(
-                self.keys_mut().as_mut_ptr().offset(old_len as isize + 1),
                 right.keys().as_ptr(),
+                self.keys_mut().as_mut_ptr().offset(old_len as isize + 1),
                 right.len()
             );
             ptr::copy_nonoverlapping(
-                self.vals_mut().as_mut_ptr().offset(old_len as isize + 1),
                 right.vals().as_ptr(),
+                self.vals_mut().as_mut_ptr().offset(old_len as isize + 1),
                 right.len()
             );
             if !self.is_leaf() {
                 ptr::copy_nonoverlapping(
-                    self.edges_mut().as_mut_ptr().offset(old_len as isize + 1),
                     right.edges().as_ptr(),
+                    self.edges_mut().as_mut_ptr().offset(old_len as isize + 1),
                     right.len() + 1
                 );
             }
@@ -1332,6 +1330,7 @@ trait TraversalImpl {
 
 /// A `TraversalImpl` that actually is backed by two iterators. This works in the non-moving case,
 /// as no deallocation needs to be done.
+#[derive(Clone)]
 struct ElemsAndEdges<Elems, Edges>(Elems, Edges);
 
 impl<K, V, E, Elems: DoubleEndedIterator, Edges: DoubleEndedIterator>
@@ -1394,7 +1393,6 @@ impl<K, V> TraversalImpl for MoveTraversalImpl<K, V> {
     }
 }
 
-#[unsafe_destructor]
 impl<K, V> Drop for MoveTraversalImpl<K, V> {
     fn drop(&mut self) {
         // We need to cleanup the stored values manually, as the RawItems destructor would run
@@ -1410,6 +1408,7 @@ impl<K, V> Drop for MoveTraversalImpl<K, V> {
 }
 
 /// An abstraction over all the different kinds of traversals a node supports
+#[derive(Clone)]
 struct AbsTraversal<Impl> {
     inner: Impl,
     head_is_edge: bool,
@@ -1546,10 +1545,10 @@ macro_rules! node_slice_impl {
                     edges: if !self.has_edges {
                         self.edges
                     } else {
-                        self.edges.$index(&(pos ..))
+                        self.edges.$index(pos ..)
                     },
                     keys: &self.keys[pos ..],
-                    vals: self.vals.$index(&(pos ..)),
+                    vals: self.vals.$index(pos ..),
                     head_is_edge: !pos_is_kv,
                     tail_is_edge: self.tail_is_edge,
                 }
@@ -1575,10 +1574,10 @@ macro_rules! node_slice_impl {
                     edges: if !self.has_edges {
                         self.edges
                     } else {
-                        self.edges.$index(&(.. (pos + 1)))
+                        self.edges.$index(.. (pos + 1))
                     },
                     keys: &self.keys[..pos],
-                    vals: self.vals.$index(&(.. pos)),
+                    vals: self.vals.$index(.. pos),
                     head_is_edge: self.head_is_edge,
                     tail_is_edge: !pos_is_kv,
                 }

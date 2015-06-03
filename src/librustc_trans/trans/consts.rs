@@ -14,20 +14,34 @@ use llvm;
 use llvm::{ConstFCmp, ConstICmp, SetLinkage, SetUnnamedAddr};
 use llvm::{InternalLinkage, ValueRef, Bool, True};
 use middle::{check_const, const_eval, def};
+use middle::const_eval::{const_int_checked_neg, const_uint_checked_neg};
+use middle::const_eval::{const_int_checked_add, const_uint_checked_add};
+use middle::const_eval::{const_int_checked_sub, const_uint_checked_sub};
+use middle::const_eval::{const_int_checked_mul, const_uint_checked_mul};
+use middle::const_eval::{const_int_checked_div, const_uint_checked_div};
+use middle::const_eval::{const_int_checked_rem, const_uint_checked_rem};
+use middle::const_eval::{const_int_checked_shl, const_uint_checked_shl};
+use middle::const_eval::{const_int_checked_shr, const_uint_checked_shr};
 use trans::{adt, closure, debuginfo, expr, inline, machine};
 use trans::base::{self, push_ctxt};
 use trans::common::*;
+use trans::declare;
 use trans::monomorphize;
 use trans::type_::Type;
 use trans::type_of;
+use middle::cast::{CastTy,IntTy};
 use middle::subst::Substs;
 use middle::ty::{self, Ty};
 use util::ppaux::{Repr, ty_to_string};
+use util::nodemap::NodeMap;
 
 use std::iter::repeat;
 use libc::c_uint;
 use syntax::{ast, ast_util};
+use syntax::parse::token;
 use syntax::ptr::P;
+
+pub type FnArgMap<'a> = Option<&'a NodeMap<ValueRef>>;
 
 pub fn const_lit(cx: &CrateContext, e: &ast::Expr, lit: &ast::Lit)
     -> ValueRef {
@@ -53,7 +67,7 @@ pub fn const_lit(cx: &CrateContext, e: &ast::Expr, lit: &ast::Lit)
                 }
                 _ => cx.sess().span_bug(lit.span,
                         &format!("integer literal has type {} (expected int \
-                                 or uint)",
+                                 or usize)",
                                 ty_to_string(cx.tcx(), lit_int_ty)))
             }
         }
@@ -75,14 +89,7 @@ pub fn const_lit(cx: &CrateContext, e: &ast::Expr, lit: &ast::Lit)
         ast::LitBool(b) => C_bool(cx, b),
         ast::LitStr(ref s, _) => C_str_slice(cx, (*s).clone()),
         ast::LitBinary(ref data) => {
-            let g = addr_of(cx, C_bytes(cx, &data[..]), "binary", e.id);
-            let base = ptrcast(g, Type::i8p(cx));
-            let prev_const = cx.const_unsized().borrow_mut()
-                               .insert(base, g);
-            assert!(prev_const.is_none() || prev_const == Some(g));
-            assert_eq!(abi::FAT_PTR_ADDR, 0);
-            assert_eq!(abi::FAT_PTR_EXTRA, 1);
-            C_struct(cx, &[base, C_uint(cx, data.len())], false)
+            addr_of(cx, C_bytes(cx, &data[..]), "binary")
         }
     }
 }
@@ -95,13 +102,16 @@ pub fn ptrcast(val: ValueRef, ty: Type) -> ValueRef {
 
 fn addr_of_mut(ccx: &CrateContext,
                cv: ValueRef,
-               kind: &str,
-               id: ast::NodeId)
+               kind: &str)
                -> ValueRef {
     unsafe {
-        let name = format!("{}{}\0", kind, id);
-        let gv = llvm::LLVMAddGlobal(ccx.llmod(), val_ty(cv).to_ref(),
-                                     name.as_ptr() as *const _);
+        // FIXME: this totally needs a better name generation scheme, perhaps a simple global
+        // counter? Also most other uses of gensym in trans.
+        let gsym = token::gensym("_");
+        let name = format!("{}{}", kind, gsym.usize());
+        let gv = declare::define_global(ccx, &name[..], val_ty(cv)).unwrap_or_else(||{
+            ccx.sess().bug(&format!("symbol `{}` is already defined", name));
+        });
         llvm::LLVMSetInitializer(gv, cv);
         SetLinkage(gv, InternalLinkage);
         SetUnnamedAddr(gv, true);
@@ -111,14 +121,13 @@ fn addr_of_mut(ccx: &CrateContext,
 
 pub fn addr_of(ccx: &CrateContext,
                cv: ValueRef,
-               kind: &str,
-               id: ast::NodeId)
+               kind: &str)
                -> ValueRef {
     match ccx.const_globals().borrow().get(&cv) {
         Some(&gv) => return gv,
         None => {}
     }
-    let gv = addr_of_mut(ccx, cv, kind, id);
+    let gv = addr_of_mut(ccx, cv, kind);
     unsafe {
         llvm::LLVMSetGlobalConstant(gv, True);
     }
@@ -157,6 +166,29 @@ fn const_deref<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
     }
 }
 
+fn const_fn_call<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
+                           node: ExprOrMethodCall,
+                           def_id: ast::DefId,
+                           arg_vals: &[ValueRef],
+                           param_substs: &'tcx Substs<'tcx>) -> ValueRef {
+    let fn_like = const_eval::lookup_const_fn_by_id(ccx.tcx(), def_id);
+    let fn_like = fn_like.expect("lookup_const_fn_by_id failed in const_fn_call");
+
+    let args = &fn_like.decl().inputs;
+    assert_eq!(args.len(), arg_vals.len());
+
+    let arg_ids = args.iter().map(|arg| arg.pat.id);
+    let fn_args = arg_ids.zip(arg_vals.iter().cloned()).collect();
+
+    let substs = ccx.tcx().mk_substs(node_id_substs(ccx, node, param_substs));
+    match fn_like.body().expr {
+        Some(ref expr) => {
+            const_expr(ccx, &**expr, substs, Some(&fn_args)).0
+        }
+        None => C_nil(ccx)
+    }
+}
+
 pub fn get_const_expr<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
                                 def_id: ast::DefId,
                                 ref_expr: &ast::Expr)
@@ -168,13 +200,11 @@ pub fn get_const_expr<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
                             "cross crate constant could not be inlined");
     }
 
-    let item = ccx.tcx().map.expect_item(def_id.node);
-    if let ast::ItemConst(_, ref expr) = item.node {
-        &**expr
-    } else {
-        ccx.sess().span_bug(ref_expr.span,
-                            &format!("get_const_expr given non-constant item {}",
-                                     item.repr(ccx.tcx())));
+    match const_eval::lookup_const_by_id(ccx.tcx(), def_id, Some(ref_expr.id)) {
+        Some(ref expr) => expr,
+        None => {
+            ccx.sess().span_bug(ref_expr.span, "constant item not found")
+        }
     }
 }
 
@@ -183,7 +213,7 @@ fn get_const_val(ccx: &CrateContext,
                  ref_expr: &ast::Expr) -> ValueRef {
     let expr = get_const_expr(ccx, def_id, ref_expr);
     let empty_substs = ccx.tcx().mk_substs(Substs::trans_empty());
-    get_const_expr_as_global(ccx, expr, check_const::PURE_CONST, empty_substs)
+    get_const_expr_as_global(ccx, expr, check_const::ConstQualif::empty(), empty_substs)
 }
 
 pub fn get_const_expr_as_global<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
@@ -194,9 +224,9 @@ pub fn get_const_expr_as_global<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
     // Special-case constants to cache a common global for all uses.
     match expr.node {
         ast::ExprPath(..) => {
-            let def = ccx.tcx().def_map.borrow()[expr.id].full_def();
+            let def = ccx.tcx().def_map.borrow().get(&expr.id).unwrap().full_def();
             match def {
-                def::DefConst(def_id) => {
+                def::DefConst(def_id) | def::DefAssociatedConst(def_id, _) => {
                     if !ccx.tcx().adjustments.borrow().contains_key(&expr.id) {
                         return get_const_val(ccx, def_id, expr);
                     }
@@ -212,14 +242,14 @@ pub fn get_const_expr_as_global<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
         Some(&val) => return val,
         None => {}
     }
-    let val = if qualif.intersects(check_const::NON_STATIC_BORROWS) {
+    let val = if qualif.intersects(check_const::ConstQualif::NON_STATIC_BORROWS) {
         // Avoid autorefs as they would create global instead of stack
         // references, even when only the latter are correct.
         let ty = monomorphize::apply_param_substs(ccx.tcx(), param_substs,
                                                   &ty::expr_ty(ccx.tcx(), expr));
-        const_expr_unadjusted(ccx, expr, ty, param_substs)
+        const_expr_unadjusted(ccx, expr, ty, param_substs, None)
     } else {
-        const_expr(ccx, expr, param_substs).0
+        const_expr(ccx, expr, param_substs, None).0
     };
 
     // boolean SSA values are i1, but they have to be stored in i8 slots,
@@ -232,26 +262,30 @@ pub fn get_const_expr_as_global<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
         }
     };
 
-    let lvalue = addr_of(ccx, val, "const", expr.id);
+    let lvalue = addr_of(ccx, val, "const");
     ccx.const_values().borrow_mut().insert(key, lvalue);
     lvalue
 }
 
 pub fn const_expr<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                             e: &ast::Expr,
-                            param_substs: &'tcx Substs<'tcx>)
+                            param_substs: &'tcx Substs<'tcx>,
+                            fn_args: FnArgMap)
                             -> (ValueRef, Ty<'tcx>) {
     let ety = monomorphize::apply_param_substs(cx.tcx(), param_substs,
                                                &ty::expr_ty(cx.tcx(), e));
-    let llconst = const_expr_unadjusted(cx, e, ety, param_substs);
+    let llconst = const_expr_unadjusted(cx, e, ety, param_substs, fn_args);
     let mut llconst = llconst;
     let mut ety_adjusted = monomorphize::apply_param_substs(cx.tcx(), param_substs,
                                                             &ty::expr_ty_adjusted(cx.tcx(), e));
     let opt_adj = cx.tcx().adjustments.borrow().get(&e.id).cloned();
     match opt_adj {
-        Some(ty::AdjustReifyFnPointer(_def_id)) => {
+        Some(ty::AdjustReifyFnPointer) => {
             // FIXME(#19925) once fn item types are
             // zero-sized, we'll need to do something here
+        }
+        Some(ty::AdjustUnsafeFnPointer) => {
+            // purely a type-level thing
         }
         Some(ty::AdjustDerefRef(adj)) => {
             let mut ty = ety;
@@ -264,70 +298,58 @@ pub fn const_expr<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                 }
             }
 
-            let second_autoref = match adj.autoref {
-                None => {
-                    let (dv, dt) = const_deref(cx, llconst, ty);
-                    llconst = dv;
+            if adj.autoref.is_some() {
+                if adj.autoderefs == 0 {
+                    // Don't copy data to do a deref+ref
+                    // (i.e., skip the last auto-deref).
+                    llconst = addr_of(cx, llconst, "autoref");
+                    ty = ty::mk_imm_rptr(cx.tcx(), cx.tcx().mk_region(ty::ReStatic), ty);
+                }
+            } else {
+                let (dv, dt) = const_deref(cx, llconst, ty);
+                llconst = dv;
 
-                    // If we derefed a fat pointer then we will have an
-                    // open type here. So we need to update the type with
-                    // the one returned from const_deref.
-                    ety_adjusted = dt;
-                    None
-                }
-                Some(ty::AutoUnsafe(_, opt_autoref)) |
-                Some(ty::AutoPtr(_, _, opt_autoref)) => {
-                    if adj.autoderefs == 0 {
-                        // Don't copy data to do a deref+ref
-                        // (i.e., skip the last auto-deref).
-                        llconst = addr_of(cx, llconst, "autoref", e.id);
-                    } else {
-                        // Seeing as we are deref'ing here and take a reference
-                        // again to make the pointer part of the far pointer below,
-                        // we just skip the whole thing. We still need the type
-                        // though. This works even if we don't need to deref
-                        // because of byref semantics. Note that this is not just
-                        // an optimisation, it is necessary for mutable vectors to
-                        // work properly.
-                        ty = match ty::deref(ty, true) {
-                            Some(mt) => mt.ty,
-                            None => {
-                                cx.sess().bug(&format!("unexpected dereferenceable type {}",
-                                                       ty_to_string(cx.tcx(), ty)))
-                            }
-                        }
-                    }
-                    opt_autoref
-                }
-                Some(autoref) => {
-                    cx.sess().span_bug(e.span,
-                        &format!("unimplemented const first autoref {:?}", autoref))
-                }
-            };
-            match second_autoref {
-                None => {}
-                Some(box ty::AutoUnsafe(_, None)) |
-                Some(box ty::AutoPtr(_, _, None)) => {
-                    llconst = addr_of(cx, llconst, "autoref", e.id);
-                }
-                Some(box ty::AutoUnsize(ref k)) => {
-                    let info = expr::unsized_info(cx, k, e.id, ty, param_substs,
-                        |t| ty::mk_imm_rptr(cx.tcx(), cx.tcx().mk_region(ty::ReStatic), t));
+                // If we derefed a fat pointer then we will have an
+                // open type here. So we need to update the type with
+                // the one returned from const_deref.
+                ety_adjusted = dt;
+            }
 
-                    let unsized_ty = ty::unsize_ty(cx.tcx(), ty, k, e.span);
-                    let ptr_ty = type_of::in_memory_type_of(cx, unsized_ty).ptr_to();
-                    let base = ptrcast(llconst, ptr_ty);
+            if let Some(target) = adj.unsize {
+                let target = monomorphize::apply_param_substs(cx.tcx(),
+                                                              param_substs,
+                                                              &target);
+
+                let pointee_ty = ty::deref(ty, true)
+                    .expect("consts: unsizing got non-pointer type").ty;
+                let (base, old_info) = if !type_is_sized(cx.tcx(), pointee_ty) {
+                    // Normally, the source is a thin pointer and we are
+                    // adding extra info to make a fat pointer. The exception
+                    // is when we are upcasting an existing object fat pointer
+                    // to use a different vtable. In that case, we want to
+                    // load out the original data pointer so we can repackage
+                    // it.
+                    (const_get_elt(cx, llconst, &[abi::FAT_PTR_ADDR as u32]),
+                     Some(const_get_elt(cx, llconst, &[abi::FAT_PTR_EXTRA as u32])))
+                } else {
+                    (llconst, None)
+                };
+
+                let unsized_ty = ty::deref(target, true)
+                    .expect("consts: unsizing got non-pointer target type").ty;
+                let ptr_ty = type_of::in_memory_type_of(cx, unsized_ty).ptr_to();
+                let base = ptrcast(base, ptr_ty);
+                let info = expr::unsized_info(cx, pointee_ty, unsized_ty,
+                                              old_info, param_substs);
+
+                if old_info.is_none() {
                     let prev_const = cx.const_unsized().borrow_mut()
                                        .insert(base, llconst);
                     assert!(prev_const.is_none() || prev_const == Some(llconst));
-                    assert_eq!(abi::FAT_PTR_ADDR, 0);
-                    assert_eq!(abi::FAT_PTR_EXTRA, 1);
-                    llconst = C_struct(cx, &[base, info], false);
                 }
-                Some(autoref) => {
-                    cx.sess().span_bug(e.span,
-                        &format!("unimplemented const second autoref {:?}", autoref))
-                }
+                assert_eq!(abi::FAT_PTR_ADDR, 0);
+                assert_eq!(abi::FAT_PTR_EXTRA, 1);
+                llconst = C_struct(cx, &[base, info], false);
             }
         }
         None => {}
@@ -337,6 +359,7 @@ pub fn const_expr<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
     let csize = machine::llsize_of_alloc(cx, val_ty(llconst));
     let tsize = machine::llsize_of_alloc(cx, llty);
     if csize != tsize {
+        cx.sess().abort_if_errors();
         unsafe {
             // FIXME these values could use some context
             llvm::LLVMDumpValue(llconst);
@@ -349,13 +372,116 @@ pub fn const_expr<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
     (llconst, ety_adjusted)
 }
 
+fn check_unary_expr_validity(cx: &CrateContext, e: &ast::Expr, t: Ty,
+                             te: ValueRef) {
+    // The only kind of unary expression that we check for validity
+    // here is `-expr`, to check if it "overflows" (e.g. `-i32::MIN`).
+    if let ast::ExprUnary(ast::UnNeg, ref inner_e) = e.node {
+
+        // An unfortunate special case: we parse e.g. -128 as a
+        // negation of the literal 128, which means if we're expecting
+        // a i8 (or if it was already suffixed, e.g. `-128_i8`), then
+        // 128 will have already overflowed to -128, and so then the
+        // constant evaluator thinks we're trying to negate -128.
+        //
+        // Catch this up front by looking for ExprLit directly,
+        // and just accepting it.
+        if let ast::ExprLit(_) = inner_e.node { return; }
+
+        let result = match t.sty {
+            ty::ty_int(int_type) => {
+                let input = match const_to_opt_int(te) {
+                    Some(v) => v,
+                    None => return,
+                };
+                const_int_checked_neg(
+                    input, e, Some(const_eval::IntTy::from(cx.tcx(), int_type)))
+            }
+            ty::ty_uint(uint_type) => {
+                let input = match const_to_opt_uint(te) {
+                    Some(v) => v,
+                    None => return,
+                };
+                const_uint_checked_neg(
+                    input, e, Some(const_eval::UintTy::from(cx.tcx(), uint_type)))
+            }
+            _ => return,
+        };
+
+        // We do not actually care about a successful result.
+        if let Err(err) = result {
+            cx.tcx().sess.span_err(e.span, &err.description());
+        }
+    }
+}
+
+fn check_binary_expr_validity(cx: &CrateContext, e: &ast::Expr, t: Ty,
+                              te1: ValueRef, te2: ValueRef) {
+    let b = if let ast::ExprBinary(b, _, _) = e.node { b } else { return };
+
+    let result = match t.sty {
+        ty::ty_int(int_type) => {
+            let (lhs, rhs) = match (const_to_opt_int(te1),
+                                    const_to_opt_int(te2)) {
+                (Some(v1), Some(v2)) => (v1, v2),
+                _ => return,
+            };
+
+            let opt_ety = Some(const_eval::IntTy::from(cx.tcx(), int_type));
+            match b.node {
+                ast::BiAdd => const_int_checked_add(lhs, rhs, e, opt_ety),
+                ast::BiSub => const_int_checked_sub(lhs, rhs, e, opt_ety),
+                ast::BiMul => const_int_checked_mul(lhs, rhs, e, opt_ety),
+                ast::BiDiv => const_int_checked_div(lhs, rhs, e, opt_ety),
+                ast::BiRem => const_int_checked_rem(lhs, rhs, e, opt_ety),
+                ast::BiShl => const_int_checked_shl(lhs, rhs, e, opt_ety),
+                ast::BiShr => const_int_checked_shr(lhs, rhs, e, opt_ety),
+                _ => return,
+            }
+        }
+        ty::ty_uint(uint_type) => {
+            let (lhs, rhs) = match (const_to_opt_uint(te1),
+                                    const_to_opt_uint(te2)) {
+                (Some(v1), Some(v2)) => (v1, v2),
+                _ => return,
+            };
+
+            let opt_ety = Some(const_eval::UintTy::from(cx.tcx(), uint_type));
+            match b.node {
+                ast::BiAdd => const_uint_checked_add(lhs, rhs, e, opt_ety),
+                ast::BiSub => const_uint_checked_sub(lhs, rhs, e, opt_ety),
+                ast::BiMul => const_uint_checked_mul(lhs, rhs, e, opt_ety),
+                ast::BiDiv => const_uint_checked_div(lhs, rhs, e, opt_ety),
+                ast::BiRem => const_uint_checked_rem(lhs, rhs, e, opt_ety),
+                ast::BiShl => const_uint_checked_shl(lhs, rhs, e, opt_ety),
+                ast::BiShr => const_uint_checked_shr(lhs, rhs, e, opt_ety),
+                _ => return,
+            }
+        }
+        _ => return,
+    };
+    // We do not actually care about a successful result.
+    if let Err(err) = result {
+        cx.tcx().sess.span_err(e.span, &err.description());
+    }
+}
+
 fn const_expr_unadjusted<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                                    e: &ast::Expr,
                                    ety: Ty<'tcx>,
-                                   param_substs: &'tcx Substs<'tcx>) -> ValueRef {
-    let map_list = |exprs: &[P<ast::Expr>]| {
-        exprs.iter().map(|e| const_expr(cx, &**e, param_substs).0)
-             .fold(Vec::new(), |mut l, val| { l.push(val); l })
+                                   param_substs: &'tcx Substs<'tcx>,
+                                   fn_args: FnArgMap)
+                                   -> ValueRef
+{
+    debug!("const_expr_unadjusted(e={}, ety={}, param_substs={})",
+           e.repr(cx.tcx()),
+           ety.repr(cx.tcx()),
+           param_substs.repr(cx.tcx()));
+
+    let map_list = |exprs: &[P<ast::Expr>]| -> Vec<ValueRef> {
+        exprs.iter()
+             .map(|e| const_expr(cx, &**e, param_substs, fn_args).0)
+             .collect()
     };
     unsafe {
         let _icx = push_ctxt("const_expr");
@@ -366,7 +492,10 @@ fn const_expr_unadjusted<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
           ast::ExprBinary(b, ref e1, ref e2) => {
             /* Neither type is bottom, and we expect them to be unified
              * already, so the following is safe. */
-            let (te1, ty) = const_expr(cx, &**e1, param_substs);
+            let (te1, ty) = const_expr(cx, &**e1, param_substs, fn_args);
+            debug!("const_expr_unadjusted: te1={}, ty={}",
+                   cx.tn().val_to_string(te1),
+                   ty.repr(cx.tcx()));
             let is_simd = ty::type_is_simd(cx.tcx(), ty);
             let intype = if is_simd {
                 ty::simd_type(cx.tcx(), ty)
@@ -376,8 +505,9 @@ fn const_expr_unadjusted<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
             let is_float = ty::type_is_fp(intype);
             let signed = ty::type_is_signed(intype);
 
-            let (te2, _) = const_expr(cx, &**e2, param_substs);
-            let te2 = base::cast_shift_const_rhs(b, te1, te2);
+            let (te2, _) = const_expr(cx, &**e2, param_substs, fn_args);
+
+            check_binary_expr_validity(cx, e, ty, te1, te2);
 
             match b.node {
               ast::BiAdd   => {
@@ -407,8 +537,12 @@ fn const_expr_unadjusted<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
               ast::BiBitXor => llvm::LLVMConstXor(te1, te2),
               ast::BiBitAnd => llvm::LLVMConstAnd(te1, te2),
               ast::BiBitOr  => llvm::LLVMConstOr(te1, te2),
-              ast::BiShl    => llvm::LLVMConstShl(te1, te2),
+              ast::BiShl    => {
+                let te2 = base::cast_shift_const_rhs(b.node, te1, te2);
+                llvm::LLVMConstShl(te1, te2)
+              }
               ast::BiShr    => {
+                let te2 = base::cast_shift_const_rhs(b.node, te1, te2);
                 if signed { llvm::LLVMConstAShr(te1, te2) }
                 else      { llvm::LLVMConstLShr(te1, te2) }
               }
@@ -430,8 +564,11 @@ fn const_expr_unadjusted<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
               }
             }
           },
-          ast::ExprUnary(u, ref e) => {
-            let (te, ty) = const_expr(cx, &**e, param_substs);
+          ast::ExprUnary(u, ref inner_e) => {
+            let (te, ty) = const_expr(cx, &**inner_e, param_substs, fn_args);
+
+            check_unary_expr_validity(cx, e, ty, te);
+
             let is_float = ty::type_is_fp(ty);
             match u {
               ast::UnUniq | ast::UnDeref => {
@@ -445,7 +582,7 @@ fn const_expr_unadjusted<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
             }
           }
           ast::ExprField(ref base, field) => {
-              let (bv, bt) = const_expr(cx, &**base, param_substs);
+              let (bv, bt) = const_expr(cx, &**base, param_substs, fn_args);
               let brepr = adt::represent_type(cx, bt);
               expr::with_field_tys(cx.tcx(), bt, None, |discr, field_tys| {
                   let ix = ty::field_idx_strict(cx.tcx(), field.node.name, field_tys);
@@ -453,7 +590,7 @@ fn const_expr_unadjusted<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
               })
           }
           ast::ExprTupField(ref base, idx) => {
-              let (bv, bt) = const_expr(cx, &**base, param_substs);
+              let (bv, bt) = const_expr(cx, &**base, param_substs, fn_args);
               let brepr = adt::represent_type(cx, bt);
               expr::with_field_tys(cx.tcx(), bt, None, |discr, _| {
                   adt::const_get_field(cx, &*brepr, bv, discr, idx.node)
@@ -461,7 +598,7 @@ fn const_expr_unadjusted<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
           }
 
           ast::ExprIndex(ref base, ref index) => {
-              let (bv, bt) = const_expr(cx, &**base, param_substs);
+              let (bv, bt) = const_expr(cx, &**base, param_substs, fn_args);
               let iv = match const_eval::eval_const_expr_partial(cx.tcx(), &**index, None) {
                   Ok(const_eval::const_int(i)) => i as u64,
                   Ok(const_eval::const_uint(u)) => u,
@@ -505,57 +642,70 @@ fn const_expr_unadjusted<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                   // pass. Reporting here is a bit late.
                   cx.sess().span_err(e.span,
                                      "const index-expr is out of bounds");
+                  C_undef(type_of::type_of(cx, bt).element_type())
+              } else {
+                  const_get_elt(cx, arr, &[iv as c_uint])
               }
-              const_get_elt(cx, arr, &[iv as c_uint])
           }
           ast::ExprCast(ref base, _) => {
-            let llty = type_of::type_of(cx, ety);
-            let (v, basety) = const_expr(cx, &**base, param_substs);
-            if expr::cast_is_noop(basety, ety) {
+            let t_cast = ety;
+            let llty = type_of::type_of(cx, t_cast);
+            let (v, t_expr) = const_expr(cx, &**base, param_substs, fn_args);
+            debug!("trans_const_cast({} as {})", t_expr.repr(cx.tcx()), t_cast.repr(cx.tcx()));
+            if expr::cast_is_noop(cx.tcx(), base, t_expr, t_cast) {
                 return v;
             }
-            match (expr::cast_type_kind(cx.tcx(), basety),
-                   expr::cast_type_kind(cx.tcx(), ety)) {
-
-              (expr::cast_integral, expr::cast_integral) => {
-                let s = ty::type_is_signed(basety) as Bool;
+            if type_is_fat_ptr(cx.tcx(), t_expr) {
+                // Fat pointer casts.
+                let t_cast_inner = ty::deref(t_cast, true).expect("cast to non-pointer").ty;
+                let ptr_ty = type_of::in_memory_type_of(cx, t_cast_inner).ptr_to();
+                let addr = ptrcast(const_get_elt(cx, v, &[abi::FAT_PTR_ADDR as u32]),
+                                   ptr_ty);
+                if type_is_fat_ptr(cx.tcx(), t_cast) {
+                    let info = const_get_elt(cx, v, &[abi::FAT_PTR_EXTRA as u32]);
+                    return C_struct(cx, &[addr, info], false)
+                } else {
+                    return addr;
+                }
+            }
+            match (CastTy::from_ty(cx.tcx(), t_expr).expect("bad input type for cast"),
+                   CastTy::from_ty(cx.tcx(), t_cast).expect("bad output type for cast")) {
+              (CastTy::Int(IntTy::CEnum), CastTy::Int(_)) => {
+                let repr = adt::represent_type(cx, t_expr);
+                let discr = adt::const_get_discrim(cx, &*repr, v);
+                let iv = C_integral(cx.int_type(), discr, false);
+                let s = adt::is_discr_signed(&*repr) as Bool;
+                llvm::LLVMConstIntCast(iv, llty.to_ref(), s)
+              }
+              (CastTy::Int(_), CastTy::Int(_)) => {
+                let s = ty::type_is_signed(t_expr) as Bool;
                 llvm::LLVMConstIntCast(v, llty.to_ref(), s)
               }
-              (expr::cast_integral, expr::cast_float) => {
-                if ty::type_is_signed(basety) {
+              (CastTy::Int(_), CastTy::Float) => {
+                if ty::type_is_signed(t_expr) {
                     llvm::LLVMConstSIToFP(v, llty.to_ref())
                 } else {
                     llvm::LLVMConstUIToFP(v, llty.to_ref())
                 }
               }
-              (expr::cast_float, expr::cast_float) => {
+              (CastTy::Float, CastTy::Float) => {
                 llvm::LLVMConstFPCast(v, llty.to_ref())
               }
-              (expr::cast_float, expr::cast_integral) => {
-                if ty::type_is_signed(ety) { llvm::LLVMConstFPToSI(v, llty.to_ref()) }
-                else { llvm::LLVMConstFPToUI(v, llty.to_ref()) }
+              (CastTy::Float, CastTy::Int(IntTy::I)) => {
+                llvm::LLVMConstFPToSI(v, llty.to_ref())
               }
-              (expr::cast_enum, expr::cast_integral) => {
-                let repr = adt::represent_type(cx, basety);
-                let discr = adt::const_get_discrim(cx, &*repr, v);
-                let iv = C_integral(cx.int_type(), discr, false);
-                let ety_cast = expr::cast_type_kind(cx.tcx(), ety);
-                match ety_cast {
-                    expr::cast_integral => {
-                        let s = ty::type_is_signed(ety) as Bool;
-                        llvm::LLVMConstIntCast(iv, llty.to_ref(), s)
-                    }
-                    _ => cx.sess().bug("enum cast destination is not \
-                                        integral")
-                }
+              (CastTy::Float, CastTy::Int(_)) => {
+                llvm::LLVMConstFPToUI(v, llty.to_ref())
               }
-              (expr::cast_pointer, expr::cast_pointer) => {
+              (CastTy::Ptr(_), CastTy::Ptr(_)) | (CastTy::FnPtr, CastTy::Ptr(_))
+                    | (CastTy::RPtr(_), CastTy::Ptr(_)) => {
                 ptrcast(v, llty)
               }
-              (expr::cast_integral, expr::cast_pointer) => {
+              (CastTy::FnPtr, CastTy::FnPtr) => ptrcast(v, llty), // isn't this a coercion?
+              (CastTy::Int(_), CastTy::Ptr(_)) => {
                 llvm::LLVMConstIntToPtr(v, llty.to_ref())
               }
-              (expr::cast_pointer, expr::cast_integral) => {
+              (CastTy::Ptr(_), CastTy::Int(_)) | (CastTy::FnPtr, CastTy::Int(_)) => {
                 llvm::LLVMConstPtrToInt(v, llty.to_ref())
               }
               _ => {
@@ -588,13 +738,13 @@ fn const_expr_unadjusted<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
               } else {
                   // If this isn't the address of a static, then keep going through
                   // normal constant evaluation.
-                  let (v, _) = const_expr(cx, &**sub, param_substs);
-                  addr_of(cx, v, "ref", e.id)
+                  let (v, _) = const_expr(cx, &**sub, param_substs, fn_args);
+                  addr_of(cx, v, "ref")
               }
           }
           ast::ExprAddrOf(ast::MutMutable, ref sub) => {
-              let (v, _) = const_expr(cx, &**sub, param_substs);
-              addr_of_mut(cx, v, "ref_mut_slice", e.id)
+              let (v, _) = const_expr(cx, &**sub, param_substs, fn_args);
+              addr_of_mut(cx, v, "ref_mut_slice")
           }
           ast::ExprTup(ref es) => {
               let repr = adt::represent_type(cx, ety);
@@ -605,7 +755,7 @@ fn const_expr_unadjusted<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
               let repr = adt::represent_type(cx, ety);
 
               let base_val = match *base_opt {
-                Some(ref base) => Some(const_expr(cx, &**base, param_substs)),
+                Some(ref base) => Some(const_expr(cx, &**base, param_substs, fn_args)),
                 None => None
               };
 
@@ -613,7 +763,7 @@ fn const_expr_unadjusted<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                   let cs = field_tys.iter().enumerate()
                                     .map(|(ix, &field_ty)| {
                       match fs.iter().find(|f| field_ty.name == f.ident.node.name) {
-                          Some(ref f) => const_expr(cx, &*f.expr, param_substs).0,
+                          Some(ref f) => const_expr(cx, &*f.expr, param_substs, fn_args).0,
                           None => {
                               match base_val {
                                   Some((bv, _)) => {
@@ -638,7 +788,7 @@ fn const_expr_unadjusted<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
           ast::ExprVec(ref es) => {
             let unit_ty = ty::sequence_element_type(cx.tcx(), ety);
             let llunitty = type_of::type_of(cx, unit_ty);
-            let vs = es.iter().map(|e| const_expr(cx, &**e, param_substs).0)
+            let vs = es.iter().map(|e| const_expr(cx, &**e, param_substs, fn_args).0)
                               .collect::<Vec<_>>();
             // If the vector contains enums, an LLVM array won't work.
             if vs.iter().any(|vi| val_ty(*vi) != llunitty) {
@@ -650,12 +800,8 @@ fn const_expr_unadjusted<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
           ast::ExprRepeat(ref elem, ref count) => {
             let unit_ty = ty::sequence_element_type(cx.tcx(), ety);
             let llunitty = type_of::type_of(cx, unit_ty);
-            let n = match const_eval::eval_const_expr_partial(cx.tcx(), &**count, None) {
-                Ok(const_eval::const_int(i))  => i as uint,
-                Ok(const_eval::const_uint(i)) => i as uint,
-                _ => cx.sess().span_bug(count.span, "count must be integral const expression.")
-            };
-            let unit_val = const_expr(cx, &**elem, param_substs).0;
+            let n = ty::eval_repeat_count(cx.tcx(), count);
+            let unit_val = const_expr(cx, &**elem, param_substs, fn_args).0;
             let vs: Vec<_> = repeat(unit_val).take(n).collect();
             if val_ty(unit_val) != llunitty {
                 C_struct(cx, &vs[..], false)
@@ -664,19 +810,26 @@ fn const_expr_unadjusted<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
             }
           }
           ast::ExprPath(..) => {
-            let def = cx.tcx().def_map.borrow()[e.id].full_def();
+            let def = cx.tcx().def_map.borrow().get(&e.id).unwrap().full_def();
             match def {
+                def::DefLocal(id) => {
+                    if let Some(val) = fn_args.and_then(|args| args.get(&id).cloned()) {
+                        val
+                    } else {
+                        cx.sess().span_bug(e.span, "const fn argument not found")
+                    }
+                }
                 def::DefFn(..) | def::DefMethod(..) => {
                     expr::trans_def_fn_unadjusted(cx, e, def, param_substs).val
                 }
-                def::DefConst(def_id) => {
+                def::DefConst(def_id) | def::DefAssociatedConst(def_id, _) => {
                     const_deref_ptr(cx, get_const_val(cx, def_id, e))
                 }
                 def::DefVariant(enum_did, variant_did, _) => {
                     let vinfo = ty::enum_variant_with_id(cx.tcx(),
                                                          enum_did,
                                                          variant_did);
-                    if vinfo.args.len() > 0 {
+                    if !vinfo.args.is_empty() {
                         // N-ary variant.
                         expr::trans_def_fn_unadjusted(cx, e, def, param_substs).val
                     } else {
@@ -701,10 +854,24 @@ fn const_expr_unadjusted<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
             }
           }
           ast::ExprCall(ref callee, ref args) => {
-              let opt_def = cx.tcx().def_map.borrow().get(&callee.id).map(|d| d.full_def());
-              let arg_vals = map_list(&args[..]);
-              match opt_def {
-                  Some(def::DefStruct(_)) => {
+              let mut callee = &**callee;
+              loop {
+                  callee = match callee.node {
+                      ast::ExprParen(ref inner) => &**inner,
+                      ast::ExprBlock(ref block) => match block.expr {
+                          Some(ref tail) => &**tail,
+                          None => break
+                      },
+                      _ => break
+                  };
+              }
+              let def = cx.tcx().def_map.borrow()[&callee.id].full_def();
+              let arg_vals = map_list(args);
+              match def {
+                  def::DefFn(did, _) | def::DefMethod(did, _) => {
+                      const_fn_call(cx, ExprId(callee.id), did, &arg_vals, param_substs)
+                  }
+                  def::DefStruct(_) => {
                       if ty::type_is_simd(cx.tcx(), ety) {
                           C_vector(&arg_vals[..])
                       } else {
@@ -712,7 +879,7 @@ fn const_expr_unadjusted<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                           adt::trans_const(cx, &*repr, 0, &arg_vals[..])
                       }
                   }
-                  Some(def::DefVariant(enum_did, variant_did, _)) => {
+                  def::DefVariant(enum_did, variant_did, _) => {
                       let repr = adt::represent_type(cx, ety);
                       let vinfo = ty::enum_variant_with_id(cx.tcx(),
                                                            enum_did,
@@ -722,13 +889,23 @@ fn const_expr_unadjusted<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                                        vinfo.disr_val,
                                        &arg_vals[..])
                   }
-                  _ => cx.sess().span_bug(e.span, "expected a struct or variant def")
+                  _ => cx.sess().span_bug(e.span, "expected a struct, variant, or const fn def")
               }
           }
-          ast::ExprParen(ref e) => const_expr(cx, &**e, param_substs).0,
+          ast::ExprMethodCall(_, _, ref args) => {
+              let arg_vals = map_list(args);
+              let method_call = ty::MethodCall::expr(e.id);
+              let method_did = match cx.tcx().method_map.borrow()[&method_call].origin {
+                  ty::MethodStatic(did) => did,
+                  _ => cx.sess().span_bug(e.span, "expected a const method def")
+              };
+              const_fn_call(cx, MethodCallKey(method_call),
+                            method_did, &arg_vals, param_substs)
+          }
+          ast::ExprParen(ref e) => const_expr(cx, &**e, param_substs, fn_args).0,
           ast::ExprBlock(ref block) => {
             match block.expr {
-                Some(ref expr) => const_expr(cx, &**expr, param_substs).0,
+                Some(ref expr) => const_expr(cx, &**expr, param_substs, fn_args).0,
                 None => C_nil(cx)
             }
           }
@@ -744,13 +921,13 @@ fn const_expr_unadjusted<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
     }
 }
 
-pub fn trans_static(ccx: &CrateContext, m: ast::Mutability, id: ast::NodeId) {
+pub fn trans_static(ccx: &CrateContext, m: ast::Mutability, id: ast::NodeId) -> ValueRef {
     unsafe {
         let _icx = push_ctxt("trans_static");
         let g = base::get_item_val(ccx, id);
         // At this point, get_item_val has already translated the
         // constant's initializer to determine its LLVM type.
-        let v = ccx.static_values().borrow()[id].clone();
+        let v = ccx.static_values().borrow().get(&id).unwrap().clone();
         // boolean SSA values are i1, but they have to be stored in i8 slots,
         // otherwise some LLVM optimization passes don't work as expected
         let v = if llvm::LLVMTypeOf(v) == Type::i1(ccx).to_ref() {
@@ -770,6 +947,7 @@ pub fn trans_static(ccx: &CrateContext, m: ast::Mutability, id: ast::NodeId) {
             }
         }
         debuginfo::create_global_var_metadata(ccx, id, g);
+        g
     }
 }
 

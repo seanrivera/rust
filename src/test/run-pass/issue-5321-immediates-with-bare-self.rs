@@ -8,13 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 //
-// ignore-lexer-test FIXME #15877
 
 trait Fooable {
     fn yes(self);
 }
 
-impl Fooable for uint {
+impl Fooable for usize {
     fn yes(self) {
         for _ in 0..self { println!("yes"); }
     }

@@ -23,16 +23,16 @@
 // conditions above to be satisfied, meaning that if the dropck is
 // sound, it should reject this code.
 
-#![feature(unsafe_destructor)]
+#![feature(const_fn)]
 
 use std::cell::Cell;
 use id::Id;
 
 mod s {
     #![allow(unstable)]
-    use std::sync::atomic::{AtomicUint, ATOMIC_UINT_INIT, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    static S_COUNT: AtomicUint = ATOMIC_UINT_INIT;
+    static S_COUNT: AtomicUsize = AtomicUsize::new(0);
 
     /// generates globally unique count (global across the current
     /// process, that is)
@@ -91,7 +91,6 @@ struct CheckId<T:HasId> {
 #[allow(non_snake_case)]
 fn CheckId<T:HasId>(t: T) -> CheckId<T> { CheckId{ v: t } }
 
-#[unsafe_destructor]
 impl<T:HasId> Drop for CheckId<T> {
     fn drop(&mut self) {
         assert!(self.v.count() > 0);

@@ -1,4 +1,4 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -13,30 +13,38 @@
 
 pub use self::const_val::*;
 
+use self::ErrKind::*;
+
 use metadata::csearch;
-use middle::{astencode, def};
+use middle::{astencode, def, infer, subst, traits};
 use middle::pat_util::def_to_path;
 use middle::ty::{self, Ty};
-use middle::astconv_util::{ast_ty_to_prim_ty};
+use middle::astconv_util::ast_ty_to_prim_ty;
+use util::num::ToPrimitive;
+use util::ppaux::Repr;
 
 use syntax::ast::{self, Expr};
+use syntax::ast_map::blocks::FnLikeNode;
+use syntax::ast_util;
 use syntax::codemap::Span;
+use syntax::feature_gate;
 use syntax::parse::token::InternedString;
 use syntax::ptr::P;
-use syntax::{ast_map, ast_util, codemap};
+use syntax::{ast_map, codemap, visit};
 
 use std::borrow::{Cow, IntoCow};
 use std::num::wrapping::OverflowingOps;
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry::Vacant;
-use std::{i8, i16, i32, i64};
+use std::{i8, i16, i32, i64, u8, u16, u32, u64};
 use std::rc::Rc;
 
 fn lookup_const<'a>(tcx: &'a ty::ctxt, e: &Expr) -> Option<&'a Expr> {
     let opt_def = tcx.def_map.borrow().get(&e.id).map(|d| d.full_def());
     match opt_def {
-        Some(def::DefConst(def_id)) => {
-            lookup_const_by_id(tcx, def_id)
+        Some(def::DefConst(def_id)) |
+        Some(def::DefAssociatedConst(def_id, _)) => {
+            lookup_const_by_id(tcx, def_id, Some(e.id))
         }
         Some(def::DefVariant(enum_def, variant_def, _)) => {
             lookup_variant_by_id(tcx, enum_def, variant_def)
@@ -97,14 +105,48 @@ fn lookup_variant_by_id<'a>(tcx: &'a ty::ctxt,
     }
 }
 
-pub fn lookup_const_by_id<'a>(tcx: &'a ty::ctxt, def_id: ast::DefId)
-                          -> Option<&'a Expr> {
+pub fn lookup_const_by_id<'a, 'tcx: 'a>(tcx: &'a ty::ctxt<'tcx>,
+                                        def_id: ast::DefId,
+                                        maybe_ref_id: Option<ast::NodeId>)
+                                        -> Option<&'tcx Expr> {
     if ast_util::is_local(def_id) {
         match tcx.map.find(def_id.node) {
             None => None,
             Some(ast_map::NodeItem(it)) => match it.node {
                 ast::ItemConst(_, ref const_expr) => {
-                    Some(&**const_expr)
+                    Some(&*const_expr)
+                }
+                _ => None
+            },
+            Some(ast_map::NodeTraitItem(ti)) => match ti.node {
+                ast::ConstTraitItem(_, _) => {
+                    match maybe_ref_id {
+                        // If we have a trait item, and we know the expression
+                        // that's the source of the obligation to resolve it,
+                        // `resolve_trait_associated_const` will select an impl
+                        // or the default.
+                        Some(ref_id) => {
+                            let trait_id = ty::trait_of_item(tcx, def_id)
+                                              .unwrap();
+                            let substs = ty::node_id_item_substs(tcx, ref_id)
+                                            .substs;
+                            resolve_trait_associated_const(tcx, ti, trait_id,
+                                                           substs)
+                        }
+                        // Technically, without knowing anything about the
+                        // expression that generates the obligation, we could
+                        // still return the default if there is one. However,
+                        // it's safer to return `None` than to return some value
+                        // that may differ from what you would get from
+                        // correctly selecting an impl.
+                        None => None
+                    }
+                }
+                _ => None
+            },
+            Some(ast_map::NodeImplItem(ii)) => match ii.node {
+                ast::ConstImplItem(_, ref expr) => {
+                    Some(&*expr)
                 }
                 _ => None
             },
@@ -118,30 +160,117 @@ pub fn lookup_const_by_id<'a>(tcx: &'a ty::ctxt, def_id: ast::DefId)
             }
             None => {}
         }
+        let mut used_ref_id = false;
         let expr_id = match csearch::maybe_get_item_ast(tcx, def_id,
             Box::new(|a, b, c, d| astencode::decode_inlined_item(a, b, c, d))) {
             csearch::FoundAst::Found(&ast::IIItem(ref item)) => match item.node {
                 ast::ItemConst(_, ref const_expr) => Some(const_expr.id),
                 _ => None
             },
+            csearch::FoundAst::Found(&ast::IITraitItem(trait_id, ref ti)) => match ti.node {
+                ast::ConstTraitItem(_, _) => {
+                    used_ref_id = true;
+                    match maybe_ref_id {
+                        // As mentioned in the comments above for in-crate
+                        // constants, we only try to find the expression for
+                        // a trait-associated const if the caller gives us
+                        // the expression that refers to it.
+                        Some(ref_id) => {
+                            let substs = ty::node_id_item_substs(tcx, ref_id)
+                                            .substs;
+                            resolve_trait_associated_const(tcx, ti, trait_id,
+                                                           substs).map(|e| e.id)
+                        }
+                        None => None
+                    }
+                }
+                _ => None
+            },
+            csearch::FoundAst::Found(&ast::IIImplItem(_, ref ii)) => match ii.node {
+                ast::ConstImplItem(_, ref expr) => Some(expr.id),
+                _ => None
+            },
             _ => None
         };
-        tcx.extern_const_statics.borrow_mut().insert(def_id,
-                                                     expr_id.unwrap_or(ast::DUMMY_NODE_ID));
+        // If we used the reference expression, particularly to choose an impl
+        // of a trait-associated const, don't cache that, because the next
+        // lookup with the same def_id may yield a different result.
+        if !used_ref_id {
+            tcx.extern_const_statics
+               .borrow_mut().insert(def_id,
+                                    expr_id.unwrap_or(ast::DUMMY_NODE_ID));
+        }
         expr_id.map(|id| tcx.map.expect_expr(id))
     }
 }
 
-// FIXME (#33): this doesn't handle big integer/float literals correctly
-// (nor does the rest of our literal handling).
+fn inline_const_fn_from_external_crate(tcx: &ty::ctxt, def_id: ast::DefId)
+                                       -> Option<ast::NodeId> {
+    match tcx.extern_const_fns.borrow().get(&def_id) {
+        Some(&ast::DUMMY_NODE_ID) => return None,
+        Some(&fn_id) => return Some(fn_id),
+        None => {}
+    }
+
+    if !csearch::is_const_fn(&tcx.sess.cstore, def_id) {
+        tcx.extern_const_fns.borrow_mut().insert(def_id, ast::DUMMY_NODE_ID);
+        return None;
+    }
+
+    let fn_id = match csearch::maybe_get_item_ast(tcx, def_id,
+        box |a, b, c, d| astencode::decode_inlined_item(a, b, c, d)) {
+        csearch::FoundAst::Found(&ast::IIItem(ref item)) => Some(item.id),
+        csearch::FoundAst::Found(&ast::IIImplItem(_, ref item)) => Some(item.id),
+        _ => None
+    };
+    tcx.extern_const_fns.borrow_mut().insert(def_id,
+                                             fn_id.unwrap_or(ast::DUMMY_NODE_ID));
+    fn_id
+}
+
+pub fn lookup_const_fn_by_id<'tcx>(tcx: &ty::ctxt<'tcx>, def_id: ast::DefId)
+                                   -> Option<FnLikeNode<'tcx>>
+{
+    let fn_id = if !ast_util::is_local(def_id) {
+        if let Some(fn_id) = inline_const_fn_from_external_crate(tcx, def_id) {
+            fn_id
+        } else {
+            return None;
+        }
+    } else {
+        def_id.node
+    };
+
+    let fn_like = match FnLikeNode::from_node(tcx.map.get(fn_id)) {
+        Some(fn_like) => fn_like,
+        None => return None
+    };
+
+    match fn_like.kind() {
+        visit::FkItemFn(_, _, _, ast::Constness::Const, _, _) => {
+            Some(fn_like)
+        }
+        visit::FkMethod(_, m, _) => {
+            if m.constness == ast::Constness::Const {
+                Some(fn_like)
+            } else {
+                None
+            }
+        }
+        _ => None
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub enum const_val {
     const_float(f64),
     const_int(i64),
     const_uint(u64),
     const_str(InternedString),
-    const_binary(Rc<Vec<u8> >),
-    const_bool(bool)
+    const_binary(Rc<Vec<u8>>),
+    const_bool(bool),
+    Struct(ast::NodeId),
+    Tuple(ast::NodeId)
 }
 
 pub fn const_expr_to_pat(tcx: &ty::ctxt, expr: &Expr, span: Span) -> P<ast::Pat> {
@@ -150,7 +279,7 @@ pub fn const_expr_to_pat(tcx: &ty::ctxt, expr: &Expr, span: Span) -> P<ast::Pat>
             ast::PatTup(exprs.iter().map(|expr| const_expr_to_pat(tcx, &**expr, span)).collect()),
 
         ast::ExprCall(ref callee, ref args) => {
-            let def = tcx.def_map.borrow()[callee.id];
+            let def = *tcx.def_map.borrow().get(&callee.id).unwrap();
             if let Vacant(entry) = tcx.def_map.borrow_mut().entry(expr.id) {
                entry.insert(def);
             }
@@ -204,7 +333,7 @@ pub fn const_expr_to_pat(tcx: &ty::ctxt, expr: &Expr, span: Span) -> P<ast::Pat>
 pub fn eval_const_expr(tcx: &ty::ctxt, e: &Expr) -> const_val {
     match eval_const_expr_partial(tcx, e, None) {
         Ok(r) => r,
-        Err(s) => tcx.sess.span_fatal(s.span, s.description().as_slice())
+        Err(s) => tcx.sess.span_fatal(s.span, &s.description())
     }
 }
 
@@ -226,10 +355,15 @@ pub enum ErrKind {
     NegateOnString,
     NegateOnBoolean,
     NegateOnBinary,
+    NegateOnStruct,
+    NegateOnTuple,
     NotOnFloat,
     NotOnString,
     NotOnBinary,
+    NotOnStruct,
+    NotOnTuple,
 
+    NegateWithOverflow(i64),
     AddiWithOverflow(i64, i64),
     SubiWithOverflow(i64, i64),
     MuliWithOverflow(i64, i64),
@@ -240,9 +374,12 @@ pub enum ErrKind {
     DivideWithOverflow,
     ModuloByZero,
     ModuloWithOverflow,
+    ShiftLeftWithOverflow,
+    ShiftRightWithOverflow,
     MissingStructField,
     NonConstPath,
-    NonConstStruct,
+    ExpectedConstTuple,
+    ExpectedConstStruct,
     TupleIndexOutOfBounds,
 
     MiscBinaryOp,
@@ -252,20 +389,26 @@ pub enum ErrKind {
 impl ConstEvalErr {
     pub fn description(&self) -> Cow<str> {
         use self::ErrKind::*;
+
         match self.kind {
             CannotCast => "can't cast this type".into_cow(),
             CannotCastTo(s) => format!("can't cast this type to {}", s).into_cow(),
             InvalidOpForBools(_) =>  "can't do this op on bools".into_cow(),
             InvalidOpForFloats(_) => "can't do this op on floats".into_cow(),
-            InvalidOpForIntUint(..) => "can't do this op on an int and uint".into_cow(),
-            InvalidOpForUintInt(..) => "can't do this op on a uint and int".into_cow(),
+            InvalidOpForIntUint(..) => "can't do this op on an isize and usize".into_cow(),
+            InvalidOpForUintInt(..) => "can't do this op on a usize and isize".into_cow(),
             NegateOnString => "negate on string".into_cow(),
             NegateOnBoolean => "negate on boolean".into_cow(),
             NegateOnBinary => "negate on binary literal".into_cow(),
+            NegateOnStruct => "negate on struct".into_cow(),
+            NegateOnTuple => "negate on tuple".into_cow(),
             NotOnFloat => "not on float or string".into_cow(),
             NotOnString => "not on float or string".into_cow(),
             NotOnBinary => "not on binary literal".into_cow(),
+            NotOnStruct => "not on struct".into_cow(),
+            NotOnTuple => "not on tuple".into_cow(),
 
+            NegateWithOverflow(..) => "attempted to negate with overflow".into_cow(),
             AddiWithOverflow(..) => "attempted to add with overflow".into_cow(),
             SubiWithOverflow(..) => "attempted to sub with overflow".into_cow(),
             MuliWithOverflow(..) => "attempted to mul with overflow".into_cow(),
@@ -276,9 +419,12 @@ impl ConstEvalErr {
             DivideWithOverflow   => "attempted to divide with overflow".into_cow(),
             ModuloByZero         => "attempted remainder with a divisor of zero".into_cow(),
             ModuloWithOverflow   => "attempted remainder with overflow".into_cow(),
+            ShiftLeftWithOverflow => "attempted left shift with overflow".into_cow(),
+            ShiftRightWithOverflow => "attempted right shift with overflow".into_cow(),
             MissingStructField  => "nonexistent struct field".into_cow(),
             NonConstPath        => "non-constant path in constant expr".into_cow(),
-            NonConstStruct      => "non-constant struct in constant expr".into_cow(),
+            ExpectedConstTuple => "expected constant tuple".into_cow(),
+            ExpectedConstStruct => "expected constant struct".into_cow(),
             TupleIndexOutOfBounds => "tuple index out of bounds".into_cow(),
 
             MiscBinaryOp => "bad operands for binary".into_cow(),
@@ -287,75 +433,349 @@ impl ConstEvalErr {
     }
 }
 
-macro_rules! signal {
-    ($e:expr, $ctor:ident) => {
-        return Err(ConstEvalErr { span: $e.span, kind: ErrKind::$ctor })
-    };
+pub type EvalResult = Result<const_val, ConstEvalErr>;
+pub type CastResult = Result<const_val, ErrKind>;
 
-    ($e:expr, $ctor:ident($($arg:expr),*)) => {
-        return Err(ConstEvalErr { span: $e.span, kind: ErrKind::$ctor($($arg),*) })
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub enum IntTy { I8, I16, I32, I64 }
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub enum UintTy { U8, U16, U32, U64 }
+
+impl IntTy {
+    pub fn from(tcx: &ty::ctxt, t: ast::IntTy) -> IntTy {
+        let t = if let ast::TyIs = t {
+            tcx.sess.target.int_type
+        } else {
+            t
+        };
+        match t {
+            ast::TyIs => unreachable!(),
+            ast::TyI8  => IntTy::I8,
+            ast::TyI16 => IntTy::I16,
+            ast::TyI32 => IntTy::I32,
+            ast::TyI64 => IntTy::I64,
+        }
     }
 }
 
-fn checked_add_int(e: &Expr, a: i64, b: i64) -> Result<const_val, ConstEvalErr> {
-    let (ret, oflo) = a.overflowing_add(b);
-    if !oflo { Ok(const_int(ret)) } else { signal!(e, AddiWithOverflow(a, b)) }
-}
-fn checked_sub_int(e: &Expr, a: i64, b: i64) -> Result<const_val, ConstEvalErr> {
-    let (ret, oflo) = a.overflowing_sub(b);
-    if !oflo { Ok(const_int(ret)) } else { signal!(e, SubiWithOverflow(a, b)) }
-}
-fn checked_mul_int(e: &Expr, a: i64, b: i64) -> Result<const_val, ConstEvalErr> {
-    let (ret, oflo) = a.overflowing_mul(b);
-    if !oflo { Ok(const_int(ret)) } else { signal!(e, MuliWithOverflow(a, b)) }
-}
-
-fn checked_add_uint(e: &Expr, a: u64, b: u64) -> Result<const_val, ConstEvalErr> {
-    let (ret, oflo) = a.overflowing_add(b);
-    if !oflo { Ok(const_uint(ret)) } else { signal!(e, AdduWithOverflow(a, b)) }
-}
-fn checked_sub_uint(e: &Expr, a: u64, b: u64) -> Result<const_val, ConstEvalErr> {
-    let (ret, oflo) = a.overflowing_sub(b);
-    if !oflo { Ok(const_uint(ret)) } else { signal!(e, SubuWithOverflow(a, b)) }
-}
-fn checked_mul_uint(e: &Expr, a: u64, b: u64) -> Result<const_val, ConstEvalErr> {
-    let (ret, oflo) = a.overflowing_mul(b);
-    if !oflo { Ok(const_uint(ret)) } else { signal!(e, MuluWithOverflow(a, b)) }
+impl UintTy {
+    pub fn from(tcx: &ty::ctxt, t: ast::UintTy) -> UintTy {
+        let t = if let ast::TyUs = t {
+            tcx.sess.target.uint_type
+        } else {
+            t
+        };
+        match t {
+            ast::TyUs => unreachable!(),
+            ast::TyU8  => UintTy::U8,
+            ast::TyU16 => UintTy::U16,
+            ast::TyU32 => UintTy::U32,
+            ast::TyU64 => UintTy::U64,
+        }
+    }
 }
 
+macro_rules! signal {
+    ($e:expr, $exn:expr) => {
+        return Err(ConstEvalErr { span: $e.span, kind: $exn })
+    }
+}
 
+// The const_{int,uint}_checked_{neg,add,sub,mul,div,shl,shr} family
+// of functions catch and signal overflow errors during constant
+// evaluation.
+//
+// They all take the operator's arguments (`a` and `b` if binary), the
+// overall expression (`e`) and, if available, whole expression's
+// concrete type (`opt_ety`).
+//
+// If the whole expression's concrete type is None, then this is a
+// constant evaluation happening before type check (e.g. in the check
+// to confirm that a pattern range's left-side is not greater than its
+// right-side). We do not do arithmetic modulo the type's bitwidth in
+// such a case; we just do 64-bit arithmetic and assume that later
+// passes will do it again with the type information, and thus do the
+// overflow checks then.
+
+pub fn const_int_checked_neg<'a>(
+    a: i64, e: &'a Expr, opt_ety: Option<IntTy>) -> EvalResult {
+
+    let (min,max) = match opt_ety {
+        // (-i8::MIN is itself not an i8, etc, but this is an easy way
+        // to allow literals to pass the check. Of course that does
+        // not work for i64::MIN.)
+        Some(IntTy::I8) =>  (-(i8::MAX as i64), -(i8::MIN as i64)),
+        Some(IntTy::I16) => (-(i16::MAX as i64), -(i16::MIN as i64)),
+        Some(IntTy::I32) => (-(i32::MAX as i64), -(i32::MIN as i64)),
+        None | Some(IntTy::I64) => (-i64::MAX, -(i64::MIN+1)),
+    };
+
+    let oflo = a < min || a > max;
+    if oflo {
+        signal!(e, NegateWithOverflow(a));
+    } else {
+        Ok(const_int(-a))
+    }
+}
+
+pub fn const_uint_checked_neg<'a>(
+    a: u64, _e: &'a Expr, _opt_ety: Option<UintTy>) -> EvalResult {
+    // This always succeeds, and by definition, returns `(!a)+1`.
+    Ok(const_uint((!a).wrapping_add(1)))
+}
+
+fn const_uint_not(a: u64, opt_ety: Option<UintTy>) -> const_val {
+    let mask = match opt_ety {
+        Some(UintTy::U8) => u8::MAX as u64,
+        Some(UintTy::U16) => u16::MAX as u64,
+        Some(UintTy::U32) => u32::MAX as u64,
+        None | Some(UintTy::U64) => u64::MAX,
+    };
+    const_uint(!a & mask)
+}
+
+macro_rules! overflow_checking_body {
+    ($a:ident, $b:ident, $ety:ident, $overflowing_op:ident,
+     lhs: $to_8_lhs:ident $to_16_lhs:ident $to_32_lhs:ident,
+     rhs: $to_8_rhs:ident $to_16_rhs:ident $to_32_rhs:ident $to_64_rhs:ident,
+     $EnumTy:ident $T8: ident $T16: ident $T32: ident $T64: ident,
+     $result_type: ident) => { {
+        let (a,b,opt_ety) = ($a,$b,$ety);
+        match opt_ety {
+            Some($EnumTy::$T8) => match (a.$to_8_lhs(), b.$to_8_rhs()) {
+                (Some(a), Some(b)) => {
+                    let (a, oflo) = a.$overflowing_op(b);
+                    (a as $result_type, oflo)
+                }
+                (None, _) | (_, None) => (0, true)
+            },
+            Some($EnumTy::$T16) => match (a.$to_16_lhs(), b.$to_16_rhs()) {
+                (Some(a), Some(b)) => {
+                    let (a, oflo) = a.$overflowing_op(b);
+                    (a as $result_type, oflo)
+                }
+                (None, _) | (_, None) => (0, true)
+            },
+            Some($EnumTy::$T32) => match (a.$to_32_lhs(), b.$to_32_rhs()) {
+                (Some(a), Some(b)) => {
+                    let (a, oflo) = a.$overflowing_op(b);
+                    (a as $result_type, oflo)
+                }
+                (None, _) | (_, None) => (0, true)
+            },
+            None | Some($EnumTy::$T64) => match b.$to_64_rhs() {
+                Some(b) => a.$overflowing_op(b),
+                None => (0, true),
+            }
+        }
+    } }
+}
+
+macro_rules! int_arith_body {
+    ($a:ident, $b:ident, $ety:ident, $overflowing_op:ident) => {
+        overflow_checking_body!(
+            $a, $b, $ety, $overflowing_op,
+            lhs: to_i8 to_i16 to_i32,
+            rhs: to_i8 to_i16 to_i32 to_i64, IntTy I8 I16 I32 I64, i64)
+    }
+}
+
+macro_rules! uint_arith_body {
+    ($a:ident, $b:ident, $ety:ident, $overflowing_op:ident) => {
+        overflow_checking_body!(
+            $a, $b, $ety, $overflowing_op,
+            lhs: to_u8 to_u16 to_u32,
+            rhs: to_u8 to_u16 to_u32 to_u64, UintTy U8 U16 U32 U64, u64)
+    }
+}
+
+macro_rules! int_shift_body {
+    ($a:ident, $b:ident, $ety:ident, $overflowing_op:ident) => {
+        overflow_checking_body!(
+            $a, $b, $ety, $overflowing_op,
+            lhs: to_i8 to_i16 to_i32,
+            rhs: to_u32 to_u32 to_u32 to_u32, IntTy I8 I16 I32 I64, i64)
+    }
+}
+
+macro_rules! uint_shift_body {
+    ($a:ident, $b:ident, $ety:ident, $overflowing_op:ident) => {
+        overflow_checking_body!(
+            $a, $b, $ety, $overflowing_op,
+            lhs: to_u8 to_u16 to_u32,
+            rhs: to_u32 to_u32 to_u32 to_u32, UintTy U8 U16 U32 U64, u64)
+    }
+}
+
+macro_rules! pub_fn_checked_op {
+    {$fn_name:ident ($a:ident : $a_ty:ty, $b:ident : $b_ty:ty,.. $WhichTy:ident) {
+        $ret_oflo_body:ident $overflowing_op:ident
+            $const_ty:ident $signal_exn:expr
+    }} => {
+        pub fn $fn_name<'a>($a: $a_ty,
+                            $b: $b_ty,
+                            e: &'a Expr,
+                            opt_ety: Option<$WhichTy>) -> EvalResult {
+            let (ret, oflo) = $ret_oflo_body!($a, $b, opt_ety, $overflowing_op);
+            if !oflo { Ok($const_ty(ret)) } else { signal!(e, $signal_exn) }
+        }
+    }
+}
+
+pub_fn_checked_op!{ const_int_checked_add(a: i64, b: i64,.. IntTy) {
+           int_arith_body overflowing_add const_int AddiWithOverflow(a, b)
+}}
+
+pub_fn_checked_op!{ const_int_checked_sub(a: i64, b: i64,.. IntTy) {
+           int_arith_body overflowing_sub const_int SubiWithOverflow(a, b)
+}}
+
+pub_fn_checked_op!{ const_int_checked_mul(a: i64, b: i64,.. IntTy) {
+           int_arith_body overflowing_mul const_int MuliWithOverflow(a, b)
+}}
+
+pub fn const_int_checked_div<'a>(
+    a: i64, b: i64, e: &'a Expr, opt_ety: Option<IntTy>) -> EvalResult {
+    if b == 0 { signal!(e, DivideByZero); }
+    let (ret, oflo) = int_arith_body!(a, b, opt_ety, overflowing_div);
+    if !oflo { Ok(const_int(ret)) } else { signal!(e, DivideWithOverflow) }
+}
+
+pub fn const_int_checked_rem<'a>(
+    a: i64, b: i64, e: &'a Expr, opt_ety: Option<IntTy>) -> EvalResult {
+    if b == 0 { signal!(e, ModuloByZero); }
+    let (ret, oflo) = int_arith_body!(a, b, opt_ety, overflowing_rem);
+    if !oflo { Ok(const_int(ret)) } else { signal!(e, ModuloWithOverflow) }
+}
+
+pub_fn_checked_op!{ const_int_checked_shl(a: i64, b: i64,.. IntTy) {
+           int_shift_body overflowing_shl const_int ShiftLeftWithOverflow
+}}
+
+pub_fn_checked_op!{ const_int_checked_shl_via_uint(a: i64, b: u64,.. IntTy) {
+           int_shift_body overflowing_shl const_int ShiftLeftWithOverflow
+}}
+
+pub_fn_checked_op!{ const_int_checked_shr(a: i64, b: i64,.. IntTy) {
+           int_shift_body overflowing_shr const_int ShiftRightWithOverflow
+}}
+
+pub_fn_checked_op!{ const_int_checked_shr_via_uint(a: i64, b: u64,.. IntTy) {
+           int_shift_body overflowing_shr const_int ShiftRightWithOverflow
+}}
+
+pub_fn_checked_op!{ const_uint_checked_add(a: u64, b: u64,.. UintTy) {
+           uint_arith_body overflowing_add const_uint AdduWithOverflow(a, b)
+}}
+
+pub_fn_checked_op!{ const_uint_checked_sub(a: u64, b: u64,.. UintTy) {
+           uint_arith_body overflowing_sub const_uint SubuWithOverflow(a, b)
+}}
+
+pub_fn_checked_op!{ const_uint_checked_mul(a: u64, b: u64,.. UintTy) {
+           uint_arith_body overflowing_mul const_uint MuluWithOverflow(a, b)
+}}
+
+pub fn const_uint_checked_div<'a>(
+    a: u64, b: u64, e: &'a Expr, opt_ety: Option<UintTy>) -> EvalResult {
+    if b == 0 { signal!(e, DivideByZero); }
+    let (ret, oflo) = uint_arith_body!(a, b, opt_ety, overflowing_div);
+    if !oflo { Ok(const_uint(ret)) } else { signal!(e, DivideWithOverflow) }
+}
+
+pub fn const_uint_checked_rem<'a>(
+    a: u64, b: u64, e: &'a Expr, opt_ety: Option<UintTy>) -> EvalResult {
+    if b == 0 { signal!(e, ModuloByZero); }
+    let (ret, oflo) = uint_arith_body!(a, b, opt_ety, overflowing_rem);
+    if !oflo { Ok(const_uint(ret)) } else { signal!(e, ModuloWithOverflow) }
+}
+
+pub_fn_checked_op!{ const_uint_checked_shl(a: u64, b: u64,.. UintTy) {
+           uint_shift_body overflowing_shl const_uint ShiftLeftWithOverflow
+}}
+
+pub_fn_checked_op!{ const_uint_checked_shl_via_int(a: u64, b: i64,.. UintTy) {
+           uint_shift_body overflowing_shl const_uint ShiftLeftWithOverflow
+}}
+
+pub_fn_checked_op!{ const_uint_checked_shr(a: u64, b: u64,.. UintTy) {
+           uint_shift_body overflowing_shr const_uint ShiftRightWithOverflow
+}}
+
+pub_fn_checked_op!{ const_uint_checked_shr_via_int(a: u64, b: i64,.. UintTy) {
+           uint_shift_body overflowing_shr const_uint ShiftRightWithOverflow
+}}
+
+// After type checking, `eval_const_expr_partial` should always suffice. The
+// reason for providing `eval_const_expr_with_substs` is to allow
+// trait-associated consts to be evaluated *during* type checking, when the
+// substs for each expression have not been written into `tcx` yet.
 pub fn eval_const_expr_partial<'tcx>(tcx: &ty::ctxt<'tcx>,
                                      e: &Expr,
-                                     ty_hint: Option<Ty<'tcx>>)
-                                     -> Result<const_val, ConstEvalErr> {
+                                     ty_hint: Option<Ty<'tcx>>) -> EvalResult {
+    eval_const_expr_with_substs(tcx, e, ty_hint, |id| {
+        ty::node_id_item_substs(tcx, id).substs
+    })
+}
+
+pub fn eval_const_expr_with_substs<'tcx, S>(tcx: &ty::ctxt<'tcx>,
+                                            e: &Expr,
+                                            ty_hint: Option<Ty<'tcx>>,
+                                            get_substs: S) -> EvalResult
+        where S: Fn(ast::NodeId) -> subst::Substs<'tcx> {
     fn fromb(b: bool) -> const_val { const_int(b as i64) }
 
     let ety = ty_hint.or_else(|| ty::expr_ty_opt(tcx, e));
+
+    // If type of expression itself is int or uint, normalize in these
+    // bindings so that isize/usize is mapped to a type with an
+    // inherently known bitwidth.
+    let expr_int_type = ety.and_then(|ty| {
+        if let ty::ty_int(t) = ty.sty {
+            Some(IntTy::from(tcx, t)) } else { None }
+    });
+    let expr_uint_type = ety.and_then(|ty| {
+        if let ty::ty_uint(t) = ty.sty {
+            Some(UintTy::from(tcx, t)) } else { None }
+    });
 
     let result = match e.node {
       ast::ExprUnary(ast::UnNeg, ref inner) => {
         match try!(eval_const_expr_partial(tcx, &**inner, ety)) {
           const_float(f) => const_float(-f),
-          const_int(i) => const_int(-i),
-          const_uint(i) => const_uint(-i),
+          const_int(n) =>  try!(const_int_checked_neg(n, e, expr_int_type)),
+          const_uint(i) => {
+              if !tcx.sess.features.borrow().negate_unsigned {
+                  feature_gate::emit_feature_err(
+                      &tcx.sess.parse_sess.span_diagnostic,
+                      "negate_unsigned",
+                      e.span,
+                      "unary negation of unsigned integers may be removed in the future");
+              }
+              try!(const_uint_checked_neg(i, e, expr_uint_type))
+          }
           const_str(_) => signal!(e, NegateOnString),
           const_bool(_) => signal!(e, NegateOnBoolean),
           const_binary(_) => signal!(e, NegateOnBinary),
+          const_val::Tuple(_) => signal!(e, NegateOnTuple),
+          const_val::Struct(..) => signal!(e, NegateOnStruct),
         }
       }
       ast::ExprUnary(ast::UnNot, ref inner) => {
         match try!(eval_const_expr_partial(tcx, &**inner, ety)) {
           const_int(i) => const_int(!i),
-          const_uint(i) => const_uint(!i),
+          const_uint(i) => const_uint_not(i, expr_uint_type),
           const_bool(b) => const_bool(!b),
           const_str(_) => signal!(e, NotOnString),
           const_float(_) => signal!(e, NotOnFloat),
           const_binary(_) => signal!(e, NotOnBinary),
+          const_val::Tuple(_) => signal!(e, NotOnTuple),
+          const_val::Struct(..) => signal!(e, NotOnStruct),
         }
       }
       ast::ExprBinary(op, ref a, ref b) => {
         let b_ty = match op.node {
-            ast::BiShl | ast::BiShr => Some(tcx.types.uint),
+            ast::BiShl | ast::BiShr => Some(tcx.types.usize),
             _ => ety
         };
         match (try!(eval_const_expr_partial(tcx, &**a, ety)),
@@ -377,51 +797,17 @@ pub fn eval_const_expr_partial<'tcx>(tcx: &ty::ctxt<'tcx>,
             }
           }
           (const_int(a), const_int(b)) => {
-            let is_a_min_value = || {
-                let int_ty = match ty::expr_ty_opt(tcx, e).map(|ty| &ty.sty) {
-                    Some(&ty::ty_int(int_ty)) => int_ty,
-                    _ => return false
-                };
-                let int_ty = if let ast::TyIs(_) = int_ty {
-                    tcx.sess.target.int_type
-                } else {
-                    int_ty
-                };
-                match int_ty {
-                    ast::TyI8 => (a as i8) == i8::MIN,
-                    ast::TyI16 =>  (a as i16) == i16::MIN,
-                    ast::TyI32 =>  (a as i32) == i32::MIN,
-                    ast::TyI64 =>  (a as i64) == i64::MIN,
-                    ast::TyIs(_) => unreachable!()
-                }
-            };
             match op.node {
-              ast::BiAdd => try!(checked_add_int(e, a, b)),
-              ast::BiSub => try!(checked_sub_int(e, a, b)),
-              ast::BiMul => try!(checked_mul_int(e, a, b)),
-              ast::BiDiv => {
-                  if b == 0 {
-                      signal!(e, DivideByZero);
-                  } else if b == -1 && is_a_min_value() {
-                      signal!(e, DivideWithOverflow);
-                  } else {
-                      const_int(a / b)
-                  }
-              }
-              ast::BiRem => {
-                  if b == 0 {
-                      signal!(e, ModuloByZero)
-                  } else if b == -1 && is_a_min_value() {
-                      signal!(e, ModuloWithOverflow)
-                  } else {
-                      const_int(a % b)
-                  }
-              }
+              ast::BiAdd => try!(const_int_checked_add(a,b,e,expr_int_type)),
+              ast::BiSub => try!(const_int_checked_sub(a,b,e,expr_int_type)),
+              ast::BiMul => try!(const_int_checked_mul(a,b,e,expr_int_type)),
+              ast::BiDiv => try!(const_int_checked_div(a,b,e,expr_int_type)),
+              ast::BiRem => try!(const_int_checked_rem(a,b,e,expr_int_type)),
               ast::BiAnd | ast::BiBitAnd => const_int(a & b),
               ast::BiOr | ast::BiBitOr => const_int(a | b),
               ast::BiBitXor => const_int(a ^ b),
-              ast::BiShl => const_int(a << b as uint),
-              ast::BiShr => const_int(a >> b as uint),
+              ast::BiShl => try!(const_int_checked_shl(a,b,e,expr_int_type)),
+              ast::BiShr => try!(const_int_checked_shr(a,b,e,expr_int_type)),
               ast::BiEq => fromb(a == b),
               ast::BiLt => fromb(a < b),
               ast::BiLe => fromb(a <= b),
@@ -432,18 +818,16 @@ pub fn eval_const_expr_partial<'tcx>(tcx: &ty::ctxt<'tcx>,
           }
           (const_uint(a), const_uint(b)) => {
             match op.node {
-              ast::BiAdd => try!(checked_add_uint(e, a, b)),
-              ast::BiSub => try!(checked_sub_uint(e, a, b)),
-              ast::BiMul => try!(checked_mul_uint(e, a, b)),
-              ast::BiDiv if b == 0 => signal!(e, DivideByZero),
-              ast::BiDiv => const_uint(a / b),
-              ast::BiRem if b == 0 => signal!(e, ModuloByZero),
-              ast::BiRem => const_uint(a % b),
+              ast::BiAdd => try!(const_uint_checked_add(a,b,e,expr_uint_type)),
+              ast::BiSub => try!(const_uint_checked_sub(a,b,e,expr_uint_type)),
+              ast::BiMul => try!(const_uint_checked_mul(a,b,e,expr_uint_type)),
+              ast::BiDiv => try!(const_uint_checked_div(a,b,e,expr_uint_type)),
+              ast::BiRem => try!(const_uint_checked_rem(a,b,e,expr_uint_type)),
               ast::BiAnd | ast::BiBitAnd => const_uint(a & b),
               ast::BiOr | ast::BiBitOr => const_uint(a | b),
               ast::BiBitXor => const_uint(a ^ b),
-              ast::BiShl => const_uint(a << b as uint),
-              ast::BiShr => const_uint(a >> b as uint),
+              ast::BiShl => try!(const_uint_checked_shl(a,b,e,expr_uint_type)),
+              ast::BiShr => try!(const_uint_checked_shr(a,b,e,expr_uint_type)),
               ast::BiEq => fromb(a == b),
               ast::BiLt => fromb(a < b),
               ast::BiLe => fromb(a <= b),
@@ -455,15 +839,15 @@ pub fn eval_const_expr_partial<'tcx>(tcx: &ty::ctxt<'tcx>,
           // shifts can have any integral type as their rhs
           (const_int(a), const_uint(b)) => {
             match op.node {
-              ast::BiShl => const_int(a << b as uint),
-              ast::BiShr => const_int(a >> b as uint),
+              ast::BiShl => try!(const_int_checked_shl_via_uint(a,b,e,expr_int_type)),
+              ast::BiShr => try!(const_int_checked_shr_via_uint(a,b,e,expr_int_type)),
               _ => signal!(e, InvalidOpForIntUint(op.node)),
             }
           }
           (const_uint(a), const_int(b)) => {
             match op.node {
-              ast::BiShl => const_uint(a << b as uint),
-              ast::BiShr => const_uint(a >> b as uint),
+              ast::BiShl => try!(const_uint_checked_shl_via_int(a,b,e,expr_uint_type)),
+              ast::BiShr => try!(const_uint_checked_shr_via_int(a,b,e,expr_uint_type)),
               _ => signal!(e, InvalidOpForUintInt(op.node)),
             }
           }
@@ -492,10 +876,15 @@ pub fn eval_const_expr_partial<'tcx>(tcx: &ty::ctxt<'tcx>,
                     tcx.sess.span_fatal(target_ty.span,
                                         "target type not found for const cast")
                 });
+
         // Prefer known type to noop, but always have a type hint.
+        //
+        // FIXME (#23833): the type-hint can cause problems,
+        // e.g. `(i8::MAX + 1_i8) as u32` feeds in `u32` as result
+        // type to the sum, and thus no overflow is signaled.
         let base_hint = ty::expr_ty_opt(tcx, &**base).unwrap_or(ety);
         let val = try!(eval_const_expr_partial(tcx, &**base, Some(base_hint)));
-        match cast_const(val, ety) {
+        match cast_const(tcx, val, ety) {
             Ok(val) => val,
             Err(kind) => return Err(ConstEvalErr { span: e.span, kind: kind }),
         }
@@ -515,7 +904,38 @@ pub fn eval_const_expr_partial<'tcx>(tcx: &ty::ctxt<'tcx>,
                           _ => (None, None)
                       }
                   } else {
-                      (lookup_const_by_id(tcx, def_id), None)
+                      (lookup_const_by_id(tcx, def_id, Some(e.id)), None)
+                  }
+              }
+              Some(def::DefAssociatedConst(def_id, provenance)) => {
+                  if ast_util::is_local(def_id) {
+                      match provenance {
+                          def::FromTrait(trait_id) => match tcx.map.find(def_id.node) {
+                              Some(ast_map::NodeTraitItem(ti)) => match ti.node {
+                                  ast::ConstTraitItem(ref ty, _) => {
+                                      let substs = get_substs(e.id);
+                                      (resolve_trait_associated_const(tcx,
+                                                                      ti,
+                                                                      trait_id,
+                                                                      substs),
+                                       Some(&**ty))
+                                  }
+                                  _ => (None, None)
+                              },
+                              _ => (None, None)
+                          },
+                          def::FromImpl(_) => match tcx.map.find(def_id.node) {
+                              Some(ast_map::NodeImplItem(ii)) => match ii.node {
+                                  ast::ConstImplItem(ref ty, ref expr) => {
+                                      (Some(&**expr), Some(&**ty))
+                                  }
+                                  _ => (None, None)
+                              },
+                              _ => (None, None)
+                          },
+                      }
+                  } else {
+                      (lookup_const_by_id(tcx, def_id, Some(e.id)), None)
                   }
               }
               Some(def::DefVariant(enum_def, variant_def, _)) => {
@@ -540,33 +960,52 @@ pub fn eval_const_expr_partial<'tcx>(tcx: &ty::ctxt<'tcx>,
             None => const_int(0)
         }
       }
+      ast::ExprTup(_) => {
+        const_val::Tuple(e.id)
+      }
+      ast::ExprStruct(..) => {
+        const_val::Struct(e.id)
+      }
       ast::ExprTupField(ref base, index) => {
-        // Get the base tuple if it is constant
-        if let Some(&ast::ExprTup(ref fields)) = lookup_const(tcx, &**base).map(|s| &s.node) {
-            // Check that the given index is within bounds and evaluate its value
-            if fields.len() > index.node {
-                return eval_const_expr_partial(tcx, &*fields[index.node], None);
+        if let Ok(c) = eval_const_expr_partial(tcx, base, None) {
+            if let const_val::Tuple(tup_id) = c {
+                if let ast::ExprTup(ref fields) = tcx.map.expect_expr(tup_id).node {
+                    if index.node < fields.len() {
+                        return eval_const_expr_partial(tcx, &fields[index.node], None)
+                    } else {
+                        signal!(e, TupleIndexOutOfBounds);
+                    }
+                } else {
+                    unreachable!()
+                }
             } else {
-                signal!(e, TupleIndexOutOfBounds);
+                signal!(base, ExpectedConstTuple);
             }
+        } else {
+            signal!(base, NonConstPath)
         }
-
-        signal!(e, NonConstStruct);
       }
       ast::ExprField(ref base, field_name) => {
         // Get the base expression if it is a struct and it is constant
-        if let Some(&ast::ExprStruct(_, ref fields, _)) = lookup_const(tcx, &**base)
-                                                            .map(|s| &s.node) {
-            // Check that the given field exists and evaluate it
-            if let Some(f) = fields.iter().find(|f|
-                                           f.ident.node.as_str() == field_name.node.as_str()) {
-                return eval_const_expr_partial(tcx, &*f.expr, None);
+        if let Ok(c) = eval_const_expr_partial(tcx, base, None) {
+            if let const_val::Struct(struct_id) = c {
+                if let ast::ExprStruct(_, ref fields, _) = tcx.map.expect_expr(struct_id).node {
+                    // Check that the given field exists and evaluate it
+                    if let Some(f) = fields.iter().find(|f| f.ident.node.as_str()
+                                                         == field_name.node.as_str()) {
+                        return eval_const_expr_partial(tcx, &*f.expr, None)
+                    } else {
+                        signal!(e, MissingStructField);
+                    }
+                } else {
+                    unreachable!()
+                }
             } else {
-                signal!(e, MissingStructField);
+                signal!(base, ExpectedConstStruct);
             }
+        } else {
+            signal!(base, NonConstPath);
         }
-
-        signal!(e, NonConstStruct);
       }
       _ => signal!(e, MiscCatchAll)
     };
@@ -574,39 +1013,113 @@ pub fn eval_const_expr_partial<'tcx>(tcx: &ty::ctxt<'tcx>,
     Ok(result)
 }
 
-fn cast_const(val: const_val, ty: Ty) -> Result<const_val, ErrKind> {
-    macro_rules! define_casts {
-        ($($ty_pat:pat => (
-            $intermediate_ty:ty,
-            $const_type:ident,
-            $target_ty:ty
-        )),*) => (match ty.sty {
-            $($ty_pat => {
-                match val {
-                    const_bool(b) => Ok($const_type(b as $intermediate_ty as $target_ty)),
-                    const_uint(u) => Ok($const_type(u as $intermediate_ty as $target_ty)),
-                    const_int(i) => Ok($const_type(i as $intermediate_ty as $target_ty)),
-                    const_float(f) => Ok($const_type(f as $intermediate_ty as $target_ty)),
-                    _ => Err(ErrKind::CannotCastTo(stringify!($const_type))),
-                }
-            },)*
-            _ => Err(ErrKind::CannotCast),
-        })
+fn resolve_trait_associated_const<'a, 'tcx: 'a>(tcx: &'a ty::ctxt<'tcx>,
+                                                ti: &'tcx ast::TraitItem,
+                                                trait_id: ast::DefId,
+                                                rcvr_substs: subst::Substs<'tcx>)
+                                                -> Option<&'tcx Expr>
+{
+    let subst::SeparateVecsPerParamSpace {
+        types: rcvr_type,
+        selfs: rcvr_self,
+        fns: _,
+    } = rcvr_substs.types.split();
+    let trait_substs =
+        subst::Substs::erased(subst::VecPerParamSpace::new(rcvr_type,
+                                                           rcvr_self,
+                                                           Vec::new()));
+    let trait_substs = tcx.mk_substs(trait_substs);
+    debug!("resolve_trait_associated_const: trait_substs={}",
+           trait_substs.repr(tcx));
+    let trait_ref = ty::Binder(ty::TraitRef { def_id: trait_id,
+                                              substs: trait_substs });
+
+    ty::populate_implementations_for_trait_if_necessary(tcx, trait_ref.def_id());
+    let infcx = infer::new_infer_ctxt(tcx);
+
+    let param_env = ty::empty_parameter_environment(tcx);
+    let mut selcx = traits::SelectionContext::new(&infcx, &param_env);
+    let obligation = traits::Obligation::new(traits::ObligationCause::dummy(),
+                                             trait_ref.to_poly_trait_predicate());
+    let selection = match selcx.select(&obligation) {
+        Ok(Some(vtable)) => vtable,
+        // Still ambiguous, so give up and let the caller decide whether this
+        // expression is really needed yet. Some associated constant values
+        // can't be evaluated until monomorphization is done in trans.
+        Ok(None) => {
+            return None
+        }
+        Err(e) => {
+            tcx.sess.span_bug(ti.span,
+                              &format!("Encountered error `{}` when trying \
+                                        to select an implementation for \
+                                        constant trait item reference.",
+                                       e.repr(tcx)))
+        }
+    };
+
+    match selection {
+        traits::VtableImpl(ref impl_data) => {
+            match ty::associated_consts(tcx, impl_data.impl_def_id)
+                     .iter().find(|ic| ic.name == ti.ident.name) {
+                Some(ic) => lookup_const_by_id(tcx, ic.def_id, None),
+                None => match ti.node {
+                    ast::ConstTraitItem(_, Some(ref expr)) => Some(&*expr),
+                    _ => None,
+                },
+            }
+        }
+        _ => {
+            tcx.sess.span_bug(
+                ti.span,
+                &format!("resolve_trait_associated_const: unexpected vtable type"))
+        }
+    }
+}
+
+fn cast_const<'tcx>(tcx: &ty::ctxt<'tcx>, val: const_val, ty: Ty) -> CastResult {
+    macro_rules! convert_val {
+        ($intermediate_ty:ty, $const_type:ident, $target_ty:ty) => {
+            match val {
+                const_bool(b) => Ok($const_type(b as u64 as $intermediate_ty as $target_ty)),
+                const_uint(u) => Ok($const_type(u as $intermediate_ty as $target_ty)),
+                const_int(i) => Ok($const_type(i as $intermediate_ty as $target_ty)),
+                const_float(f) => Ok($const_type(f as $intermediate_ty as $target_ty)),
+                _ => Err(ErrKind::CannotCastTo(stringify!($const_type))),
+            }
+        }
     }
 
-    define_casts!{
-        ty::ty_int(ast::TyIs(_)) => (int, const_int, i64),
-        ty::ty_int(ast::TyI8) => (i8, const_int, i64),
-        ty::ty_int(ast::TyI16) => (i16, const_int, i64),
-        ty::ty_int(ast::TyI32) => (i32, const_int, i64),
-        ty::ty_int(ast::TyI64) => (i64, const_int, i64),
-        ty::ty_uint(ast::TyUs(_)) => (uint, const_uint, u64),
-        ty::ty_uint(ast::TyU8) => (u8, const_uint, u64),
-        ty::ty_uint(ast::TyU16) => (u16, const_uint, u64),
-        ty::ty_uint(ast::TyU32) => (u32, const_uint, u64),
-        ty::ty_uint(ast::TyU64) => (u64, const_uint, u64),
-        ty::ty_float(ast::TyF32) => (f32, const_float, f64),
-        ty::ty_float(ast::TyF64) => (f64, const_float, f64)
+    // Issue #23890: If isize/usize, then dispatch to appropriate target representation type
+    match (&ty.sty, tcx.sess.target.int_type, tcx.sess.target.uint_type) {
+        (&ty::ty_int(ast::TyIs), ast::TyI32, _) => return convert_val!(i32, const_int, i64),
+        (&ty::ty_int(ast::TyIs), ast::TyI64, _) => return convert_val!(i64, const_int, i64),
+        (&ty::ty_int(ast::TyIs), _, _) => panic!("unexpected target.int_type"),
+
+        (&ty::ty_uint(ast::TyUs), _, ast::TyU32) => return convert_val!(u32, const_uint, u64),
+        (&ty::ty_uint(ast::TyUs), _, ast::TyU64) => return convert_val!(u64, const_uint, u64),
+        (&ty::ty_uint(ast::TyUs), _, _) => panic!("unexpected target.uint_type"),
+
+        _ => {}
+    }
+
+    match ty.sty {
+        ty::ty_int(ast::TyIs) => unreachable!(),
+        ty::ty_uint(ast::TyUs) => unreachable!(),
+
+        ty::ty_int(ast::TyI8) => convert_val!(i8, const_int, i64),
+        ty::ty_int(ast::TyI16) => convert_val!(i16, const_int, i64),
+        ty::ty_int(ast::TyI32) => convert_val!(i32, const_int, i64),
+        ty::ty_int(ast::TyI64) => convert_val!(i64, const_int, i64),
+
+        ty::ty_uint(ast::TyU8) => convert_val!(u8, const_uint, u64),
+        ty::ty_uint(ast::TyU16) => convert_val!(u16, const_uint, u64),
+        ty::ty_uint(ast::TyU32) => convert_val!(u32, const_uint, u64),
+        ty::ty_uint(ast::TyU64) => convert_val!(u64, const_uint, u64),
+
+        ty::ty_float(ast::TyF32) => convert_val!(f32, const_float, f64),
+        ty::ty_float(ast::TyF64) => convert_val!(f64, const_float, f64),
+        _ => Err(ErrKind::CannotCast),
     }
 }
 
@@ -657,22 +1170,24 @@ pub fn compare_const_vals(a: &const_val, b: &const_val) -> Option<Ordering> {
     })
 }
 
-pub fn compare_lit_exprs<'tcx>(tcx: &ty::ctxt<'tcx>,
-                               a: &Expr,
-                               b: &Expr,
-                               ty_hint: Option<Ty<'tcx>>)
-                               -> Option<Ordering> {
-    let a = match eval_const_expr_partial(tcx, a, ty_hint) {
+pub fn compare_lit_exprs<'tcx, S>(tcx: &ty::ctxt<'tcx>,
+                                  a: &Expr,
+                                  b: &Expr,
+                                  ty_hint: Option<Ty<'tcx>>,
+                                  get_substs: S) -> Option<Ordering>
+        where S: Fn(ast::NodeId) -> subst::Substs<'tcx> {
+    let a = match eval_const_expr_with_substs(tcx, a, ty_hint,
+                                              |id| {get_substs(id)}) {
         Ok(a) => a,
         Err(e) => {
-            tcx.sess.span_err(a.span, e.description().as_slice());
+            tcx.sess.span_err(a.span, &e.description());
             return None;
         }
     };
-    let b = match eval_const_expr_partial(tcx, b, ty_hint) {
+    let b = match eval_const_expr_with_substs(tcx, b, ty_hint, get_substs) {
         Ok(b) => b,
         Err(e) => {
-            tcx.sess.span_err(b.span, e.description().as_slice());
+            tcx.sess.span_err(b.span, &e.description());
             return None;
         }
     };

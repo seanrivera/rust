@@ -8,23 +8,26 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![allow(unknown_features)]
-#![feature(box_syntax)]
 
-use std::thread::Thread;
+#![allow(unknown_features)]
+#![feature(box_syntax, std_misc)]
+
+use std::thread;
 use std::sync::mpsc::channel;
 
 pub fn main() {
-    let (tx, rx) = channel::<uint>();
+    let (tx, rx) = channel::<usize>();
 
-    let x: Box<_> = box 1;
-    let x_in_parent = &(*x) as *const int as uint;
+    let x: Box<isize> = box 1;
+    let x_in_parent = &(*x) as *const isize as usize;
 
-    let _t = Thread::spawn(move || {
-        let x_in_child = &(*x) as *const int as uint;
+    let t = thread::spawn(move || {
+        let x_in_child = &(*x) as *const isize as usize;
         tx.send(x_in_child).unwrap();
     });
 
     let x_in_child = rx.recv().unwrap();
     assert_eq!(x_in_parent, x_in_child);
+
+    t.join();
 }

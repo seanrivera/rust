@@ -8,8 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(core, std_misc)]
-use std::thread::Thread;
+// pretty-expanded FIXME #23616
+
+#![feature(core, std_misc, scoped)]
+use std::thread;
 use std::sync::Mutex;
 
 fn par_for<I, F>(iter: I, f: F)
@@ -19,11 +21,10 @@ fn par_for<I, F>(iter: I, f: F)
 {
     let f = &f;
     let _guards: Vec<_> = iter.map(|elem| {
-        Thread::scoped(move || {
+        thread::scoped(move || {
             f(elem)
         })
     }).collect();
-
 }
 
 fn sum(x: &[i32]) {

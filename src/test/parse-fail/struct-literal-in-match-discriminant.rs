@@ -8,17 +8,18 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+// compile-flags: -Z parse-only
+
 struct Foo {
     x: isize,
 }
 
 fn main() {
     match Foo {
-        x: 3    //~ ERROR expected one of `!`, `=>`, `@`, `if`, or `|`, found `:`
+        x: 3    //~ ERROR expected one of `=>`, `@`, `if`, or `|`, found `:`
     } {
         Foo {
             x: x
         } => {}
     }
 }
-

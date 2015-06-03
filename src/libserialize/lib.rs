@@ -23,28 +23,25 @@ Core encoding and decoding interfaces.
 #![crate_type = "rlib"]
 #![crate_type = "dylib"]
 #![doc(html_logo_url = "http://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-       html_favicon_url = "http://www.rust-lang.org/favicon.ico",
+       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
        html_root_url = "http://doc.rust-lang.org/nightly/",
        html_playground_url = "http://play.rust-lang.org/")]
 
 #![feature(box_syntax)]
 #![feature(collections)]
 #![feature(core)]
-#![feature(int_uint)]
-#![feature(old_io)]
-#![feature(old_path)]
 #![feature(rustc_private)]
 #![feature(staged_api)]
 #![feature(std_misc)]
 #![feature(unicode)]
-#![feature(path)]
+#![feature(str_char)]
 #![cfg_attr(test, feature(test))]
 
 // test harness access
 #[cfg(test)] extern crate test;
 #[macro_use] extern crate log;
 
-extern crate unicode;
+extern crate rustc_unicode;
 extern crate collections;
 
 pub use self::serialize::{Decoder, Encoder, Decodable, Encodable,

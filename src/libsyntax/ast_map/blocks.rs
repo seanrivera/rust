@@ -26,9 +26,8 @@ pub use self::Code::*;
 use abi;
 use ast::{Block, FnDecl, NodeId};
 use ast;
-use ast_map::{Node};
+use ast_map::Node;
 use ast_map;
-use ast_util::PostExpansionMethod;
 use codemap::Span;
 use visit;
 
@@ -41,7 +40,7 @@ use visit;
 ///   - The default implementation for a trait method.
 ///
 /// To construct one, use the `Code::from_node` function.
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub struct FnLikeNode<'a> { node: ast_map::Node<'a> }
 
 /// MaybeFnLike wraps a method that indicates if an object
@@ -65,7 +64,7 @@ impl MaybeFnLike for ast::Item {
 
 impl MaybeFnLike for ast::TraitItem {
     fn is_fn_like(&self) -> bool {
-        match *self { ast::ProvidedMethod(_) => true, _ => false, }
+        match self.node { ast::MethodTraitItem(_, Some(_)) => true, _ => false, }
     }
 }
 
@@ -81,7 +80,7 @@ impl MaybeFnLike for ast::Expr {
 /// Carries either an FnLikeNode or a Block, as these are the two
 /// constructs that correspond to "code" (as in, something from which
 /// we can construct a control-flow graph).
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub enum Code<'a> {
     FnLikeCode(FnLikeNode<'a>),
     BlockCode(&'a Block),
@@ -97,20 +96,10 @@ impl<'a> Code<'a> {
 
     /// Attempts to construct a Code from presumed FnLike or Block node input.
     pub fn from_node(node: Node) -> Option<Code> {
-        fn new(node: Node) -> FnLikeNode { FnLikeNode { node: node } }
-        match node {
-            ast_map::NodeItem(item) if item.is_fn_like() =>
-                Some(FnLikeCode(new(node))),
-            ast_map::NodeTraitItem(tm) if tm.is_fn_like() =>
-                Some(FnLikeCode(new(node))),
-            ast_map::NodeImplItem(_) =>
-                Some(FnLikeCode(new(node))),
-            ast_map::NodeExpr(e) if e.is_fn_like() =>
-                Some(FnLikeCode(new(node))),
-            ast_map::NodeBlock(block) =>
-                Some(BlockCode(block)),
-            _ =>
-                None,
+        if let ast_map::NodeBlock(block) = node {
+            Some(BlockCode(block))
+        } else {
+            FnLikeNode::from_node(node).map(|fn_like| FnLikeCode(fn_like))
         }
     }
 }
@@ -121,7 +110,9 @@ struct ItemFnParts<'a> {
     ident:    ast::Ident,
     decl:     &'a ast::FnDecl,
     unsafety: ast::Unsafety,
+    constness: ast::Constness,
     abi:      abi::Abi,
+    vis:      ast::Visibility,
     generics: &'a ast::Generics,
     body:     &'a Block,
     id:       ast::NodeId,
@@ -144,6 +135,24 @@ impl<'a> ClosureParts<'a> {
 }
 
 impl<'a> FnLikeNode<'a> {
+    /// Attempts to construct a FnLikeNode from presumed FnLike node input.
+    pub fn from_node(node: Node) -> Option<FnLikeNode> {
+        let fn_like = match node {
+            ast_map::NodeItem(item) => item.is_fn_like(),
+            ast_map::NodeTraitItem(tm) => tm.is_fn_like(),
+            ast_map::NodeImplItem(_) => true,
+            ast_map::NodeExpr(e) => e.is_fn_like(),
+            _ => false
+        };
+        if fn_like {
+            Some(FnLikeNode {
+                node: node
+            })
+        } else {
+            None
+        }
+    }
+
     pub fn to_fn_parts(self) -> FnParts<'a> {
         FnParts {
             decl: self.decl(),
@@ -156,63 +165,81 @@ impl<'a> FnLikeNode<'a> {
 
     pub fn body(self) -> &'a Block {
         self.handle(|i: ItemFnParts<'a>|  &*i.body,
-                    |m: &'a ast::Method|  m.pe_body(),
+                    |_, _, _: &'a ast::MethodSig, _, body: &'a ast::Block, _|  body,
                     |c: ClosureParts<'a>| c.body)
     }
 
     pub fn decl(self) -> &'a FnDecl {
         self.handle(|i: ItemFnParts<'a>|  &*i.decl,
-                    |m: &'a ast::Method|  m.pe_fn_decl(),
+                    |_, _, sig: &'a ast::MethodSig, _, _, _|  &sig.decl,
                     |c: ClosureParts<'a>| c.decl)
     }
 
     pub fn span(self) -> Span {
         self.handle(|i: ItemFnParts|     i.span,
-                    |m: &'a ast::Method| m.span,
+                    |_, _, _: &'a ast::MethodSig, _, _, span| span,
                     |c: ClosureParts|    c.span)
     }
 
     pub fn id(self) -> NodeId {
         self.handle(|i: ItemFnParts|     i.id,
-                    |m: &'a ast::Method| m.id,
+                    |id, _, _: &'a ast::MethodSig, _, _, _| id,
                     |c: ClosureParts|    c.id)
     }
 
     pub fn kind(self) -> visit::FnKind<'a> {
         let item = |p: ItemFnParts<'a>| -> visit::FnKind<'a> {
-            visit::FkItemFn(p.ident, p.generics, p.unsafety, p.abi)
+            visit::FkItemFn(p.ident, p.generics, p.unsafety, p.constness, p.abi, p.vis)
         };
         let closure = |_: ClosureParts| {
             visit::FkFnBlock
         };
-        let method = |m: &'a ast::Method| {
-            visit::FkMethod(m.pe_ident(), m.pe_generics(), m)
+        let method = |_, ident, sig: &'a ast::MethodSig, vis, _, _| {
+            visit::FkMethod(ident, sig, vis)
         };
         self.handle(item, method, closure)
     }
 
     fn handle<A, I, M, C>(self, item_fn: I, method: M, closure: C) -> A where
         I: FnOnce(ItemFnParts<'a>) -> A,
-        M: FnOnce(&'a ast::Method) -> A,
+        M: FnOnce(NodeId,
+                  ast::Ident,
+                  &'a ast::MethodSig,
+                  Option<ast::Visibility>,
+                  &'a ast::Block,
+                  Span)
+                  -> A,
         C: FnOnce(ClosureParts<'a>) -> A,
     {
         match self.node {
             ast_map::NodeItem(i) => match i.node {
-                ast::ItemFn(ref decl, unsafety, abi, ref generics, ref block) =>
-                    item_fn(ItemFnParts{
-                        ident: i.ident, decl: &**decl, unsafety: unsafety, body: &**block,
-                        generics: generics, abi: abi, id: i.id, span: i.span
+                ast::ItemFn(ref decl, unsafety, constness, abi, ref generics, ref block) =>
+                    item_fn(ItemFnParts {
+                        id: i.id,
+                        ident: i.ident,
+                        decl: &**decl,
+                        unsafety: unsafety,
+                        body: &**block,
+                        generics: generics,
+                        abi: abi,
+                        vis: i.vis,
+                        constness: constness,
+                        span: i.span
                     }),
                 _ => panic!("item FnLikeNode that is not fn-like"),
             },
-            ast_map::NodeTraitItem(t) => match *t {
-                ast::ProvidedMethod(ref m) => method(&**m),
+            ast_map::NodeTraitItem(ti) => match ti.node {
+                ast::MethodTraitItem(ref sig, Some(ref body)) => {
+                    method(ti.id, ti.ident, sig, None, body, ti.span)
+                }
                 _ => panic!("trait method FnLikeNode that is not fn-like"),
             },
             ast_map::NodeImplItem(ii) => {
-                match *ii {
-                    ast::MethodImplItem(ref m) => method(&**m),
-                    ast::TypeImplItem(_) => {
+                match ii.node {
+                    ast::MethodImplItem(ref sig, ref body) => {
+                        method(ii.id, ii.ident, sig, Some(ii.vis), body, ii.span)
+                    }
+                    _ => {
                         panic!("impl method FnLikeNode that is not fn-like")
                     }
                 }

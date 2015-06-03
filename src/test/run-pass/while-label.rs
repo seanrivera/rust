@@ -9,6 +9,7 @@
 // except according to those terms.
 
 
+
 pub fn main() {
     let mut i = 100;
     'w: while 1 + 1 == 2 {

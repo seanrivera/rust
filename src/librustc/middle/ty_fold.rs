@@ -39,6 +39,8 @@ use middle::subst::VecPerParamSpace;
 use middle::ty::{self, Ty};
 use middle::traits;
 use std::rc::Rc;
+use syntax::abi;
+use syntax::ast;
 use syntax::owned_slice::OwnedSlice;
 use util::ppaux::Repr;
 
@@ -47,7 +49,7 @@ use util::ppaux::Repr;
 
 /// The TypeFoldable trait is implemented for every type that can be folded.
 /// Basically, every type that has a corresponding method in TypeFolder.
-pub trait TypeFoldable<'tcx> {
+pub trait TypeFoldable<'tcx>: Repr<'tcx> + Clone {
     fn fold_with<F: TypeFolder<'tcx>>(&self, folder: &mut F) -> Self;
 }
 
@@ -149,11 +151,19 @@ pub trait TypeFolder<'tcx> : Sized {
 // can easily refactor the folding into the TypeFolder trait as
 // needed.
 
-impl<'tcx> TypeFoldable<'tcx> for () {
-    fn fold_with<F:TypeFolder<'tcx>>(&self, _: &mut F) -> () {
-        ()
+macro_rules! CopyImpls {
+    ($($ty:ty),+) => {
+        $(
+            impl<'tcx> TypeFoldable<'tcx> for $ty {
+                fn fold_with<F:TypeFolder<'tcx>>(&self, _: &mut F) -> $ty {
+                    *self
+                }
+            }
+        )+
     }
 }
+
+CopyImpls! { (), ast::Unsafety, abi::Abi }
 
 impl<'tcx, T:TypeFoldable<'tcx>, U:TypeFoldable<'tcx>> TypeFoldable<'tcx> for (T, U) {
     fn fold_with<F:TypeFolder<'tcx>>(&self, folder: &mut F) -> (T, U) {
@@ -326,27 +336,6 @@ impl<'tcx> TypeFoldable<'tcx> for ty::MethodOrigin<'tcx> {
     }
 }
 
-impl<'tcx> TypeFoldable<'tcx> for ty::vtable_origin<'tcx> {
-    fn fold_with<F: TypeFolder<'tcx>>(&self, folder: &mut F) -> ty::vtable_origin<'tcx> {
-        match *self {
-            ty::vtable_static(def_id, ref substs, ref origins) => {
-                let r_substs = substs.fold_with(folder);
-                let r_origins = origins.fold_with(folder);
-                ty::vtable_static(def_id, r_substs, r_origins)
-            }
-            ty::vtable_param(n, b) => {
-                ty::vtable_param(n, b)
-            }
-            ty::vtable_closure(def_id) => {
-                ty::vtable_closure(def_id)
-            }
-            ty::vtable_error => {
-                ty::vtable_error
-            }
-        }
-    }
-}
-
 impl<'tcx> TypeFoldable<'tcx> for ty::BuiltinBounds {
     fn fold_with<F: TypeFolder<'tcx>>(&self, _folder: &mut F) -> ty::BuiltinBounds {
         *self
@@ -463,23 +452,6 @@ impl<'tcx> TypeFoldable<'tcx> for ty::InstantiatedPredicates<'tcx> {
     fn fold_with<F: TypeFolder<'tcx>>(&self, folder: &mut F) -> ty::InstantiatedPredicates<'tcx> {
         ty::InstantiatedPredicates {
             predicates: self.predicates.fold_with(folder),
-        }
-    }
-}
-
-impl<'tcx> TypeFoldable<'tcx> for ty::UnsizeKind<'tcx> {
-    fn fold_with<F: TypeFolder<'tcx>>(&self, folder: &mut F) -> ty::UnsizeKind<'tcx> {
-        match *self {
-            ty::UnsizeLength(len) => ty::UnsizeLength(len),
-            ty::UnsizeStruct(box ref k, n) => ty::UnsizeStruct(box k.fold_with(folder), n),
-            ty::UnsizeVtable(ty::TyTrait{ref principal, ref bounds}, self_ty) => {
-                ty::UnsizeVtable(
-                    ty::TyTrait {
-                        principal: principal.fold_with(folder),
-                        bounds: bounds.fold_with(folder),
-                    },
-                    self_ty.fold_with(folder))
-            }
         }
     }
 }
@@ -757,16 +729,11 @@ pub fn super_fold_autoref<'tcx, T: TypeFolder<'tcx>>(this: &mut T,
                                                      -> ty::AutoRef<'tcx>
 {
     match *autoref {
-        ty::AutoPtr(r, m, None) => ty::AutoPtr(this.fold_region(r), m, None),
-        ty::AutoPtr(r, m, Some(ref a)) => {
-            ty::AutoPtr(this.fold_region(r), m, Some(box super_fold_autoref(this, &**a)))
+        ty::AutoPtr(r, m) => {
+            let r = r.fold_with(this);
+            ty::AutoPtr(this.tcx().mk_region(r), m)
         }
-        ty::AutoUnsafe(m, None) => ty::AutoUnsafe(m, None),
-        ty::AutoUnsafe(m, Some(ref a)) => {
-            ty::AutoUnsafe(m, Some(box super_fold_autoref(this, &**a)))
-        }
-        ty::AutoUnsize(ref k) => ty::AutoUnsize(k.fold_with(this)),
-        ty::AutoUnsizeUniq(ref k) => ty::AutoUnsizeUniq(k.fold_with(this)),
+        ty::AutoUnsafe(m) => ty::AutoUnsafe(m)
     }
 }
 

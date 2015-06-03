@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 fn one() -> i32 { 1 }
 
 // Make sure the vec![...] macro doesn't introduce hidden rvalue

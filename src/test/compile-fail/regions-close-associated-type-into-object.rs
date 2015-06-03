@@ -12,9 +12,7 @@
 
 // FIXME (#22405): Replace `Box::new` with `box` here when/if possible.
 
-use std::marker::MarkerTrait;
-
-trait X : MarkerTrait {}
+trait X {}
 
 trait Iter {
     type Item: X;
@@ -84,4 +82,3 @@ fn meh1<'a, T: Iter>(v: &'a T) -> Box<X+'a>
 }
 
 fn main() {}
-

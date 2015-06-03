@@ -8,7 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::old_io;
+// pretty-expanded FIXME #23616
+
 trait B {
     fn f(&self);
 }
@@ -19,7 +20,7 @@ trait T : B {
 struct A;
 
 impl<U: T> B for U {
-    fn f(&self) { old_io::println("Hey, I'm a T!"); }
+    fn f(&self) { }
 }
 
 impl T for A {

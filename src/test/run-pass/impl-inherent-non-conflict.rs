@@ -12,6 +12,7 @@
 // with the same name, which can be called on values that have a
 // precise enough type to allow distinguishing between the methods.
 
+
 struct Foo<T>(T);
 
 impl Foo<usize> {

@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 fn main() {
     let value = Some(1);
     assert_eq!(match value {

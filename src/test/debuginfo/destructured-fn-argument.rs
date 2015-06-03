@@ -33,7 +33,7 @@
 // gdb-command:print a
 // gdb-check:$6 = 5
 // gdb-command:print b
-// gdb-check:$7 = {6, 7}
+// gdb-check:$7 = {__0 = 6, __1 = 7}
 // gdb-command:continue
 
 // gdb-command:print h
@@ -95,11 +95,11 @@
 // gdb-command:continue
 
 // gdb-command:print aa
-// gdb-check:$30 = {34, 35}
+// gdb-check:$30 = {__0 = 34, __1 = 35}
 // gdb-command:continue
 
 // gdb-command:print bb
-// gdb-check:$31 = {36, 37}
+// gdb-check:$31 = {__0 = 36, __1 = 37}
 // gdb-command:continue
 
 // gdb-command:print cc
@@ -107,17 +107,17 @@
 // gdb-command:continue
 
 // gdb-command:print dd
-// gdb-check:$33 = {40, 41, 42}
+// gdb-check:$33 = {__0 = 40, __1 = 41, __2 = 42}
 // gdb-command:continue
 
 // gdb-command:print *ee
-// gdb-check:$34 = {43, 44, 45}
+// gdb-check:$34 = {__0 = 43, __1 = 44, __2 = 45}
 // gdb-command:continue
 
 // gdb-command:print *ff
 // gdb-check:$35 = 46
 // gdb-command:print gg
-// gdb-check:$36 = {47, 48}
+// gdb-check:$36 = {__0 = 47, __1 = 48}
 // gdb-command:continue
 
 // gdb-command:print *hh
@@ -325,18 +325,18 @@ enum Univariant {
     Unit(i32)
 }
 
-struct TupleStruct (f64, int);
+struct TupleStruct (f64, isize);
 
 
-fn simple_tuple((a, b): (int, bool)) {
+fn simple_tuple((a, b): (isize, bool)) {
     zzz(); // #break
 }
 
-fn nested_tuple((a, (b, c)): (int, (u16, u16))) {
+fn nested_tuple((a, (b, c)): (isize, (u16, u16))) {
     zzz(); // #break
 }
 
-fn destructure_only_first_level((a, b): (int, (u32, u32))) {
+fn destructure_only_first_level((a, b): (isize, (u32, u32))) {
     zzz(); // #break
 }
 
@@ -348,7 +348,7 @@ fn struct_pattern(Struct { a: k, b: l }: Struct) {
     zzz(); // #break
 }
 
-fn ignored_tuple_element((m, _, n): (int, u16, i32)) {
+fn ignored_tuple_element((m, _, n): (isize, u16, i32)) {
     zzz(); // #break
 }
 
@@ -370,27 +370,27 @@ fn complex_nesting(((u,   v  ), ((w,   (x,   Struct { a: y, b: z})), Struct { a:
     zzz(); // #break
 }
 
-fn managed_box(&aa: &(int, int)) {
+fn managed_box(&aa: &(isize, isize)) {
     zzz(); // #break
 }
 
-fn borrowed_pointer(&bb: &(int, int)) {
+fn borrowed_pointer(&bb: &(isize, isize)) {
     zzz(); // #break
 }
 
-fn contained_borrowed_pointer((&cc, _): (&int, int)) {
+fn contained_borrowed_pointer((&cc, _): (&isize, isize)) {
     zzz(); // #break
 }
 
-fn unique_pointer(box dd: Box<(int, int, int)>) {
+fn unique_pointer(box dd: Box<(isize, isize, isize)>) {
     zzz(); // #break
 }
 
-fn ref_binding(ref ee: (int, int, int)) {
+fn ref_binding(ref ee: (isize, isize, isize)) {
     zzz(); // #break
 }
 
-fn ref_binding_in_tuple((ref ff, gg): (int, (int, int))) {
+fn ref_binding_in_tuple((ref ff, gg): (isize, (isize, isize))) {
     zzz(); // #break
 }
 
@@ -414,7 +414,7 @@ fn tuple_struct_with_ref_binding(TupleStruct(mm, ref nn): TupleStruct) {
     zzz(); // #break
 }
 
-fn multiple_arguments((oo, pp): (int, int), qq : int) {
+fn multiple_arguments((oo, pp): (isize, isize), qq : isize) {
     zzz(); // #break
 }
 
@@ -442,7 +442,7 @@ fn main() {
     tuple_struct_with_ref_binding(TupleStruct(55.0, 56));
     multiple_arguments((57, 58), 59);
 
-    fn nested_function(rr: int, (ss, tt): (int, int)) {
+    fn nested_function(rr: isize, (ss, tt): (isize, isize)) {
         zzz(); // #break
     }
 

@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 /*
   Make sure we can spawn tasks that take different types of
   parameters. This is based on a test case for #520 provided by Rob
@@ -17,14 +18,14 @@
 use std::thread;
 use std::sync::mpsc::{channel, Sender};
 
-type ctx = Sender<int>;
+type ctx = Sender<isize>;
 
 fn iotask(_tx: &ctx, ip: String) {
     assert_eq!(ip, "localhost".to_string());
 }
 
 pub fn main() {
-    let (tx, _rx) = channel::<int>();
+    let (tx, _rx) = channel::<isize>();
     let t = thread::spawn(move|| iotask(&tx, "localhost".to_string()) );
     t.join().ok().unwrap();
 }

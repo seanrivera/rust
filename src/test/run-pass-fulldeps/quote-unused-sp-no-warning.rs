@@ -8,10 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// ignore-android
+// ignore-cross-compile
 // ignore-pretty: does not work well with `--test`
 
-#![feature(quote)]
+#![feature(quote, rustc_private)]
 #![deny(unused_variable)]
 
 extern crate syntax;

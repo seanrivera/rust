@@ -10,6 +10,7 @@
 
 
 
+
 pub fn main() {
     let a = 1.5e6f64;
     let b = 1.5E6f64;

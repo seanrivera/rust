@@ -10,7 +10,7 @@
 
 //! Feature gating
 //!
-//! This modules implements the gating necessary for preventing certain compiler
+//! This module implements the gating necessary for preventing certain compiler
 //! features from being used by default. This module will crawl a pre-expanded
 //! AST to ensure that there are no features which are used that are not
 //! enabled.
@@ -25,7 +25,7 @@
 use self::Status::*;
 use self::AttributeType::*;
 
-use abi::RustIntrinsic;
+use abi::Abi;
 use ast::NodeId;
 use ast;
 use attr;
@@ -54,12 +54,10 @@ const KNOWN_FEATURES: &'static [(&'static str, &'static str, Status)] = &[
     ("non_ascii_idents", "1.0.0", Active),
     ("thread_local", "1.0.0", Active),
     ("link_args", "1.0.0", Active),
-    ("phase", "1.0.0", Removed),
     ("plugin_registrar", "1.0.0", Active),
     ("log_syntax", "1.0.0", Active),
     ("trace_macros", "1.0.0", Active),
     ("concat_idents", "1.0.0", Active),
-    ("unsafe_destructor", "1.0.0", Active),
     ("intrinsics", "1.0.0", Active),
     ("lang_items", "1.0.0", Active),
 
@@ -74,6 +72,7 @@ const KNOWN_FEATURES: &'static [(&'static str, &'static str, Status)] = &[
 
     ("rustc_diagnostic_macros", "1.0.0", Active),
     ("unboxed_closures", "1.0.0", Active),
+    ("reflect", "1.0.0", Active),
     ("import_shadowing", "1.0.0", Removed),
     ("advanced_slice_patterns", "1.0.0", Active),
     ("tuple_indexing", "1.0.0", Accepted),
@@ -83,6 +82,7 @@ const KNOWN_FEATURES: &'static [(&'static str, &'static str, Status)] = &[
     ("box_syntax", "1.0.0", Active),
     ("on_unimplemented", "1.0.0", Active),
     ("simd_ffi", "1.0.0", Active),
+    ("allocator", "1.0.0", Active),
 
     ("if_let", "1.0.0", Accepted),
     ("while_let", "1.0.0", Accepted),
@@ -91,6 +91,8 @@ const KNOWN_FEATURES: &'static [(&'static str, &'static str, Status)] = &[
     ("start", "1.0.0", Active),
     ("main", "1.0.0", Active),
 
+    ("fundamental", "1.0.0", Active),
+
     // A temporary feature gate used to enable parser extensions needed
     // to bootstrap fix for #5723.
     ("issue_5723_bootstrap", "1.0.0", Accepted),
@@ -98,17 +100,8 @@ const KNOWN_FEATURES: &'static [(&'static str, &'static str, Status)] = &[
     // A way to temporarily opt out of opt in copy. This will *never* be accepted.
     ("opt_out_copy", "1.0.0", Removed),
 
-    // A way to temporarily opt out of the new orphan rules. This will *never* be accepted.
-    ("old_orphan_check", "1.0.0", Deprecated),
-
-    // A way to temporarily opt out of the new impl rules. This will *never* be accepted.
-    ("old_impl_check", "1.0.0", Deprecated),
-
     // OIBIT specific features
     ("optin_builtin_traits", "1.0.0", Active),
-
-    // int and uint are now deprecated
-    ("int_uint", "1.0.0", Active),
 
     // macro reexport needs more discussion and stabilization
     ("macro_reexport", "1.0.0", Active),
@@ -137,6 +130,10 @@ const KNOWN_FEATURES: &'static [(&'static str, &'static str, Status)] = &[
     // Allows the use of custom attributes; RFC 572
     ("custom_attribute", "1.0.0", Active),
 
+    // Allows the use of #[derive(Anything)] as sugar for
+    // #[derive_Anything].
+    ("custom_derive", "1.0.0", Active),
+
     // Allows the use of rustc_* attributes; RFC 572
     ("rustc_attrs", "1.0.0", Active),
 
@@ -148,6 +145,19 @@ const KNOWN_FEATURES: &'static [(&'static str, &'static str, Status)] = &[
     // below (it has to be checked before expansion possibly makes
     // macros disappear).
     ("allow_internal_unstable", "1.0.0", Active),
+
+    // #23121. Array patterns have some hazards yet.
+    ("slice_patterns", "1.0.0", Active),
+
+    // Allows use of unary negate on unsigned integers, e.g. -e for e: u8
+    ("negate_unsigned", "1.0.0", Active),
+
+    // Allows the definition of associated constants in `trait` or `impl`
+    // blocks.
+    ("associated_consts", "1.0.0", Active),
+
+    // Allows the definition of `const fn` functions.
+    ("const_fn", "1.2.0", Active),
 ];
 // (changing above list without updating src/doc/reference.md makes @cmr sad)
 
@@ -155,10 +165,6 @@ enum Status {
     /// Represents an active feature that is currently being implemented or
     /// currently being considered for addition/removal.
     Active,
-
-    /// Represents a feature gate that is temporarily enabling deprecated behavior.
-    /// This gate will never be accepted.
-    Deprecated,
 
     /// Represents a feature which has since been removed (it was once Active)
     Removed,
@@ -191,19 +197,16 @@ pub const KNOWN_ATTRIBUTES: &'static [(&'static str, AttributeType)] = &[
     ("repr", Normal),
     ("path", Normal),
     ("abi", Normal),
-    ("unsafe_destructor", Normal),
     ("automatically_derived", Normal),
     ("no_mangle", Normal),
     ("no_link", Normal),
     ("derive", Normal),
-    ("should_fail", Normal),
     ("should_panic", Normal),
     ("ignore", Normal),
     ("no_implicit_prelude", Normal),
     ("reexport_test_harness_main", Normal),
     ("link_args", Normal),
     ("macro_escape", Normal),
-
 
     ("staged_api", Gated("staged_api",
                          "staged_api is for use by rustc only")),
@@ -225,6 +228,8 @@ pub const KNOWN_ATTRIBUTES: &'static [(&'static str, AttributeType)] = &[
     ("rustc_on_unimplemented", Gated("on_unimplemented",
                                      "the `#[rustc_on_unimplemented]` attribute \
                                       is an experimental feature")),
+    ("allocator", Gated("allocator",
+                        "the `#[allocator]` attribute is an experimental feature")),
     ("rustc_variance", Gated("rustc_attrs",
                              "the `#[rustc_variance]` attribute \
                               is an experimental feature")),
@@ -234,6 +239,13 @@ pub const KNOWN_ATTRIBUTES: &'static [(&'static str, AttributeType)] = &[
     ("rustc_move_fragments", Gated("rustc_attrs",
                                    "the `#[rustc_move_fragments]` attribute \
                                     is an experimental feature")),
+
+    ("allow_internal_unstable", Gated("allow_internal_unstable",
+                                      EXPLAIN_ALLOW_INTERNAL_UNSTABLE)),
+
+    ("fundamental", Gated("fundamental",
+                          "the `#[fundamental]` attribute \
+                           is an experimental feature")),
 
     // FIXME: #14408 whitelist docs since rustdoc looks at them
     ("doc", Whitelisted),
@@ -248,9 +260,7 @@ pub const KNOWN_ATTRIBUTES: &'static [(&'static str, AttributeType)] = &[
     ("link_section", Whitelisted),
     ("no_builtins", Whitelisted),
     ("no_mangle", Whitelisted),
-    ("no_split_stack", Whitelisted),
     ("no_stack_check", Whitelisted),
-    ("packed", Whitelisted),
     ("static_assert", Gated("static_assert",
                             "`#[static_assert]` is an experimental feature, and has a poor API")),
     ("no_debug", Whitelisted),
@@ -269,10 +279,10 @@ pub const KNOWN_ATTRIBUTES: &'static [(&'static str, AttributeType)] = &[
     ("stable", Whitelisted),
     ("unstable", Whitelisted),
 
-    // FIXME: #19470 this shouldn't be needed forever
-    ("old_orphan_check", Whitelisted),
-    ("old_impl_check", Whitelisted),
-    ("rustc_paren_sugar", Whitelisted), // FIXME: #18101 temporary unboxed closure hack
+    ("rustc_paren_sugar", Gated("unboxed_closures",
+                                "unboxed_closures are still evolving")),
+    ("rustc_reflect_like", Gated("reflect",
+                                 "defining reflective traits is still evolving")),
 
     // Crate level attributes
     ("crate_name", CrateLevel),
@@ -285,7 +295,7 @@ pub const KNOWN_ATTRIBUTES: &'static [(&'static str, AttributeType)] = &[
     ("recursion_limit", CrateLevel),
 ];
 
-#[derive(PartialEq, Copy, Debug)]
+#[derive(PartialEq, Copy, Clone, Debug)]
 pub enum AttributeType {
     /// Normal, builtin attribute that is consumed
     /// by the compiler before the unused_attribute check
@@ -315,13 +325,15 @@ pub struct Features {
     pub allow_concat_idents: bool,
     pub allow_trace_macros: bool,
     pub allow_internal_unstable: bool,
-    pub old_orphan_check: bool,
+    pub allow_custom_derive: bool,
     pub simd_ffi: bool,
     pub unmarked_api: bool,
+    pub negate_unsigned: bool,
     /// spans of #![feature] attrs for stable language features. for error reporting
     pub declared_stable_lang_features: Vec<Span>,
     /// #![feature] attrs for non-language (library) features
-    pub declared_lib_features: Vec<(InternedString, Span)>
+    pub declared_lib_features: Vec<(InternedString, Span)>,
+    pub const_fn: bool,
 }
 
 impl Features {
@@ -336,11 +348,13 @@ impl Features {
             allow_concat_idents: false,
             allow_trace_macros: false,
             allow_internal_unstable: false,
-            old_orphan_check: false,
+            allow_custom_derive: false,
             simd_ffi: false,
             unmarked_api: false,
+            negate_unsigned: false,
             declared_stable_lang_features: Vec::new(),
-            declared_lib_features: Vec::new()
+            declared_lib_features: Vec::new(),
+            const_fn: false,
         }
     }
 }
@@ -349,7 +363,7 @@ struct Context<'a> {
     features: Vec<&'static str>,
     span_handler: &'a SpanHandler,
     cm: &'a CodeMap,
-    do_warnings: bool,
+    plugin_attributes: &'a [(String, AttributeType)],
 }
 
 impl<'a> Context<'a> {
@@ -360,19 +374,62 @@ impl<'a> Context<'a> {
             emit_feature_err(self.span_handler, feature, span, explain);
         }
     }
-
-    fn warn_feature(&self, feature: &str, span: Span, explain: &str) {
-        if !self.has_feature(feature) && self.do_warnings {
-            emit_feature_warn(self.span_handler, feature, span, explain);
-        }
-    }
     fn has_feature(&self, feature: &str) -> bool {
         self.features.iter().any(|&n| n == feature)
+    }
+
+    fn check_attribute(&self, attr: &ast::Attribute, is_macro: bool) {
+        debug!("check_attribute(attr = {:?})", attr);
+        let name = &*attr.name();
+        for &(n, ty) in KNOWN_ATTRIBUTES {
+            if n == name {
+                if let Gated(gate, desc) = ty {
+                    self.gate_feature(gate, attr.span, desc);
+                }
+                debug!("check_attribute: {:?} is known, {:?}", name, ty);
+                return;
+            }
+        }
+        for &(ref n, ref ty) in self.plugin_attributes.iter() {
+            if &*n == name {
+                // Plugins can't gate attributes, so we don't check for it
+                // unlike the code above; we only use this loop to
+                // short-circuit to avoid the checks below
+                debug!("check_attribute: {:?} is registered by a plugin, {:?}", name, ty);
+                return;
+            }
+        }
+        if name.starts_with("rustc_") {
+            self.gate_feature("rustc_attrs", attr.span,
+                              "unless otherwise specified, attributes \
+                               with the prefix `rustc_` \
+                               are reserved for internal compiler diagnostics");
+        } else if name.starts_with("derive_") {
+            self.gate_feature("custom_derive", attr.span,
+                              "attributes of the form `#[derive_*]` are reserved \
+                               for the compiler");
+        } else {
+            // Only run the custom attribute lint during regular
+            // feature gate checking. Macro gating runs
+            // before the plugin attributes are registered
+            // so we skip this then
+            if !is_macro {
+                self.gate_feature("custom_attribute", attr.span,
+                           &format!("The attribute `{}` is currently \
+                                    unknown to the compiler and \
+                                    may have meaning \
+                                    added to it in the future",
+                                    name));
+            }
+        }
     }
 }
 
 pub fn emit_feature_err(diag: &SpanHandler, feature: &str, span: Span, explain: &str) {
     diag.span_err(span, explain);
+
+    // #23973: do not suggest `#![feature(...)]` if we are in beta/stable
+    if option_env!("CFG_DISABLE_UNSTABLE_FEATURES").is_some() { return; }
     diag.fileline_help(span, &format!("add #![feature({})] to the \
                                    crate attributes to enable",
                                   feature));
@@ -380,6 +437,9 @@ pub fn emit_feature_err(diag: &SpanHandler, feature: &str, span: Span, explain: 
 
 pub fn emit_feature_warn(diag: &SpanHandler, feature: &str, span: Span, explain: &str) {
     diag.span_warn(span, explain);
+
+    // #23973: do not suggest `#![feature(...)]` if we are in beta/stable
+    if option_env!("CFG_DISABLE_UNSTABLE_FEATURES").is_some() { return; }
     if diag.handler.can_emit_warnings {
         diag.fileline_help(span, &format!("add #![feature({})] to the \
                                        crate attributes to silence this warning",
@@ -400,6 +460,9 @@ pub const EXPLAIN_TRACE_MACROS: &'static str =
     "`trace_macros` is not stable enough for use and is subject to change";
 pub const EXPLAIN_ALLOW_INTERNAL_UNSTABLE: &'static str =
     "allow_internal_unstable side-steps feature gating and stability checks";
+
+pub const EXPLAIN_CUSTOM_DERIVE: &'static str =
+    "`#[derive]` for custom traits is not stable enough for use and is subject to change";
 
 struct MacroVisitor<'a> {
     context: &'a Context<'a>
@@ -436,10 +499,7 @@ impl<'a, 'v> Visitor<'v> for MacroVisitor<'a> {
     }
 
     fn visit_attribute(&mut self, attr: &'v ast::Attribute) {
-        if attr.name() == "allow_internal_unstable" {
-            self.context.gate_feature("allow_internal_unstable", attr.span,
-                                      EXPLAIN_ALLOW_INTERNAL_UNSTABLE)
-        }
+        self.context.check_attribute(attr, true);
     }
 }
 
@@ -456,6 +516,12 @@ impl<'a> PostExpansionVisitor<'a> {
 }
 
 impl<'a, 'v> Visitor<'v> for PostExpansionVisitor<'a> {
+    fn visit_attribute(&mut self, attr: &ast::Attribute) {
+        if !self.context.cm.span_allows_unstable(attr.span) {
+            self.context.check_attribute(attr, false);
+        }
+    }
+
     fn visit_name(&mut self, sp: Span, name: ast::Name) {
         if !token::get_name(name).is_ascii() {
             self.gate_feature("non_ascii_idents", sp,
@@ -480,7 +546,7 @@ impl<'a, 'v> Visitor<'v> for PostExpansionVisitor<'a> {
                                        across platforms, it is recommended to \
                                        use `#[link(name = \"foo\")]` instead")
                 }
-                if foreign_module.abi == RustIntrinsic {
+                if foreign_module.abi == Abi::RustIntrinsic {
                     self.gate_feature("intrinsics",
                                       i.span,
                                       "intrinsics are subject to change")
@@ -513,6 +579,13 @@ impl<'a, 'v> Visitor<'v> for PostExpansionVisitor<'a> {
                 }
             }
 
+            ast::ItemDefaultImpl(..) => {
+                self.gate_feature("optin_builtin_traits",
+                                  i.span,
+                                  "default trait implementations are experimental \
+                                   and possibly buggy");
+            }
+
             ast::ItemImpl(_, polarity, _, _, _, _) => {
                 match polarity {
                     ast::ImplPolarity::Negative => {
@@ -523,30 +596,6 @@ impl<'a, 'v> Visitor<'v> for PostExpansionVisitor<'a> {
                     },
                     _ => {}
                 }
-
-                if attr::contains_name(&i.attrs,
-                                       "unsafe_destructor") {
-                    self.gate_feature("unsafe_destructor",
-                                      i.span,
-                                      "`#[unsafe_destructor]` allows too \
-                                       many unsafe patterns and may be \
-                                       removed in the future");
-                }
-
-                if attr::contains_name(&i.attrs[..],
-                                       "old_orphan_check") {
-                    self.gate_feature(
-                        "old_orphan_check",
-                        i.span,
-                        "the new orphan check rules will eventually be strictly enforced");
-                }
-
-                if attr::contains_name(&i.attrs[..],
-                                       "old_impl_check") {
-                    self.gate_feature("old_impl_check",
-                                      i.span,
-                                      "`#[old_impl_check]` will be removed in the future");
-                }
             }
 
             _ => {}
@@ -556,12 +605,6 @@ impl<'a, 'v> Visitor<'v> for PostExpansionVisitor<'a> {
     }
 
     fn visit_foreign_item(&mut self, i: &ast::ForeignItem) {
-        if attr::contains_name(&i.attrs, "linkage") {
-            self.gate_feature("linkage", i.span,
-                              "the `linkage` attribute is experimental \
-                               and not portable across platforms")
-        }
-
         let links_to_llvm = match attr::first_attr_value_str_by_name(&i.attrs,
                                                                      "link_name") {
             Some(val) => val.starts_with("llvm."),
@@ -575,35 +618,6 @@ impl<'a, 'v> Visitor<'v> for PostExpansionVisitor<'a> {
         visit::walk_foreign_item(self, i)
     }
 
-    fn visit_ty(&mut self, t: &ast::Ty) {
-        match t.node {
-            ast::TyPath(None, ref p) => {
-                match &*p.segments {
-
-                    [ast::PathSegment { identifier, .. }] => {
-                        let name = token::get_ident(identifier);
-                        let msg = if name == "int" {
-                            Some("the `int` type is deprecated; \
-                                  use `isize` or a fixed-sized integer")
-                        } else if name == "uint" {
-                            Some("the `uint` type is deprecated; \
-                                  use `usize` or a fixed-sized integer")
-                        } else {
-                            None
-                        };
-
-                        if let Some(msg) = msg {
-                            self.context.warn_feature("int_uint", t.span, msg)
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
-        }
-        visit::walk_ty(self, t);
-    }
-
     fn visit_expr(&mut self, e: &ast::Expr) {
         match e.node {
             ast::ExprBox(..) | ast::ExprUnary(ast::UnOp::UnUniq, _) => {
@@ -612,55 +626,9 @@ impl<'a, 'v> Visitor<'v> for PostExpansionVisitor<'a> {
                                   "box expression syntax is experimental; \
                                    you can call `Box::new` instead.");
             }
-            ast::ExprLit(ref lit) => {
-                match lit.node {
-                    ast::LitInt(_, ty) => {
-                        let msg = if let ast::SignedIntLit(ast::TyIs(true), _) = ty {
-                            Some("the `i` and `is` suffixes on integers are deprecated; \
-                                  use `isize` or one of the fixed-sized suffixes")
-                        } else if let ast::UnsignedIntLit(ast::TyUs(true)) = ty {
-                            Some("the `u` and `us` suffixes on integers are deprecated; \
-                                  use `usize` or one of the fixed-sized suffixes")
-                        } else {
-                            None
-                        };
-                        if let Some(msg) = msg {
-                            self.context.warn_feature("int_uint", e.span, msg);
-                        }
-                    }
-                    _ => {}
-                }
-            }
             _ => {}
         }
         visit::walk_expr(self, e);
-    }
-
-    fn visit_attribute(&mut self, attr: &ast::Attribute) {
-        debug!("visit_attribute(attr = {:?})", attr);
-        let name = &*attr.name();
-        for &(n, ty) in KNOWN_ATTRIBUTES {
-            if n == name {
-                if let Gated(gate, desc) = ty {
-                    self.gate_feature(gate, attr.span, desc);
-                }
-                debug!("visit_attribute: {:?} is known, {:?}", name, ty);
-                return;
-            }
-        }
-        if name.starts_with("rustc_") {
-            self.gate_feature("rustc_attrs", attr.span,
-                              "unless otherwise specified, attributes \
-                               with the prefix `rustc_` \
-                               are reserved for internal compiler diagnostics");
-        } else {
-            self.gate_feature("custom_attribute", attr.span,
-                       format!("The attribute `{}` is currently \
-                                unknown to the the compiler and \
-                                may have meaning \
-                                added to it in the future",
-                                name).as_slice());
-        }
     }
 
     fn visit_pat(&mut self, pattern: &ast::Pat) {
@@ -670,7 +638,12 @@ impl<'a, 'v> Visitor<'v> for PostExpansionVisitor<'a> {
                                   pattern.span,
                                   "multiple-element slice matches anywhere \
                                    but at the end of a slice (e.g. \
-                                   `[0, ..xs, 0]` are experimental")
+                                   `[0, ..xs, 0]`) are experimental")
+            }
+            ast::PatVec(..) => {
+                self.gate_feature("slice_patterns",
+                                  pattern.span,
+                                  "slice pattern syntax is experimental");
             }
             ast::PatBox(..) => {
                 self.gate_feature("box_patterns",
@@ -688,20 +661,74 @@ impl<'a, 'v> Visitor<'v> for PostExpansionVisitor<'a> {
                 block: &'v ast::Block,
                 span: Span,
                 _node_id: NodeId) {
+        // check for const fn declarations
         match fn_kind {
-            visit::FkItemFn(_, _, _, abi) if abi == RustIntrinsic => {
+            visit::FkItemFn(_, _, _, ast::Constness::Const, _, _) => {
+                self.gate_feature("const_fn", span, "const fn is unstable");
+            }
+            _ => {
+                // stability of const fn methods are covered in
+                // visit_trait_item and visit_impl_item below; this is
+                // because default methods don't pass through this
+                // point.
+            }
+        }
+
+        match fn_kind {
+            visit::FkItemFn(_, _, _, _, abi, _) if abi == Abi::RustIntrinsic => {
                 self.gate_feature("intrinsics",
                                   span,
                                   "intrinsics are subject to change")
+            }
+            visit::FkItemFn(_, _, _, _, abi, _) |
+            visit::FkMethod(_, &ast::MethodSig { abi, .. }, _) if abi == Abi::RustCall => {
+                self.gate_feature("unboxed_closures",
+                                  span,
+                                  "rust-call ABI is subject to change")
             }
             _ => {}
         }
         visit::walk_fn(self, fn_kind, fn_decl, block, span);
     }
+
+    fn visit_trait_item(&mut self, ti: &'v ast::TraitItem) {
+        match ti.node {
+            ast::ConstTraitItem(..) => {
+                self.gate_feature("associated_consts",
+                                  ti.span,
+                                  "associated constants are experimental")
+            }
+            ast::MethodTraitItem(ref sig, _) => {
+                if sig.constness == ast::Constness::Const {
+                    self.gate_feature("const_fn", ti.span, "const fn is unstable");
+                }
+            }
+            _ => {}
+        }
+        visit::walk_trait_item(self, ti);
+    }
+
+    fn visit_impl_item(&mut self, ii: &'v ast::ImplItem) {
+        match ii.node {
+            ast::ConstImplItem(..) => {
+                self.gate_feature("associated_consts",
+                                  ii.span,
+                                  "associated constants are experimental")
+            }
+            ast::MethodImplItem(ref sig, _) => {
+                if sig.constness == ast::Constness::Const {
+                    self.gate_feature("const_fn", ii.span, "const fn is unstable");
+                }
+            }
+            _ => {}
+        }
+        visit::walk_impl_item(self, ii);
+    }
 }
 
-fn check_crate_inner<F>(cm: &CodeMap, span_handler: &SpanHandler, krate: &ast::Crate,
-                        do_warnings: bool,
+fn check_crate_inner<F>(cm: &CodeMap, span_handler: &SpanHandler,
+                        krate: &ast::Crate,
+                        plugin_attributes: &[(String, AttributeType)],
                         check: F)
                        -> Features
     where F: FnOnce(&mut Context, &ast::Crate)
@@ -709,8 +736,8 @@ fn check_crate_inner<F>(cm: &CodeMap, span_handler: &SpanHandler, krate: &ast::C
     let mut cx = Context {
         features: Vec::new(),
         span_handler: span_handler,
-        do_warnings: do_warnings,
         cm: cm,
+        plugin_attributes: plugin_attributes,
     };
 
     let mut accepted_features = Vec::new();
@@ -742,13 +769,6 @@ fn check_crate_inner<F>(cm: &CodeMap, span_handler: &SpanHandler, krate: &ast::C
                         Some(&(name, _, Active)) => {
                             cx.features.push(name);
                         }
-                        Some(&(name, _, Deprecated)) => {
-                            cx.features.push(name);
-                            span_handler.span_warn(
-                                mi.span,
-                                "feature is deprecated and will only be available \
-                                 for a limited time, please rewrite code that relies on it");
-                        }
                         Some(&(_, _, Removed)) => {
                             span_handler.span_err(mi.span, "feature has been removed");
                         }
@@ -779,24 +799,26 @@ fn check_crate_inner<F>(cm: &CodeMap, span_handler: &SpanHandler, krate: &ast::C
         allow_concat_idents: cx.has_feature("concat_idents"),
         allow_trace_macros: cx.has_feature("trace_macros"),
         allow_internal_unstable: cx.has_feature("allow_internal_unstable"),
-        old_orphan_check: cx.has_feature("old_orphan_check"),
+        allow_custom_derive: cx.has_feature("custom_derive"),
         simd_ffi: cx.has_feature("simd_ffi"),
         unmarked_api: cx.has_feature("unmarked_api"),
+        negate_unsigned: cx.has_feature("negate_unsigned"),
         declared_stable_lang_features: accepted_features,
-        declared_lib_features: unknown_features
+        declared_lib_features: unknown_features,
+        const_fn: cx.has_feature("const_fn"),
     }
 }
 
 pub fn check_crate_macros(cm: &CodeMap, span_handler: &SpanHandler, krate: &ast::Crate)
 -> Features {
-    check_crate_inner(cm, span_handler, krate, true,
+    check_crate_inner(cm, span_handler, krate, &[] as &'static [_],
                       |ctx, krate| visit::walk_crate(&mut MacroVisitor { context: ctx }, krate))
 }
 
 pub fn check_crate(cm: &CodeMap, span_handler: &SpanHandler, krate: &ast::Crate,
-                   do_warnings: bool) -> Features
+                   plugin_attributes: &[(String, AttributeType)]) -> Features
 {
-    check_crate_inner(cm, span_handler, krate, do_warnings,
+    check_crate_inner(cm, span_handler, krate, plugin_attributes,
                       |ctx, krate| visit::walk_crate(&mut PostExpansionVisitor { context: ctx },
                                                      krate))
 }

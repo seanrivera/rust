@@ -8,56 +8,51 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![allow(dead_code)] // stack_guard isn't used right now on all platforms
+
 use core::prelude::*;
 
 use cell::RefCell;
 use string::String;
 use thread::Thread;
-use thread_local::State;
+use thread::LocalKeyState;
 
 struct ThreadInfo {
-    // This field holds the known bounds of the stack in (lo, hi)
-    // form. Not all threads necessarily know their precise bounds,
-    // hence this is optional.
-    stack_bounds: (uint, uint),
-    stack_guard: uint,
+    stack_guard: usize,
     thread: Thread,
 }
 
 thread_local! { static THREAD_INFO: RefCell<Option<ThreadInfo>> = RefCell::new(None) }
 
 impl ThreadInfo {
-    fn with<R, F>(f: F) -> R where F: FnOnce(&mut ThreadInfo) -> R {
-        if THREAD_INFO.state() == State::Destroyed {
-            panic!("Use of std::thread::current() is not possible after \
-                    the thread's local data has been destroyed");
+    fn with<R, F>(f: F) -> Option<R> where F: FnOnce(&mut ThreadInfo) -> R {
+        if THREAD_INFO.state() == LocalKeyState::Destroyed {
+            return None
         }
 
         THREAD_INFO.with(move |c| {
             if c.borrow().is_none() {
                 *c.borrow_mut() = Some(ThreadInfo {
-                    stack_bounds: (0, 0),
                     stack_guard: 0,
                     thread: NewThread::new(None),
                 })
             }
-            f(c.borrow_mut().as_mut().unwrap())
+            Some(f(c.borrow_mut().as_mut().unwrap()))
         })
     }
 }
 
-pub fn current_thread() -> Thread {
+pub fn current_thread() -> Option<Thread> {
     ThreadInfo::with(|info| info.thread.clone())
 }
 
-pub fn stack_guard() -> uint {
+pub fn stack_guard() -> Option<usize> {
     ThreadInfo::with(|info| info.stack_guard)
 }
 
-pub fn set(stack_bounds: (uint, uint), stack_guard: uint, thread: Thread) {
+pub fn set(stack_guard: usize, thread: Thread) {
     THREAD_INFO.with(|c| assert!(c.borrow().is_none()));
     THREAD_INFO.with(move |c| *c.borrow_mut() = Some(ThreadInfo{
-        stack_bounds: stack_bounds,
         stack_guard: stack_guard,
         thread: thread,
     }));

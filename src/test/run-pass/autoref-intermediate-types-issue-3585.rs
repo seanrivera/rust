@@ -9,6 +9,7 @@
 // except according to those terms.
 
 
+
 #![allow(unknown_features)]
 #![feature(box_syntax)]
 
@@ -22,7 +23,7 @@ impl<T:Foo> Foo for Box<T> {
     }
 }
 
-impl Foo for uint {
+impl Foo for usize {
     fn foo(&self) -> String {
         format!("{}", *self)
     }

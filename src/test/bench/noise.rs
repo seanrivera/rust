@@ -10,13 +10,13 @@
 
 // Multi-language Perlin noise benchmark.
 // See https://github.com/nsf/pnoise for timings and alternative implementations.
-// ignore-lexer-test FIXME #15679
+
+#![feature(rand, core)]
 
 use std::f32::consts::PI;
-use std::num::Float;
-use std::rand::{Rng, StdRng};
+use std::__rand::{Rng, thread_rng};
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 struct Vec2 {
     x: f32,
     y: f32,
@@ -27,7 +27,7 @@ fn lerp(a: f32, b: f32, v: f32) -> f32 { a * (1.0 - v) + b * v }
 fn smooth(v: f32) -> f32 { v * v * (3.0 - 2.0 * v) }
 
 fn random_gradient<R: Rng>(r: &mut R) -> Vec2 {
-    let v = PI * 2.0 * r.gen();
+    let v = PI * 2.0 * r.gen::<f32>();
     Vec2 { x: v.cos(), y: v.sin() }
 }
 
@@ -42,10 +42,10 @@ struct Noise2DContext {
 
 impl Noise2DContext {
     fn new() -> Noise2DContext {
-        let mut rng = StdRng::new().unwrap();
+        let mut rng = thread_rng();
 
         let mut rgradients = [Vec2 { x: 0.0, y: 0.0 }; 256];
-        for x in &mut rgradients[] {
+        for x in &mut rgradients[..] {
             *x = random_gradient(&mut rng);
         }
 
@@ -59,9 +59,9 @@ impl Noise2DContext {
     }
 
     fn get_gradient(&self, x: i32, y: i32) -> Vec2 {
-        let idx = self.permutations[(x & 255) as uint] +
-                    self.permutations[(y & 255) as uint];
-        self.rgradients[(idx & 255) as uint]
+        let idx = self.permutations[(x & 255) as usize] +
+                    self.permutations[(y & 255) as usize];
+        self.rgradients[(idx & 255) as usize]
     }
 
     fn get_gradients(&self, x: f32, y: f32) -> ([Vec2; 4], [Vec2; 4]) {
@@ -101,8 +101,8 @@ impl Noise2DContext {
 
 fn main() {
     let symbols = [' ', '░', '▒', '▓', '█', '█'];
-    let mut pixels = [0f32; 256*256];
-    let n2d = Noise2DContext::new();
+    let mut pixels = Box::new([0f32; 256*256]);
+    let n2d = Box::new(Noise2DContext::new());
 
     for _ in 0..100 {
         for y in 0..256 {
@@ -115,7 +115,7 @@ fn main() {
 
     for y in 0..256 {
         for x in 0..256 {
-            let idx = (pixels[y*256+x] / 0.2) as uint;
+            let idx = (pixels[y*256+x] / 0.2) as usize;
             print!("{}", symbols[idx]);
         }
         print!("\n");

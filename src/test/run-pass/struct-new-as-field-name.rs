@@ -8,8 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 struct Foo {
-    new: int,
+    new: isize,
 }
 
 pub fn main() {

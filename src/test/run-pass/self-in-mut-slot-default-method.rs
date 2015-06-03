@@ -8,11 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 #![allow(unknown_features)]
 #![feature(box_syntax)]
 
 struct X {
-    a: int
+    a: isize
 }
 
 trait Changer : Sized {
@@ -26,11 +27,11 @@ trait Changer : Sized {
         self
     }
 
-    fn set_to(&mut self, a: int);
+    fn set_to(&mut self, a: isize);
 }
 
 impl Changer for X {
-    fn set_to(&mut self, a: int) {
+    fn set_to(&mut self, a: isize) {
         self.a = a;
     }
 }

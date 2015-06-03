@@ -14,6 +14,7 @@
 // that the main function can read the variable too while
 // the closures are in scope. Issue #6801.
 
+
 fn a() -> i32 {
     let mut x = 3;
     x += 1;

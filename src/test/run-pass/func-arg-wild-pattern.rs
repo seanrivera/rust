@@ -11,7 +11,8 @@
 // Test that we can compile code that uses a `_` in function argument
 // patterns.
 
-fn foo((x, _): (int, int)) -> int {
+
+fn foo((x, _): (isize, isize)) -> isize {
     x
 }
 

@@ -9,9 +9,9 @@
 // except according to those terms.
 
 // ignore-pretty
-// ignore-android
+// ignore-cross-compile
 
-#![feature(quote)]
+#![feature(quote, rustc_private)]
 
 extern crate syntax;
 

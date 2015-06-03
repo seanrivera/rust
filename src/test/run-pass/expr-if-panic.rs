@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 fn test_if_panic() {
     let x = if false { panic!() } else { 10 };
     assert!((x == 10));

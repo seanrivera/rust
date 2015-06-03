@@ -8,10 +8,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 #![allow(unknown_features)]
 #![feature(box_syntax)]
 
-fn f(i: &mut Box<int>) {
+fn f(i: &mut Box<isize>) {
     *i = box 200;
 }
 

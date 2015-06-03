@@ -8,7 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(macro_rules)]
+
+#![feature(collections, rand, into_cow)]
 
 use std::borrow::{Cow, IntoCow};
 use std::collections::BitVec;
@@ -16,10 +17,15 @@ use std::default::Default;
 use std::iter::FromIterator;
 use std::ops::Add;
 use std::option::IntoIter as OptionIter;
-use std::rand::Rand;
-use std::rand::XorShiftRng as DummyRng;
-// FIXME the glob std::prelude::*; import of Vec is missing non-static inherent methods.
-use std::vec::Vec;
+
+pub struct XorShiftRng;
+use XorShiftRng as DummyRng;
+impl Rng for XorShiftRng {}
+pub trait Rng {}
+pub trait Rand: Default + Sized {
+    fn rand<R: Rng>(rng: &mut R) -> Self { Default::default() }
+}
+impl Rand for i32 { }
 
 #[derive(PartialEq, Eq)]
 struct Newt<T>(T);
@@ -28,7 +34,7 @@ fn id<T>(x: T) -> T { x }
 fn eq<T: Eq>(a: T, b: T) -> bool { a == b }
 fn u8_as_i8(x: u8) -> i8 { x as i8 }
 fn odd(x: usize) -> bool { x % 2 == 1 }
-fn dummy_rng() -> DummyRng { DummyRng::new_unseeded() }
+fn dummy_rng() -> DummyRng { XorShiftRng }
 
 trait Size: Sized {
     fn size() -> usize { std::mem::size_of::<Self>() }
@@ -72,11 +78,10 @@ tests! {
     Vec::map_in_place, fn(Vec<u8>, fn(u8) -> i8) -> Vec<i8>, (vec![b'f', b'o', b'o'], u8_as_i8);
     Vec::map_in_place::<i8, fn(u8) -> i8>, fn(Vec<u8>, fn(u8) -> i8) -> Vec<i8>,
         (vec![b'f', b'o', b'o'], u8_as_i8);
-    // FIXME these break with "type parameter might not appear here pointing at `<u8>`.
-    // Vec::<u8>::map_in_place: fn(Vec<u8>, fn(u8) -> i8) -> Vec<i8>
-    //    , (vec![b'f', b'o', b'o'], u8_as_i8);
-    // Vec::<u8>::map_in_place::<i8, fn(u8) -> i8>: fn(Vec<u8>, fn(u8) -> i8) -> Vec<i8>
-    //    , (vec![b'f', b'o', b'o'], u8_as_i8);
+    Vec::<u8>::map_in_place, fn(Vec<u8>, fn(u8) -> i8) -> Vec<i8>
+        , (vec![b'f', b'o', b'o'], u8_as_i8);
+    Vec::<u8>::map_in_place::<i8, fn(u8) -> i8>, fn(Vec<u8>, fn(u8) -> i8) -> Vec<i8>
+        , (vec![b'f', b'o', b'o'], u8_as_i8);
 
     // Trait static methods.
     bool::size, fn() -> usize, ();

@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 struct Foo;
 
 impl Foo {
@@ -31,4 +32,3 @@ fn main() {
     let x = &(&(&Foo));
     x.foo();
 }
-

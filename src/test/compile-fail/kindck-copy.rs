@@ -10,14 +10,13 @@
 
 // Test which of the builtin types are considered POD.
 
-use std::marker::MarkerTrait;
 use std::rc::Rc;
 
 fn assert_copy<T:Copy>() { }
 
-trait Dummy : MarkerTrait { }
+trait Dummy { }
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 struct MyStruct {
     x: isize,
     y: isize,
@@ -38,7 +37,7 @@ fn test<'a,T,U:Copy>(_: &'a isize) {
     assert_copy::<&'static mut isize>(); //~ ERROR `core::marker::Copy` is not implemented
     assert_copy::<&'a mut isize>();  //~ ERROR `core::marker::Copy` is not implemented
 
-    // ~ pointers are not ok
+    // owned pointers are not ok
     assert_copy::<Box<isize>>();   //~ ERROR `core::marker::Copy` is not implemented
     assert_copy::<String>();   //~ ERROR `core::marker::Copy` is not implemented
     assert_copy::<Vec<isize> >(); //~ ERROR `core::marker::Copy` is not implemented
@@ -80,4 +79,3 @@ fn test<'a,T,U:Copy>(_: &'a isize) {
 
 pub fn main() {
 }
-

@@ -35,7 +35,6 @@ use syntax::parse::token::InternedString;
 
 use getopts;
 use std::collections::HashMap;
-use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::env;
 use std::fmt;
 use std::path::PathBuf;
@@ -248,7 +247,7 @@ pub fn basic_options() -> Options {
 // users can have their own entry
 // functions that don't start a
 // scheduler
-#[derive(Copy, PartialEq)]
+#[derive(Copy, Clone, PartialEq)]
 pub enum EntryFnType {
     EntryMain,
     EntryStart,
@@ -305,7 +304,7 @@ macro_rules! options {
     {
         let mut op = $defaultfn();
         for option in matches.opt_strs($prefix) {
-            let mut iter = option.splitn(1, '=');
+            let mut iter = option.splitn(2, '=');
             let key = iter.next().unwrap();
             let value = iter.next();
             let option_to_lookup = key.replace("-", "_");
@@ -419,7 +418,7 @@ macro_rules! options {
                       -> bool {
             match v {
                 Some(s) => {
-                    for s in s.words() {
+                    for s in s.split_whitespace() {
                         slot.push(s.to_string());
                     }
                     true
@@ -432,7 +431,7 @@ macro_rules! options {
                       -> bool {
             match v {
                 Some(s) => {
-                    let v = s.words().map(|s| s.to_string()).collect();
+                    let v = s.split_whitespace().map(|s| s.to_string()).collect();
                     *slot = Some(v);
                     true
                 },
@@ -440,14 +439,14 @@ macro_rules! options {
             }
         }
 
-        fn parse_uint(slot: &mut uint, v: Option<&str>) -> bool {
+        fn parse_uint(slot: &mut usize, v: Option<&str>) -> bool {
             match v.and_then(|s| s.parse().ok()) {
                 Some(i) => { *slot = i; true },
                 None => false
             }
         }
 
-        fn parse_opt_uint(slot: &mut Option<uint>, v: Option<&str>) -> bool {
+        fn parse_opt_uint(slot: &mut Option<usize>, v: Option<&str>) -> bool {
             match v {
                 Some(s) => { *slot = s.parse().ok(); slot.is_some() }
                 None => { *slot = None; true }
@@ -519,16 +518,16 @@ options! {CodegenOptions, CodegenSetter, basic_codegen_options,
          "metadata to mangle symbol names with"),
     extra_filename: String = ("".to_string(), parse_string,
          "extra data to put in each output filename"),
-    codegen_units: uint = (1, parse_uint,
+    codegen_units: usize = (1, parse_uint,
         "divide crate into N units to optimize in parallel"),
     remark: Passes = (SomePasses(Vec::new()), parse_passes,
         "print remarks for these optimization passes (space separated, or \"all\")"),
     no_stack_check: bool = (false, parse_bool,
         "disable checks for stack exhaustion (a memory-safety hazard!)"),
-    debuginfo: Option<uint> = (None, parse_opt_uint,
+    debuginfo: Option<usize> = (None, parse_opt_uint,
         "debug info emission level, 0 = no debug info, 1 = line tables only, \
          2 = full debug info with variable and type information"),
-    opt_level: Option<uint> = (None, parse_opt_uint,
+    opt_level: Option<usize> = (None, parse_opt_uint,
         "Optimize with possible levels 0-3"),
     debug_assertions: Option<bool> = (None, parse_opt_bool,
         "explicitly enable the cfg(debug_assertions) directive"),
@@ -605,6 +604,10 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
           "Print the size of enums and their variants"),
     force_overflow_checks: Option<bool> = (None, parse_opt_bool,
           "Force overflow checks on or off"),
+    force_dropflag_checks: Option<bool> = (None, parse_opt_bool,
+          "Force drop flag checks on or off"),
+    trace_macros: bool = (false, parse_bool,
+          "For every macro invocation, print its name and arguments"),
 }
 
 pub fn default_lib_output() -> CrateType {
@@ -618,6 +621,7 @@ pub fn default_configuration(sess: &Session) -> ast::CrateConfig {
     let arch = &sess.target.target.arch;
     let wordsz = &sess.target.target.target_pointer_width;
     let os = &sess.target.target.target_os;
+    let env = &sess.target.target.target_env;
 
     let fam = match sess.target.target.options.is_like_windows {
         true  => InternedString::new("windows"),
@@ -631,8 +635,8 @@ pub fn default_configuration(sess: &Session) -> ast::CrateConfig {
          mk(InternedString::new("target_family"), fam),
          mk(InternedString::new("target_arch"), intern(arch)),
          mk(InternedString::new("target_endian"), intern(end)),
-         mk(InternedString::new("target_pointer_width"),
-            intern(wordsz))
+         mk(InternedString::new("target_pointer_width"), intern(wordsz)),
+         mk(InternedString::new("target_env"), intern(env)),
     ];
     if sess.opts.debug_assertions {
         ret.push(attr::mk_word_item(InternedString::new("debug_assertions")));
@@ -666,7 +670,7 @@ pub fn build_target_config(opts: &Options, sp: &SpanHandler) -> Config {
         Ok(t) => t,
         Err(e) => {
             sp.handler().fatal(&format!("Error loading target specification: {}", e));
-    }
+        }
     };
 
     let (int_type, uint_type) = match &target.target_pointer_width[..] {
@@ -736,8 +740,8 @@ mod opt {
     use getopts;
     use super::RustcOptGroup;
 
-    type R = RustcOptGroup;
-    type S<'a> = &'a str;
+    pub type R = RustcOptGroup;
+    pub type S<'a> = &'a str;
 
     fn stable(g: getopts::OptGroup) -> R { RustcOptGroup::stable(g) }
     fn unstable(g: getopts::OptGroup) -> R { RustcOptGroup::unstable(g) }
@@ -751,11 +755,14 @@ mod opt {
     pub fn   multi(a: S, b: S, c: S, d: S) -> R { stable(getopts::optmulti(a, b, c, d)) }
     pub fn    flag(a: S, b: S, c: S)       -> R { stable(getopts::optflag(a, b, c)) }
     pub fn flagopt(a: S, b: S, c: S, d: S) -> R { stable(getopts::optflagopt(a, b, c, d)) }
+    pub fn flagmulti(a: S, b: S, c: S)     -> R { stable(getopts::optflagmulti(a, b, c)) }
+
 
     pub fn     opt_u(a: S, b: S, c: S, d: S) -> R { unstable(getopts::optopt(a, b, c, d)) }
     pub fn   multi_u(a: S, b: S, c: S, d: S) -> R { unstable(getopts::optmulti(a, b, c, d)) }
     pub fn    flag_u(a: S, b: S, c: S)       -> R { unstable(getopts::optflag(a, b, c)) }
     pub fn flagopt_u(a: S, b: S, c: S, d: S) -> R { unstable(getopts::optflagopt(a, b, c, d)) }
+    pub fn flagmulti_u(a: S, b: S, c: S)     -> R { unstable(getopts::optflagmulti(a, b, c)) }
 }
 
 /// Returns the "short" subset of the rustc command line options,
@@ -782,8 +789,8 @@ pub fn rustc_short_optgroups() -> Vec<RustcOptGroup> {
         opt::multi("", "print", "Comma separated list of compiler information to \
                                print on stdout",
                  "[crate-name|file-names|sysroot]"),
-        opt::flag("g",  "",  "Equivalent to -C debuginfo=2"),
-        opt::flag("O", "", "Equivalent to -C opt-level=2"),
+        opt::flagmulti("g",  "",  "Equivalent to -C debuginfo=2"),
+        opt::flagmulti("O", "", "Equivalent to -C opt-level=2"),
         opt::opt("o", "", "Write output to <filename>", "FILENAME"),
         opt::opt("",  "out-dir", "Write output to compiler-chosen filename \
                                 in <dir>", "DIR"),
@@ -845,7 +852,7 @@ pub fn parse_cfgspecs(cfgspecs: Vec<String> ) -> ast::CrateConfig {
         parse::parse_meta_from_source_str("cfgspec".to_string(),
                                           s.to_string(),
                                           Vec::new(),
-                                          &parse::new_parse_sess())
+                                          &parse::ParseSess::new())
     }).collect::<ast::CrateConfig>()
 }
 
@@ -901,13 +908,13 @@ pub fn build_session_options(matches: &getopts::Matches) -> Options {
     };
     output_types.sort();
     output_types.dedup();
-    if output_types.len() == 0 {
+    if output_types.is_empty() {
         output_types.push(OutputTypeExe);
     }
 
     let cg = build_codegen_options(matches);
 
-    let sysroot_opt = matches.opt_str("sysroot").map(|m| PathBuf::new(&m));
+    let sysroot_opt = matches.opt_str("sysroot").map(|m| PathBuf::from(&m));
     let target = matches.opt_str("target").unwrap_or(
         host_triple().to_string());
     let opt_level = {
@@ -957,25 +964,7 @@ pub fn build_session_options(matches: &getopts::Matches) -> Options {
     }
 
     let libs = matches.opt_strs("l").into_iter().map(|s| {
-        let mut parts = s.splitn(1, '=');
-        let kind = parts.next().unwrap();
-        if let Some(name) = parts.next() {
-            let kind = match kind {
-                "dylib" => cstore::NativeUnknown,
-                "framework" => cstore::NativeFramework,
-                "static" => cstore::NativeStatic,
-                s => {
-                    early_error(&format!("unknown library kind `{}`, expected \
-                                          one of dylib, framework, or static",
-                                         s));
-                }
-            };
-            return (name.to_string(), kind)
-        }
-
-        // FIXME(acrichto) remove this once crates have stopped using it, this
-        //                 is deprecated behavior now.
-        let mut parts = s.rsplitn(1, ':');
+        let mut parts = s.splitn(2, '=');
         let kind = parts.next().unwrap();
         let (name, kind) = match (parts.next(), kind) {
             (None, name) |
@@ -1027,7 +1016,7 @@ pub fn build_session_options(matches: &getopts::Matches) -> Options {
 
     let mut externs = HashMap::new();
     for arg in &matches.opt_strs("extern") {
-        let mut parts = arg.splitn(1, '=');
+        let mut parts = arg.splitn(2, '=');
         let name = match parts.next() {
             Some(s) => s,
             None => early_error("--extern value must not be empty"),
@@ -1037,10 +1026,7 @@ pub fn build_session_options(matches: &getopts::Matches) -> Options {
             None => early_error("--extern value must be of the format `foo=bar`"),
         };
 
-        match externs.entry(name.to_string()) {
-            Vacant(entry) => { entry.insert(vec![location.to_string()]); },
-            Occupied(mut entry) => { entry.get_mut().push(location.to_string()); },
-        }
+        externs.entry(name.to_string()).or_insert(vec![]).push(location.to_string());
     }
 
     let crate_name = matches.opt_str("crate-name");
@@ -1129,7 +1115,7 @@ impl fmt::Display for CrateType {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
 
     use session::config::{build_configuration, optgroups, build_session_options};
     use session::build_session;

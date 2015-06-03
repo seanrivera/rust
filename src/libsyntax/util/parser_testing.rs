@@ -9,18 +9,17 @@
 // except according to those terms.
 
 use ast;
-use parse::{new_parse_sess};
-use parse::{ParseSess,string_to_filemap,filemap_to_tts};
-use parse::{new_parser_from_source_str};
+use parse::{ParseSess,filemap_to_tts};
+use parse::new_parser_from_source_str;
 use parse::parser::Parser;
 use parse::token;
 use ptr::P;
+use str::char_at;
 
 /// Map a string to tts, using a made-up filename:
 pub fn string_to_tts(source_str: String) -> Vec<ast::TokenTree> {
-    let ps = new_parse_sess();
-    filemap_to_tts(&ps,
-                   string_to_filemap(&ps, source_str, "bogofile".to_string()))
+    let ps = ParseSess::new();
+    filemap_to_tts(&ps, ps.codemap().new_filemap("bogofile".to_string(), source_str))
 }
 
 /// Map string to parser (via tts)
@@ -34,7 +33,7 @@ pub fn string_to_parser<'a>(ps: &'a ParseSess, source_str: String) -> Parser<'a>
 fn with_error_checking_parse<T, F>(s: String, f: F) -> T where
     F: FnOnce(&mut Parser) -> T,
 {
-    let ps = new_parse_sess();
+    let ps = ParseSess::new();
     let mut p = string_to_parser(&ps, s);
     let x = f(&mut p);
     p.abort_if_errors();
@@ -44,7 +43,7 @@ fn with_error_checking_parse<T, F>(s: String, f: F) -> T where
 /// Parse a string, return a crate.
 pub fn string_to_crate (source_str : String) -> ast::Crate {
     with_error_checking_parse(source_str, |p| {
-        p.parse_crate_mod()
+        panictry!(p.parse_crate_mod())
     })
 }
 
@@ -58,21 +57,25 @@ pub fn string_to_expr (source_str : String) -> P<ast::Expr> {
 /// Parse a string, return an item
 pub fn string_to_item (source_str : String) -> Option<P<ast::Item>> {
     with_error_checking_parse(source_str, |p| {
-        p.parse_item(Vec::new())
+        p.parse_item()
     })
 }
 
 /// Parse a string, return a stmt
 pub fn string_to_stmt(source_str : String) -> P<ast::Stmt> {
     with_error_checking_parse(source_str, |p| {
-        p.parse_stmt(Vec::new())
+        p.parse_stmt().unwrap()
     })
 }
 
 /// Parse a string, return a pat. Uses "irrefutable"... which doesn't
 /// (currently) affect parsing.
 pub fn string_to_pat(source_str: String) -> P<ast::Pat> {
-    string_to_parser(&new_parse_sess(), source_str).parse_pat()
+    // Binding `sess` and `parser` works around dropck-injected
+    // region-inference issues; see #25212, #22323, #22321.
+    let sess = ParseSess::new();
+    let mut parser = string_to_parser(&sess, source_str);
+    parser.parse_pat()
 }
 
 /// Convert a vector of strings to a vector of ast::Ident's
@@ -96,24 +99,24 @@ pub fn matches_codepattern(a : &str, b : &str) -> bool {
         else if idx_a == a.len() {return false;}
         else if idx_b == b.len() {
             // maybe the stuff left in a is all ws?
-            if is_whitespace(a.char_at(idx_a)) {
+            if is_whitespace(char_at(a, idx_a)) {
                 return scan_for_non_ws_or_end(a,idx_a) == a.len();
             } else {
                 return false;
             }
         }
         // ws in both given and pattern:
-        else if is_whitespace(a.char_at(idx_a))
-           && is_whitespace(b.char_at(idx_b)) {
+        else if is_whitespace(char_at(a, idx_a))
+           && is_whitespace(char_at(b, idx_b)) {
             idx_a = scan_for_non_ws_or_end(a,idx_a);
             idx_b = scan_for_non_ws_or_end(b,idx_b);
         }
         // ws in given only:
-        else if is_whitespace(a.char_at(idx_a)) {
+        else if is_whitespace(char_at(a, idx_a)) {
             idx_a = scan_for_non_ws_or_end(a,idx_a);
         }
         // *don't* silently eat ws in expected only.
-        else if a.char_at(idx_a) == b.char_at(idx_b) {
+        else if char_at(a, idx_a) == char_at(b, idx_b) {
             idx_a += 1;
             idx_b += 1;
         }
@@ -129,7 +132,7 @@ pub fn matches_codepattern(a : &str, b : &str) -> bool {
 fn scan_for_non_ws_or_end(a : &str, idx: usize) -> usize {
     let mut i = idx;
     let len = a.len();
-    while (i < len) && (is_whitespace(a.char_at(i))) {
+    while (i < len) && (is_whitespace(char_at(a, i))) {
         i += 1;
     }
     i
@@ -141,7 +144,7 @@ pub fn is_whitespace(c: char) -> bool {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
 
     #[test] fn eqmodws() {

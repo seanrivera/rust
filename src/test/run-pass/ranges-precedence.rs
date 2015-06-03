@@ -11,12 +11,13 @@
 // Test that the precedence of ranges is correct
 
 
+
 struct Foo {
-    foo: uint,
+    foo: usize,
 }
 
 impl Foo {
-    fn bar(&self) -> uint { 5 }
+    fn bar(&self) -> usize { 5 }
 }
 
 fn main() {
@@ -58,4 +59,3 @@ fn main() {
     let y = ..;
     assert!(y == (..));
 }
-

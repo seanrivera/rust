@@ -8,36 +8,93 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![allow(deprecated)]
-
 use prelude::v1::*;
 
+use ascii::*;
+use collections::HashMap;
 use collections;
+use env::split_paths;
 use env;
-use ffi::CString;
-use hash::Hash;
-use libc::{pid_t, c_void};
-use libc;
+use ffi::{OsString, OsStr};
+use fmt;
+use fs;
+use io::{self, Error};
+use libc::{self, c_void};
 use mem;
-#[allow(deprecated)] use old_io::fs::PathExtensions;
-use old_io::process::{ProcessExit, ExitStatus};
-use old_io::{IoResult, IoError};
-use old_io;
-use os;
-use old_path::BytesContainer;
+use os::windows::ffi::OsStrExt;
+use path::Path;
 use ptr;
-use str;
-use sync::{StaticMutex, MUTEX_INIT};
-use sys::fs::FileDesc;
+use sync::StaticMutex;
+use sys::c;
+use sys::fs::{OpenOptions, File};
+use sys::handle::{Handle, RawHandle};
+use sys::pipe::AnonPipe;
+use sys::stdio;
+use sys::{self, cvt};
+use sys_common::{AsInner, FromInner};
 
-use sys::timer;
-use sys_common::{AsInner, timeout};
+////////////////////////////////////////////////////////////////////////////////
+// Command
+////////////////////////////////////////////////////////////////////////////////
 
-pub use sys_common::ProcessConfig;
+fn mk_key(s: &OsStr) -> OsString {
+    FromInner::from_inner(sys::os_str::Buf {
+        inner: s.as_inner().inner.to_ascii_uppercase()
+    })
+}
 
-// `CreateProcess` is racy!
-// http://support.microsoft.com/kb/315939
-static CREATE_PROCESS_LOCK: StaticMutex = MUTEX_INIT;
+#[derive(Clone)]
+pub struct Command {
+    pub program: OsString,
+    pub args: Vec<OsString>,
+    pub env: Option<HashMap<OsString, OsString>>,
+    pub cwd: Option<OsString>,
+    pub detach: bool, // not currently exposed in std::process
+}
+
+impl Command {
+    pub fn new(program: &OsStr) -> Command {
+        Command {
+            program: program.to_os_string(),
+            args: Vec::new(),
+            env: None,
+            cwd: None,
+            detach: false,
+        }
+    }
+
+    pub fn arg(&mut self, arg: &OsStr) {
+        self.args.push(arg.to_os_string())
+    }
+    pub fn args<'a, I: Iterator<Item = &'a OsStr>>(&mut self, args: I) {
+        self.args.extend(args.map(OsStr::to_os_string))
+    }
+    fn init_env_map(&mut self){
+        if self.env.is_none() {
+            self.env = Some(env::vars_os().map(|(key, val)| {
+                (mk_key(&key), val)
+            }).collect());
+        }
+    }
+    pub fn env(&mut self, key: &OsStr, val: &OsStr) {
+        self.init_env_map();
+        self.env.as_mut().unwrap().insert(mk_key(key), val.to_os_string());
+    }
+    pub fn env_remove(&mut self, key: &OsStr) {
+        self.init_env_map();
+        self.env.as_mut().unwrap().remove(&mk_key(key));
+    }
+    pub fn env_clear(&mut self) {
+        self.env = Some(HashMap::new())
+    }
+    pub fn cwd(&mut self, dir: &OsStr) {
+        self.cwd = Some(dir.to_os_string())
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Processes
+////////////////////////////////////////////////////////////////////////////////
 
 /// A value representing a child process.
 ///
@@ -45,114 +102,39 @@ static CREATE_PROCESS_LOCK: StaticMutex = MUTEX_INIT;
 /// process - the Process destructor calls self.finish() which waits
 /// for the process to terminate.
 pub struct Process {
-    /// The unique id of the process (this should never be negative).
-    pid: pid_t,
-
-    /// A HANDLE to the process, which will prevent the pid being
-    /// re-used until the handle is closed.
-    handle: *mut (),
+    handle: Handle,
 }
 
-impl Drop for Process {
-    fn drop(&mut self) {
-        free_handle(self.handle);
-    }
+pub enum Stdio {
+    Inherit,
+    Piped(AnonPipe),
+    None,
+    Handle(RawHandle),
 }
 
 impl Process {
-    pub fn id(&self) -> pid_t {
-        self.pid
-    }
-
-    pub unsafe fn kill(&self, signal: int) -> IoResult<()> {
-        Process::killpid(self.pid, signal)
-    }
-
-    pub unsafe fn killpid(pid: pid_t, signal: int) -> IoResult<()> {
-        let handle = libc::OpenProcess(libc::PROCESS_TERMINATE |
-                                       libc::PROCESS_QUERY_INFORMATION,
-                                       libc::FALSE, pid as libc::DWORD);
-        if handle.is_null() {
-            return Err(super::last_error())
-        }
-        let ret = match signal {
-            // test for existence on signal 0
-            0 => {
-                let mut status = 0;
-                let ret = libc::GetExitCodeProcess(handle, &mut status);
-                if ret == 0 {
-                    Err(super::last_error())
-                } else if status != libc::STILL_ACTIVE {
-                    Err(IoError {
-                        kind: old_io::InvalidInput,
-                        desc: "no process to kill",
-                        detail: None,
-                    })
-                } else {
-                    Ok(())
-                }
-            }
-            15 | 9 => { // sigterm or sigkill
-                let ret = libc::TerminateProcess(handle, 1);
-                super::mkerr_winbool(ret)
-            }
-            _ => Err(IoError {
-                kind: old_io::IoUnavailable,
-                desc: "unsupported signal on windows",
-                detail: None,
-            })
-        };
-        let _ = libc::CloseHandle(handle);
-        return ret;
-    }
-
-    #[allow(deprecated)]
-    pub fn spawn<K, V, C, P>(cfg: &C, in_fd: Option<P>,
-                              out_fd: Option<P>, err_fd: Option<P>)
-                              -> IoResult<Process>
-        where C: ProcessConfig<K, V>, P: AsInner<FileDesc>,
-              K: BytesContainer + Eq + Hash, V: BytesContainer
+    pub fn spawn(cfg: &Command,
+                 in_handle: Stdio,
+                 out_handle: Stdio,
+                 err_handle: Stdio) -> io::Result<Process>
     {
-        use libc::types::os::arch::extra::{DWORD, HANDLE, STARTUPINFO};
-        use libc::consts::os::extra::{
-            TRUE, FALSE,
-            STARTF_USESTDHANDLES,
-            INVALID_HANDLE_VALUE,
-            DUPLICATE_SAME_ACCESS
-        };
-        use libc::funcs::extra::kernel32::{
-            GetCurrentProcess,
-            DuplicateHandle,
-            CloseHandle,
-            CreateProcessW
-        };
-        use libc::funcs::extra::msvcrt::get_osfhandle;
+        use libc::{TRUE, STARTF_USESTDHANDLES};
+        use libc::{DWORD, STARTUPINFO, CreateProcessW};
 
-        use mem;
-        use iter::IteratorExt;
-        use str::StrExt;
-
-        if cfg.gid().is_some() || cfg.uid().is_some() {
-            return Err(IoError {
-                kind: old_io::IoUnavailable,
-                desc: "unsupported gid/uid requested on windows",
-                detail: None,
-            })
-        }
-
-        // To have the spawning semantics of unix/windows stay the same, we need to
-        // read the *child's* PATH if one is provided. See #15149 for more details.
-        let program = cfg.env().and_then(|env| {
+        // To have the spawning semantics of unix/windows stay the same, we need
+        // to read the *child's* PATH if one is provided. See #15149 for more
+        // details.
+        let program = cfg.env.as_ref().and_then(|env| {
             for (key, v) in env {
-                if b"PATH" != key.container_as_bytes() { continue }
+                if OsStr::new("PATH") != &**key { continue }
 
                 // Split the value and test each path to see if the
                 // program exists.
-                for path in os::split_paths(v.container_as_bytes()) {
-                    let path = path.join(cfg.program().as_bytes())
+                for path in split_paths(&v) {
+                    let path = path.join(cfg.program.to_str().unwrap())
                                    .with_extension(env::consts::EXE_EXTENSION);
-                    if path.exists() {
-                        return Some(CString::from_slice(path.as_vec()))
+                    if fs::metadata(&path).is_ok() {
+                        return Some(path.into_os_string())
                     }
                 }
                 break
@@ -160,180 +142,101 @@ impl Process {
             None
         });
 
+        let mut si = zeroed_startupinfo();
+        si.cb = mem::size_of::<STARTUPINFO>() as DWORD;
+        si.dwFlags = STARTF_USESTDHANDLES;
+
+        let stdin = try!(in_handle.to_handle(c::STD_INPUT_HANDLE));
+        let stdout = try!(out_handle.to_handle(c::STD_OUTPUT_HANDLE));
+        let stderr = try!(err_handle.to_handle(c::STD_ERROR_HANDLE));
+
+        si.hStdInput = stdin.raw();
+        si.hStdOutput = stdout.raw();
+        si.hStdError = stderr.raw();
+
+        let program = program.as_ref().unwrap_or(&cfg.program);
+        let mut cmd_str = make_command_line(program, &cfg.args);
+        cmd_str.push(0); // add null terminator
+
+        // stolen from the libuv code.
+        let mut flags = libc::CREATE_UNICODE_ENVIRONMENT;
+        if cfg.detach {
+            flags |= libc::DETACHED_PROCESS | libc::CREATE_NEW_PROCESS_GROUP;
+        }
+
+        let (envp, _data) = make_envp(cfg.env.as_ref());
+        let (dirp, _data) = make_dirp(cfg.cwd.as_ref());
+        let mut pi = zeroed_process_information();
+        try!(unsafe {
+            // `CreateProcess` is racy!
+            // http://support.microsoft.com/kb/315939
+            static CREATE_PROCESS_LOCK: StaticMutex = StaticMutex::new();
+            let _lock = CREATE_PROCESS_LOCK.lock();
+
+            cvt(CreateProcessW(ptr::null(),
+                               cmd_str.as_mut_ptr(),
+                               ptr::null_mut(),
+                               ptr::null_mut(),
+                               TRUE, flags, envp, dirp,
+                               &mut si, &mut pi))
+        });
+
+        // We close the thread handle because we don't care about keeping
+        // the thread id valid, and we aren't keeping the thread handle
+        // around to be able to close it later.
+        drop(Handle::new(pi.hThread));
+
+        Ok(Process { handle: Handle::new(pi.hProcess) })
+    }
+
+    pub unsafe fn kill(&self) -> io::Result<()> {
+        try!(cvt(libc::TerminateProcess(self.handle.raw(), 1)));
+        Ok(())
+    }
+
+    pub fn id(&self) -> u32 {
         unsafe {
-            let mut si = zeroed_startupinfo();
-            si.cb = mem::size_of::<STARTUPINFO>() as DWORD;
-            si.dwFlags = STARTF_USESTDHANDLES;
-
-            let cur_proc = GetCurrentProcess();
-
-            // Similarly to unix, we don't actually leave holes for the stdio file
-            // descriptors, but rather open up /dev/null equivalents. These
-            // equivalents are drawn from libuv's windows process spawning.
-            let set_fd = |fd: &Option<P>, slot: &mut HANDLE,
-                          is_stdin: bool| {
-                match *fd {
-                    None => {
-                        let access = if is_stdin {
-                            libc::FILE_GENERIC_READ
-                        } else {
-                            libc::FILE_GENERIC_WRITE | libc::FILE_READ_ATTRIBUTES
-                        };
-                        let size = mem::size_of::<libc::SECURITY_ATTRIBUTES>();
-                        let mut sa = libc::SECURITY_ATTRIBUTES {
-                            nLength: size as libc::DWORD,
-                            lpSecurityDescriptor: ptr::null_mut(),
-                            bInheritHandle: 1,
-                        };
-                        let mut filename: Vec<u16> = "NUL".utf16_units().collect();
-                        filename.push(0);
-                        *slot = libc::CreateFileW(filename.as_ptr(),
-                                                  access,
-                                                  libc::FILE_SHARE_READ |
-                                                      libc::FILE_SHARE_WRITE,
-                                                  &mut sa,
-                                                  libc::OPEN_EXISTING,
-                                                  0,
-                                                  ptr::null_mut());
-                        if *slot == INVALID_HANDLE_VALUE {
-                            return Err(super::last_error())
-                        }
-                    }
-                    Some(ref fd) => {
-                        let orig = get_osfhandle(fd.as_inner().fd()) as HANDLE;
-                        if orig == INVALID_HANDLE_VALUE {
-                            return Err(super::last_error())
-                        }
-                        if DuplicateHandle(cur_proc, orig, cur_proc, slot,
-                                           0, TRUE, DUPLICATE_SAME_ACCESS) == FALSE {
-                            return Err(super::last_error())
-                        }
-                    }
-                }
-                Ok(())
-            };
-
-            try!(set_fd(&in_fd, &mut si.hStdInput, true));
-            try!(set_fd(&out_fd, &mut si.hStdOutput, false));
-            try!(set_fd(&err_fd, &mut si.hStdError, false));
-
-            let cmd_str = make_command_line(program.as_ref().unwrap_or(cfg.program()),
-                                            cfg.args());
-            let mut pi = zeroed_process_information();
-            let mut create_err = None;
-
-            // stolen from the libuv code.
-            let mut flags = libc::CREATE_UNICODE_ENVIRONMENT;
-            if cfg.detach() {
-                flags |= libc::DETACHED_PROCESS | libc::CREATE_NEW_PROCESS_GROUP;
-            }
-
-            with_envp(cfg.env(), |envp| {
-                with_dirp(cfg.cwd(), |dirp| {
-                    let mut cmd_str: Vec<u16> = cmd_str.utf16_units().collect();
-                    cmd_str.push(0);
-                    let _lock = CREATE_PROCESS_LOCK.lock().unwrap();
-                    let created = CreateProcessW(ptr::null(),
-                                                 cmd_str.as_mut_ptr(),
-                                                 ptr::null_mut(),
-                                                 ptr::null_mut(),
-                                                 TRUE,
-                                                 flags, envp, dirp,
-                                                 &mut si, &mut pi);
-                    if created == FALSE {
-                        create_err = Some(super::last_error());
-                    }
-                })
-            });
-
-            assert!(CloseHandle(si.hStdInput) != 0);
-            assert!(CloseHandle(si.hStdOutput) != 0);
-            assert!(CloseHandle(si.hStdError) != 0);
-
-            match create_err {
-                Some(err) => return Err(err),
-                None => {}
-            }
-
-            // We close the thread handle because we don't care about keeping the
-            // thread id valid, and we aren't keeping the thread handle around to be
-            // able to close it later. We don't close the process handle however
-            // because std::we want the process id to stay valid at least until the
-            // calling code closes the process handle.
-            assert!(CloseHandle(pi.hThread) != 0);
-
-            Ok(Process {
-                pid: pi.dwProcessId as pid_t,
-                handle: pi.hProcess as *mut ()
-            })
+            c::GetProcessId(self.handle.raw()) as u32
         }
     }
 
-    /// Waits for a process to exit and returns the exit code, failing
-    /// if there is no process with the specified id.
-    ///
-    /// Note that this is private to avoid race conditions on unix where if
-    /// a user calls waitpid(some_process.get_id()) then some_process.finish()
-    /// and some_process.destroy() and some_process.finalize() will then either
-    /// operate on a none-existent process or, even worse, on a newer process
-    /// with the same id.
-    pub fn wait(&self, deadline: u64) -> IoResult<ProcessExit> {
-        use libc::types::os::arch::extra::DWORD;
-        use libc::consts::os::extra::{
-            SYNCHRONIZE,
-            PROCESS_QUERY_INFORMATION,
-            FALSE,
-            STILL_ACTIVE,
-            INFINITE,
-            WAIT_TIMEOUT,
-            WAIT_OBJECT_0,
-        };
-        use libc::funcs::extra::kernel32::{
-            OpenProcess,
-            GetExitCodeProcess,
-            CloseHandle,
-            WaitForSingleObject,
-        };
+    pub fn wait(&self) -> io::Result<ExitStatus> {
+        use libc::{STILL_ACTIVE, INFINITE, WAIT_OBJECT_0};
+        use libc::{GetExitCodeProcess, WaitForSingleObject};
 
         unsafe {
-            let process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_INFORMATION,
-                                      FALSE,
-                                      self.pid as DWORD);
-            if process.is_null() {
-                return Err(super::last_error())
-            }
-
             loop {
                 let mut status = 0;
-                if GetExitCodeProcess(process, &mut status) == FALSE {
-                    let err = Err(super::last_error());
-                    assert!(CloseHandle(process) != 0);
-                    return err;
-                }
+                try!(cvt(GetExitCodeProcess(self.handle.raw(), &mut status)));
                 if status != STILL_ACTIVE {
-                    assert!(CloseHandle(process) != 0);
-                    return Ok(ExitStatus(status as int));
+                    return Ok(ExitStatus(status as i32));
                 }
-                let interval = if deadline == 0 {
-                    INFINITE
-                } else {
-                    let now = timer::now();
-                    if deadline < now {0} else {(deadline - now) as u32}
-                };
-                match WaitForSingleObject(process, interval) {
+                match WaitForSingleObject(self.handle.raw(), INFINITE) {
                     WAIT_OBJECT_0 => {}
-                    WAIT_TIMEOUT => {
-                        assert!(CloseHandle(process) != 0);
-                        return Err(timeout("process wait timed out"))
-                    }
-                    _ => {
-                        let err = Err(super::last_error());
-                        assert!(CloseHandle(process) != 0);
-                        return err
-                    }
+                    _ => return Err(Error::last_os_error()),
                 }
             }
         }
+    }
+
+    pub fn handle(&self) -> &Handle { &self.handle }
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub struct ExitStatus(i32);
+
+impl ExitStatus {
+    pub fn success(&self) -> bool {
+        self.0 == 0
+    }
+    pub fn code(&self) -> Option<i32> {
+        Some(self.0)
+    }
+}
+
+impl fmt::Display for ExitStatus {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "exit code: {}", self.0)
     }
 }
 
@@ -369,68 +272,58 @@ fn zeroed_process_information() -> libc::types::os::arch::extra::PROCESS_INFORMA
     }
 }
 
-fn make_command_line(prog: &CString, args: &[CString]) -> String {
-    let mut cmd = String::new();
-    append_arg(&mut cmd, str::from_utf8(prog.as_bytes()).ok()
-                             .expect("expected program name to be utf-8 encoded"));
+// Produces a wide string *without terminating null*
+fn make_command_line(prog: &OsStr, args: &[OsString]) -> Vec<u16> {
+    // Encode the command and arguments in a command line string such
+    // that the spawned process may recover them using CommandLineToArgvW.
+    let mut cmd: Vec<u16> = Vec::new();
+    append_arg(&mut cmd, prog);
     for arg in args {
-        cmd.push(' ');
-        append_arg(&mut cmd, str::from_utf8(arg.as_bytes()).ok()
-                                .expect("expected argument to be utf-8 encoded"));
+        cmd.push(' ' as u16);
+        append_arg(&mut cmd, arg);
     }
     return cmd;
 
-    fn append_arg(cmd: &mut String, arg: &str) {
+    fn append_arg(cmd: &mut Vec<u16>, arg: &OsStr) {
         // If an argument has 0 characters then we need to quote it to ensure
         // that it actually gets passed through on the command line or otherwise
         // it will be dropped entirely when parsed on the other end.
-        let quote = arg.chars().any(|c| c == ' ' || c == '\t') || arg.len() == 0;
+        let arg_bytes = &arg.as_inner().inner.as_inner();
+        let quote = arg_bytes.iter().any(|c| *c == b' ' || *c == b'\t')
+            || arg_bytes.is_empty();
         if quote {
-            cmd.push('"');
+            cmd.push('"' as u16);
         }
-        let argvec: Vec<char> = arg.chars().collect();
-        for i in 0..argvec.len() {
-            append_char_at(cmd, &argvec, i);
-        }
-        if quote {
-            cmd.push('"');
-        }
-    }
 
-    fn append_char_at(cmd: &mut String, arg: &[char], i: uint) {
-        match arg[i] {
-            '"' => {
-                // Escape quotes.
-                cmd.push_str("\\\"");
-            }
-            '\\' => {
-                if backslash_run_ends_in_quote(arg, i) {
-                    // Double all backslashes that are in runs before quotes.
-                    cmd.push_str("\\\\");
-                } else {
-                    // Pass other backslashes through unescaped.
-                    cmd.push('\\');
+        let mut iter = arg.encode_wide();
+        let mut backslashes: usize = 0;
+        while let Some(x) = iter.next() {
+            if x == '\\' as u16 {
+                backslashes += 1;
+            } else {
+                if x == '"' as u16 {
+                    // Add n+1 backslashes to total 2n+1 before internal '"'.
+                    for _ in 0..(backslashes+1) {
+                        cmd.push('\\' as u16);
+                    }
                 }
+                backslashes = 0;
             }
-            c => {
-                cmd.push(c);
-            }
+            cmd.push(x);
         }
-    }
 
-    fn backslash_run_ends_in_quote(s: &[char], mut i: uint) -> bool {
-        while i < s.len() && s[i] == '\\' {
-            i += 1;
+        if quote {
+            // Add n backslashes to total 2n before ending '"'.
+            for _ in 0..backslashes {
+                cmd.push('\\' as u16);
+            }
+            cmd.push('"' as u16);
         }
-        return i < s.len() && s[i] == '"';
     }
 }
 
-fn with_envp<K, V, T, F>(env: Option<&collections::HashMap<K, V>>, cb: F) -> T
-    where K: BytesContainer + Eq + Hash,
-          V: BytesContainer,
-          F: FnOnce(*mut c_void) -> T,
-{
+fn make_envp(env: Option<&collections::HashMap<OsString, OsString>>)
+             -> (*mut c_void, Vec<u16>) {
     // On Windows we pass an "environment block" which is not a char**, but
     // rather a concatenation of null-terminated k=v\0 sequences, with a final
     // \0 to terminate.
@@ -439,56 +332,93 @@ fn with_envp<K, V, T, F>(env: Option<&collections::HashMap<K, V>>, cb: F) -> T
             let mut blk = Vec::new();
 
             for pair in env {
-                let kv = format!("{}={}",
-                                 pair.0.container_as_str().unwrap(),
-                                 pair.1.container_as_str().unwrap());
-                blk.extend(kv.utf16_units());
+                blk.extend(pair.0.encode_wide());
+                blk.push('=' as u16);
+                blk.extend(pair.1.encode_wide());
                 blk.push(0);
             }
-
             blk.push(0);
-
-            cb(blk.as_mut_ptr() as *mut c_void)
+            (blk.as_mut_ptr() as *mut c_void, blk)
         }
-        _ => cb(ptr::null_mut())
+        _ => (ptr::null_mut(), Vec::new())
     }
 }
 
-fn with_dirp<T, F>(d: Option<&CString>, cb: F) -> T where
-    F: FnOnce(*const u16) -> T,
-{
+fn make_dirp(d: Option<&OsString>) -> (*const u16, Vec<u16>) {
     match d {
-      Some(dir) => {
-          let dir_str = str::from_utf8(dir.as_bytes()).ok()
-                           .expect("expected workingdirectory to be utf-8 encoded");
-          let mut dir_str: Vec<u16> = dir_str.utf16_units().collect();
-          dir_str.push(0);
-          cb(dir_str.as_ptr())
-      },
-      None => cb(ptr::null())
+        Some(dir) => {
+            let mut dir_str: Vec<u16> = dir.encode_wide().collect();
+            dir_str.push(0);
+            (dir_str.as_ptr(), dir_str)
+        },
+        None => (ptr::null(), Vec::new())
     }
 }
 
-fn free_handle(handle: *mut ()) {
-    assert!(unsafe {
-        libc::CloseHandle(mem::transmute(handle)) != 0
-    })
+impl Stdio {
+    pub fn clone_if_copy(&self) -> Stdio {
+        match *self {
+            Stdio::Inherit => Stdio::Inherit,
+            Stdio::None => Stdio::None,
+            Stdio::Handle(handle) => Stdio::Handle(handle),
+            Stdio::Piped(_) => unreachable!(),
+        }
+    }
+
+    fn to_handle(&self, stdio_id: libc::DWORD) -> io::Result<Handle> {
+        use libc::DUPLICATE_SAME_ACCESS;
+
+        match *self {
+            Stdio::Inherit => {
+                stdio::get(stdio_id).and_then(|io| {
+                    io.handle().duplicate(0, true, DUPLICATE_SAME_ACCESS)
+                })
+            }
+            Stdio::Handle(ref handle) => {
+                handle.duplicate(0, true, DUPLICATE_SAME_ACCESS)
+            }
+            Stdio::Piped(ref pipe) => {
+                pipe.handle().duplicate(0, true, DUPLICATE_SAME_ACCESS)
+            }
+
+            // Similarly to unix, we don't actually leave holes for the
+            // stdio file descriptors, but rather open up /dev/null
+            // equivalents. These equivalents are drawn from libuv's
+            // windows process spawning.
+            Stdio::None => {
+                let size = mem::size_of::<libc::SECURITY_ATTRIBUTES>();
+                let mut sa = libc::SECURITY_ATTRIBUTES {
+                    nLength: size as libc::DWORD,
+                    lpSecurityDescriptor: ptr::null_mut(),
+                    bInheritHandle: 1,
+                };
+                let mut opts = OpenOptions::new();
+                opts.read(stdio_id == c::STD_INPUT_HANDLE);
+                opts.write(stdio_id != c::STD_INPUT_HANDLE);
+                opts.security_attributes(&mut sa);
+                File::open(Path::new("NUL"), &opts).map(|file| {
+                    file.into_handle()
+                })
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use prelude::v1::*;
     use str;
-    use ffi::CString;
+    use ffi::{OsStr, OsString};
     use super::make_command_line;
 
     #[test]
     fn test_make_command_line() {
         fn test_wrapper(prog: &str, args: &[&str]) -> String {
-            make_command_line(&CString::from_slice(prog.as_bytes()),
-                              &args.iter()
-                                   .map(|a| CString::from_slice(a.as_bytes()))
-                                   .collect::<Vec<CString>>())
+            String::from_utf16(
+                &make_command_line(OsStr::new(prog),
+                                   &args.iter()
+                                        .map(|a| OsString::from(a))
+                                        .collect::<Vec<OsString>>())).unwrap()
         }
 
         assert_eq!(
@@ -507,6 +437,10 @@ mod tests {
         assert_eq!(
             test_wrapper("echo", &["a b c"]),
             "echo \"a b c\""
+        );
+        assert_eq!(
+            test_wrapper("echo", &["\" \\\" \\", "\\"]),
+            "echo \"\\\" \\\\\\\" \\\\\" \\"
         );
         assert_eq!(
             test_wrapper("\u{03c0}\u{042f}\u{97f3}\u{00e6}\u{221e}", &[]),

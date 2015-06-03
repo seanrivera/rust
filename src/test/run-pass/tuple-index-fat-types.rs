@@ -8,14 +8,15 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-struct Foo<'a>(&'a [int]);
+
+struct Foo<'a>(&'a [isize]);
 
 fn main() {
-    let x: &[int] = &[1, 2, 3];
+    let x: &[isize] = &[1, 2, 3];
     let y = (x,);
     assert_eq!(y.0, x);
 
-    let x: &[int] = &[1, 2, 3];
+    let x: &[isize] = &[1, 2, 3];
     let y = Foo(x);
     assert_eq!(y.0, x);
 }

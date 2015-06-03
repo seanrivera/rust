@@ -12,6 +12,7 @@
 // attempting to bootstrap libsyntax; it is adapted from
 // `syntax::ext::tt::generic_extension`.
 
+
 pub struct E<'a> {
     pub f: &'a u8,
 }

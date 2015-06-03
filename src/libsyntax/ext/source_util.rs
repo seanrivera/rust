@@ -115,20 +115,20 @@ pub fn expand_include<'cx>(cx: &'cx mut ExtCtxt, sp: Span, tts: &[ast::TokenTree
                       -> Option<SmallVector<P<ast::Item>>> {
             let mut ret = SmallVector::zero();
             while self.p.token != token::Eof {
-                match self.p.parse_item_with_outer_attributes() {
+                match self.p.parse_item() {
                     Some(item) => ret.push(item),
-                    None => self.p.span_fatal(
+                    None => panic!(self.p.span_fatal(
                         self.p.span,
                         &format!("expected item, found `{}`",
                                  self.p.this_token_to_string())
-                    )
+                    ))
                 }
             }
             Some(ret)
         }
     }
 
-    box ExpandResult { p: p }
+    Box::new(ExpandResult { p: p })
 }
 
 // include_str! : read the given file, insert it as a literal string expr
@@ -184,6 +184,11 @@ pub fn expand_include_bytes(cx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
             return DummyResult::expr(sp);
         }
         Ok(..) => {
+            // Add this input file to the code map to make it available as
+            // dependency information, but don't enter it's contents
+            let filename = format!("{}", file.display());
+            cx.codemap().new_filemap(filename, "".to_string());
+
             base::MacEager::expr(cx.expr_lit(sp, ast::LitBinary(Rc::new(bytes))))
         }
     }
@@ -194,12 +199,8 @@ pub fn expand_include_bytes(cx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
 fn res_rel_file(cx: &mut ExtCtxt, sp: codemap::Span, arg: &Path) -> PathBuf {
     // NB: relative paths are resolved relative to the compilation unit
     if !arg.is_absolute() {
-        let mut cu = PathBuf::new(&cx.codemap().span_to_filename(sp));
-        if cu.parent().is_some() {
-            cu.pop();
-        } else {
-            cu = PathBuf::new("");
-        }
+        let mut cu = PathBuf::from(&cx.codemap().span_to_filename(sp));
+        cu.pop();
         cu.push(arg);
         cu
     } else {

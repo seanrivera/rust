@@ -18,7 +18,7 @@
 
 // STACK BY REF
 // gdb-command:print *self
-// gdb-check:$1 = {x = {8888, -8888}}
+// gdb-check:$1 = {x = {__0 = 8888, __1 = -8888}}
 // gdb-command:print arg1
 // gdb-check:$2 = -1
 // gdb-command:print arg2
@@ -27,7 +27,7 @@
 
 // STACK BY VAL
 // gdb-command:print self
-// gdb-check:$4 = {x = {8888, -8888}}
+// gdb-check:$4 = {x = {__0 = 8888, __1 = -8888}}
 // gdb-command:print arg1
 // gdb-check:$5 = -3
 // gdb-command:print arg2
@@ -115,24 +115,24 @@
 #![feature(box_syntax)]
 #![omit_gdb_pretty_printer_section]
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 struct Struct<T> {
     x: T
 }
 
 impl<T> Struct<T> {
 
-    fn self_by_ref(&self, arg1: int, arg2: int) -> int {
+    fn self_by_ref(&self, arg1: isize, arg2: isize) -> isize {
         zzz(); // #break
         arg1 + arg2
     }
 
-    fn self_by_val(self, arg1: int, arg2: int) -> int {
+    fn self_by_val(self, arg1: isize, arg2: isize) -> isize {
         zzz(); // #break
         arg1 + arg2
     }
 
-    fn self_owned(self: Box<Struct<T>>, arg1: int, arg2: int) -> int {
+    fn self_owned(self: Box<Struct<T>>, arg1: isize, arg2: isize) -> isize {
         zzz(); // #break
         arg1 + arg2
     }
@@ -150,4 +150,3 @@ fn main() {
 }
 
 fn zzz() {()}
-

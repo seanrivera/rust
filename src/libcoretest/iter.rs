@@ -11,7 +11,7 @@
 use core::iter::*;
 use core::iter::order::*;
 use core::iter::MinMaxResult::*;
-use core::num::SignedInt;
+use core::{i8, i16, isize};
 use core::usize;
 use core::cmp;
 
@@ -19,7 +19,7 @@ use test::Bencher;
 
 #[test]
 fn test_lt() {
-    let empty: [int; 0] = [];
+    let empty: [isize; 0] = [];
     let xs = [1,2,3];
     let ys = [1,2,0];
 
@@ -72,8 +72,8 @@ fn test_multi_iter() {
 
 #[test]
 fn test_counter_from_iter() {
-    let it = count(0, 5).take(10);
-    let xs: Vec<int> = FromIterator::from_iter(it);
+    let it = (0..).step_by(5).take(10);
+    let xs: Vec<isize> = FromIterator::from_iter(it);
     assert_eq!(xs, [0, 5, 10, 15, 20, 25, 30, 35, 40, 45]);
 }
 
@@ -90,7 +90,7 @@ fn test_iterator_chain() {
     }
     assert_eq!(i, expected.len());
 
-    let ys = count(30, 10).take(4);
+    let ys = (30..).step_by(10).take(4);
     let it = xs.iter().cloned().chain(ys);
     let mut i = 0;
     for x in it {
@@ -101,10 +101,46 @@ fn test_iterator_chain() {
 }
 
 #[test]
+fn test_iterator_chain_nth() {
+    let xs = [0, 1, 2, 3, 4, 5];
+    let ys = [30, 40, 50, 60];
+    let zs = [];
+    let expected = [0, 1, 2, 3, 4, 5, 30, 40, 50, 60];
+    for (i, x) in expected.iter().enumerate() {
+        assert_eq!(Some(x), xs.iter().chain(ys.iter()).nth(i));
+    }
+    assert_eq!(zs.iter().chain(xs.iter()).nth(0), Some(&0));
+
+    let mut it = xs.iter().chain(zs.iter());
+    assert_eq!(it.nth(5), Some(&5));
+    assert_eq!(it.next(), None);
+}
+
+#[test]
+fn test_iterator_chain_last() {
+    let xs = [0, 1, 2, 3, 4, 5];
+    let ys = [30, 40, 50, 60];
+    let zs = [];
+    assert_eq!(xs.iter().chain(ys.iter()).last(), Some(&60));
+    assert_eq!(zs.iter().chain(ys.iter()).last(), Some(&60));
+    assert_eq!(ys.iter().chain(zs.iter()).last(), Some(&60));
+    assert_eq!(zs.iter().chain(zs.iter()).last(), None);
+}
+
+#[test]
+fn test_iterator_chain_count() {
+    let xs = [0, 1, 2, 3, 4, 5];
+    let ys = [30, 40, 50, 60];
+    let zs = [];
+    assert_eq!(xs.iter().chain(ys.iter()).count(), 10);
+    assert_eq!(zs.iter().chain(ys.iter()).count(), 4);
+}
+
+#[test]
 fn test_filter_map() {
-    let it = count(0, 1).take(10)
+    let it = (0..).step_by(1).take(10)
         .filter_map(|x| if x % 2 == 0 { Some(x*x) } else { None });
-    assert_eq!(it.collect::<Vec<uint>>(), [0*0, 2*2, 4*4, 6*6, 8*8]);
+    assert_eq!(it.collect::<Vec<usize>>(), [0*0, 2*2, 4*4, 6*6, 8*8]);
 }
 
 #[test]
@@ -114,6 +150,34 @@ fn test_iterator_enumerate() {
     for (i, &x) in it {
         assert_eq!(i, x);
     }
+}
+
+#[test]
+fn test_iterator_enumerate_nth() {
+    let xs = [0, 1, 2, 3, 4, 5];
+    for (i, &x) in xs.iter().enumerate() {
+        assert_eq!(i, x);
+    }
+
+    let mut it = xs.iter().enumerate();
+    while let Some((i, &x)) = it.nth(0) {
+        assert_eq!(i, x);
+    }
+
+    let mut it = xs.iter().enumerate();
+    while let Some((i, &x)) = it.nth(1) {
+        assert_eq!(i, x);
+    }
+
+    let (i, &x) = xs.iter().enumerate().nth(3).unwrap();
+    assert_eq!(i, x);
+    assert_eq!(i, 3);
+}
+
+#[test]
+fn test_iterator_enumerate_count() {
+    let xs = [0, 1, 2, 3, 4, 5];
+    assert_eq!(xs.iter().count(), 6);
 }
 
 #[test]
@@ -146,6 +210,59 @@ fn test_iterator_peekable() {
     assert_eq!(it.len(), 0);
     assert!(it.next().is_none());
     assert_eq!(it.len(), 0);
+}
+
+#[test]
+fn test_iterator_peekable_count() {
+    let xs = [0, 1, 2, 3, 4, 5];
+    let ys = [10];
+    let zs: [i32; 0] = [];
+
+    assert_eq!(xs.iter().peekable().count(), 6);
+
+    let mut it = xs.iter().peekable();
+    assert_eq!(it.peek(), Some(&&0));
+    assert_eq!(it.count(), 6);
+
+    assert_eq!(ys.iter().peekable().count(), 1);
+
+    let mut it = ys.iter().peekable();
+    assert_eq!(it.peek(), Some(&&10));
+    assert_eq!(it.count(), 1);
+
+    assert_eq!(zs.iter().peekable().count(), 0);
+
+    let mut it = zs.iter().peekable();
+    assert_eq!(it.peek(), None);
+
+}
+
+#[test]
+fn test_iterator_peekable_nth() {
+    let xs = [0, 1, 2, 3, 4, 5];
+    let mut it = xs.iter().peekable();
+
+    assert_eq!(it.peek(), Some(&&0));
+    assert_eq!(it.nth(0), Some(&0));
+    assert_eq!(it.peek(), Some(&&1));
+    assert_eq!(it.nth(1), Some(&2));
+    assert_eq!(it.peek(), Some(&&3));
+    assert_eq!(it.nth(2), Some(&5));
+    assert_eq!(it.next(), None);
+}
+
+#[test]
+fn test_iterator_peekable_last() {
+    let xs = [0, 1, 2, 3, 4, 5];
+    let ys = [0];
+
+    let mut it = xs.iter().peekable();
+    assert_eq!(it.peek(), Some(&&0));
+    assert_eq!(it.last(), Some(&5));
+
+    let mut it = ys.iter().peekable();
+    assert_eq!(it.peek(), Some(&&0));
+    assert_eq!(it.last(), Some(&0));
 }
 
 #[test]
@@ -190,6 +307,49 @@ fn test_iterator_skip() {
 }
 
 #[test]
+fn test_iterator_skip_nth() {
+    let xs = [0, 1, 2, 3, 5, 13, 15, 16, 17, 19, 20, 30];
+
+    let mut it = xs.iter().skip(0);
+    assert_eq!(it.nth(0), Some(&0));
+    assert_eq!(it.nth(1), Some(&2));
+
+    let mut it = xs.iter().skip(5);
+    assert_eq!(it.nth(0), Some(&13));
+    assert_eq!(it.nth(1), Some(&16));
+
+    let mut it = xs.iter().skip(12);
+    assert_eq!(it.nth(0), None);
+
+}
+
+#[test]
+fn test_iterator_skip_count() {
+    let xs = [0, 1, 2, 3, 5, 13, 15, 16, 17, 19, 20, 30];
+
+    assert_eq!(xs.iter().skip(0).count(), 12);
+    assert_eq!(xs.iter().skip(1).count(), 11);
+    assert_eq!(xs.iter().skip(11).count(), 1);
+    assert_eq!(xs.iter().skip(12).count(), 0);
+    assert_eq!(xs.iter().skip(13).count(), 0);
+}
+
+#[test]
+fn test_iterator_skip_last() {
+    let xs = [0, 1, 2, 3, 5, 13, 15, 16, 17, 19, 20, 30];
+
+    assert_eq!(xs.iter().skip(0).last(), Some(&30));
+    assert_eq!(xs.iter().skip(1).last(), Some(&30));
+    assert_eq!(xs.iter().skip(11).last(), Some(&30));
+    assert_eq!(xs.iter().skip(12).last(), None);
+    assert_eq!(xs.iter().skip(13).last(), None);
+
+    let mut it = xs.iter().skip(5);
+    assert_eq!(it.next(), Some(&13));
+    assert_eq!(it.last(), Some(&30));
+}
+
+#[test]
 fn test_iterator_take() {
     let xs = [0, 1, 2, 3, 5, 13, 15, 16, 17, 19];
     let ys = [0, 1, 2, 3, 5];
@@ -203,6 +363,30 @@ fn test_iterator_take() {
     }
     assert_eq!(i, ys.len());
     assert_eq!(it.len(), 0);
+}
+
+#[test]
+fn test_iterator_take_nth() {
+    let xs = [0, 1, 2, 4, 5];
+    let mut it = xs.iter();
+    {
+        let mut take = it.by_ref().take(3);
+        let mut i = 0;
+        while let Some(&x) = take.nth(0) {
+            assert_eq!(x, i);
+            i += 1;
+        }
+    }
+    assert_eq!(it.nth(1), Some(&5));
+    assert_eq!(it.nth(0), None);
+
+    let xs = [0, 1, 2, 3, 4];
+    let mut it = xs.iter().take(7);
+    let mut i = 1;
+    while let Some(&x) = it.nth(1) {
+        assert_eq!(x, i);
+        i += 2;
+    }
 }
 
 #[test]
@@ -224,8 +408,8 @@ fn test_iterator_take_short() {
 #[test]
 fn test_iterator_scan() {
     // test the type inference
-    fn add(old: &mut int, new: &uint) -> Option<f64> {
-        *old += *new as int;
+    fn add(old: &mut isize, new: &usize) -> Option<f64> {
+        *old += *new as isize;
         Some(*old as f64)
     }
     let xs = [0, 1, 2, 3, 4];
@@ -244,7 +428,7 @@ fn test_iterator_scan() {
 fn test_iterator_flat_map() {
     let xs = [0, 3, 6];
     let ys = [0, 1, 2, 3, 4, 5, 6, 7, 8];
-    let it = xs.iter().flat_map(|&x| count(x, 1).take(3));
+    let it = xs.iter().flat_map(|&x| (x..).step_by(1).take(3));
     let mut i = 0;
     for x in it {
         assert_eq!(x, ys[i]);
@@ -261,7 +445,7 @@ fn test_inspect() {
     let ys = xs.iter()
                .cloned()
                .inspect(|_| n += 1)
-               .collect::<Vec<uint>>();
+               .collect::<Vec<usize>>();
 
     assert_eq!(n, xs.len());
     assert_eq!(&xs[..], &ys[..]);
@@ -269,7 +453,7 @@ fn test_inspect() {
 
 #[test]
 fn test_unfoldr() {
-    fn count(st: &mut uint) -> Option<uint> {
+    fn count(st: &mut usize) -> Option<usize> {
         if *st < 10 {
             let ret = Some(*st);
             *st += 1;
@@ -291,13 +475,13 @@ fn test_unfoldr() {
 #[test]
 fn test_cycle() {
     let cycle_len = 3;
-    let it = count(0, 1).take(cycle_len).cycle();
+    let it = (0..).step_by(1).take(cycle_len).cycle();
     assert_eq!(it.size_hint(), (usize::MAX, None));
     for (i, x) in it.take(100).enumerate() {
         assert_eq!(i % cycle_len, x);
     }
 
-    let mut it = count(0, 1).take(0).cycle();
+    let mut it = (0..).step_by(1).take(0).cycle();
     assert_eq!(it.size_hint(), (0, Some(0)));
     assert_eq!(it.next(), None);
 }
@@ -329,17 +513,17 @@ fn test_iterator_len() {
 #[test]
 fn test_iterator_sum() {
     let v: &[i32] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    assert_eq!(v[..4].iter().cloned().sum(), 6);
-    assert_eq!(v.iter().cloned().sum(), 55);
-    assert_eq!(v[..0].iter().cloned().sum(), 0);
+    assert_eq!(v[..4].iter().cloned().sum::<i32>(), 6);
+    assert_eq!(v.iter().cloned().sum::<i32>(), 55);
+    assert_eq!(v[..0].iter().cloned().sum::<i32>(), 0);
 }
 
 #[test]
 fn test_iterator_product() {
     let v: &[i32] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    assert_eq!(v[..4].iter().cloned().product(), 0);
-    assert_eq!(v[1..5].iter().cloned().product(), 24);
-    assert_eq!(v[..0].iter().cloned().product(), 1);
+    assert_eq!(v[..4].iter().cloned().product::<i32>(), 0);
+    assert_eq!(v[1..5].iter().cloned().product::<i32>(), 24);
+    assert_eq!(v[..0].iter().cloned().product::<i32>(), 1);
 }
 
 #[test]
@@ -360,7 +544,7 @@ fn test_iterator_min() {
 
 #[test]
 fn test_iterator_size_hint() {
-    let c = count(0, 1);
+    let c = (0..).step_by(1);
     let v: &[_] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
     let v2 = &[10, 11, 12];
     let vi = v.iter();
@@ -398,14 +582,14 @@ fn test_iterator_size_hint() {
 #[test]
 fn test_collect() {
     let a = vec![1, 2, 3, 4, 5];
-    let b: Vec<int> = a.iter().cloned().collect();
+    let b: Vec<isize> = a.iter().cloned().collect();
     assert!(a == b);
 }
 
 #[test]
 fn test_all() {
     // FIXME (#22405): Replace `Box::new` with `box` here when/if possible.
-    let v: Box<[int]> = Box::new([1, 2, 3, 4, 5]);
+    let v: Box<[isize]> = Box::new([1, 2, 3, 4, 5]);
     assert!(v.iter().all(|&x| x < 10));
     assert!(!v.iter().all(|&x| x % 2 == 0));
     assert!(!v.iter().all(|&x| x > 100));
@@ -415,7 +599,7 @@ fn test_all() {
 #[test]
 fn test_any() {
     // FIXME (#22405): Replace `Box::new` with `box` here when/if possible.
-    let v: Box<[int]> = Box::new([1, 2, 3, 4, 5]);
+    let v: Box<[isize]> = Box::new([1, 2, 3, 4, 5]);
     assert!(v.iter().any(|&x| x < 10));
     assert!(v.iter().any(|&x| x % 2 == 0));
     assert!(!v.iter().any(|&x| x > 100));
@@ -424,7 +608,7 @@ fn test_any() {
 
 #[test]
 fn test_find() {
-    let v: &[int] = &[1, 3, 9, 27, 103, 14, 11];
+    let v: &[isize] = &[1, 3, 9, 27, 103, 14, 11];
     assert_eq!(*v.iter().find(|&&x| x & 1 == 0).unwrap(), 14);
     assert_eq!(*v.iter().find(|&&x| x % 3 == 0).unwrap(), 3);
     assert!(v.iter().find(|&&x| x % 12 == 0).is_none());
@@ -448,13 +632,13 @@ fn test_count() {
 
 #[test]
 fn test_max_by() {
-    let xs: &[int] = &[-3, 0, 1, 5, -10];
+    let xs: &[isize] = &[-3, 0, 1, 5, -10];
     assert_eq!(*xs.iter().max_by(|x| x.abs()).unwrap(), -10);
 }
 
 #[test]
 fn test_min_by() {
-    let xs: &[int] = &[-3, 0, 1, 5, -10];
+    let xs: &[isize] = &[-3, 0, 1, 5, -10];
     assert_eq!(*xs.iter().min_by(|x| x.abs()).unwrap(), 0);
 }
 
@@ -473,7 +657,7 @@ fn test_rev() {
     let mut it = xs.iter();
     it.next();
     it.next();
-    assert!(it.rev().cloned().collect::<Vec<int>>() ==
+    assert!(it.rev().cloned().collect::<Vec<isize>>() ==
             vec![16, 14, 12, 10, 8, 6]);
 }
 
@@ -572,8 +756,8 @@ fn test_double_ended_chain() {
 
 #[test]
 fn test_rposition() {
-    fn f(xy: &(int, char)) -> bool { let (_x, y) = *xy; y == 'b' }
-    fn g(xy: &(int, char)) -> bool { let (_x, y) = *xy; y == 'd' }
+    fn f(xy: &(isize, char)) -> bool { let (_x, y) = *xy; y == 'b' }
+    fn g(xy: &(isize, char)) -> bool { let (_x, y) = *xy; y == 'd' }
     let v = [(0, 'a'), (1, 'b'), (2, 'c'), (3, 'b')];
 
     assert_eq!(v.iter().rposition(f), Some(3));
@@ -581,7 +765,7 @@ fn test_rposition() {
 }
 
 #[test]
-#[should_fail]
+#[should_panic]
 fn test_rposition_panic() {
     let v: [(Box<_>, Box<_>); 4] =
         [(box 0, box 0), (box 0, box 0),
@@ -598,7 +782,7 @@ fn test_rposition_panic() {
 
 
 #[cfg(test)]
-fn check_randacc_iter<A, T>(a: T, len: uint) where
+fn check_randacc_iter<A, T>(a: T, len: usize) where
     A: PartialEq,
     T: Clone + RandomAccessIterator + Iterator<Item=A>,
 {
@@ -684,7 +868,7 @@ fn test_random_access_zip() {
 #[test]
 fn test_random_access_take() {
     let xs = [1, 2, 3, 4, 5];
-    let empty: &[int] = &[];
+    let empty: &[isize] = &[];
     check_randacc_iter(xs.iter().take(3), 3);
     check_randacc_iter(xs.iter().take(20), xs.len());
     check_randacc_iter(xs.iter().take(0), 0);
@@ -694,7 +878,7 @@ fn test_random_access_take() {
 #[test]
 fn test_random_access_skip() {
     let xs = [1, 2, 3, 4, 5];
-    let empty: &[int] = &[];
+    let empty: &[isize] = &[];
     check_randacc_iter(xs.iter().skip(2), xs.len() - 2);
     check_randacc_iter(empty.iter().skip(2), 0);
 }
@@ -726,7 +910,7 @@ fn test_random_access_map() {
 #[test]
 fn test_random_access_cycle() {
     let xs = [1, 2, 3, 4, 5];
-    let empty: &[int] = &[];
+    let empty: &[isize] = &[];
     check_randacc_iter(xs.iter().cycle().take(27), 27);
     check_randacc_iter(empty.iter().cycle(), 0);
 }
@@ -755,42 +939,49 @@ fn test_range() {
     assert_eq!((200..200).rev().count(), 0);
 
     assert_eq!((0..100).size_hint(), (100, Some(100)));
-    // this test is only meaningful when sizeof uint < sizeof u64
+    // this test is only meaningful when sizeof usize < sizeof u64
     assert_eq!((usize::MAX - 1..usize::MAX).size_hint(), (1, Some(1)));
     assert_eq!((-10..-1).size_hint(), (9, Some(9)));
     assert_eq!((-1..-10).size_hint(), (0, Some(0)));
+
+    assert_eq!((-70..58i8).size_hint(), (128, Some(128)));
+    assert_eq!((-128..127i8).size_hint(), (255, Some(255)));
+    assert_eq!((-2..isize::MAX).size_hint(),
+               (isize::MAX as usize + 2, Some(isize::MAX as usize + 2)));
 }
 
 #[test]
 fn test_range_inclusive() {
-    assert!(range_inclusive(0, 5).collect::<Vec<int>>() ==
+    assert!(range_inclusive(0, 5).collect::<Vec<isize>>() ==
             vec![0, 1, 2, 3, 4, 5]);
-    assert!(range_inclusive(0, 5).rev().collect::<Vec<int>>() ==
+    assert!(range_inclusive(0, 5).rev().collect::<Vec<isize>>() ==
             vec![5, 4, 3, 2, 1, 0]);
     assert_eq!(range_inclusive(200, -5).count(), 0);
     assert_eq!(range_inclusive(200, -5).rev().count(), 0);
-    assert_eq!(range_inclusive(200, 200).collect::<Vec<int>>(), [200]);
-    assert_eq!(range_inclusive(200, 200).rev().collect::<Vec<int>>(), [200]);
+    assert_eq!(range_inclusive(200, 200).collect::<Vec<isize>>(), [200]);
+    assert_eq!(range_inclusive(200, 200).rev().collect::<Vec<isize>>(), [200]);
 }
 
 #[test]
 fn test_range_step() {
-    assert_eq!(range_step(0, 20, 5).collect::<Vec<int>>(), [0, 5, 10, 15]);
-    assert_eq!(range_step(20, 0, -5).collect::<Vec<int>>(), [20, 15, 10, 5]);
-    assert_eq!(range_step(20, 0, -6).collect::<Vec<int>>(), [20, 14, 8, 2]);
-    assert_eq!(range_step(200, 255, 50).collect::<Vec<u8>>(), [200, 250]);
-    assert_eq!(range_step(200, -5, 1).collect::<Vec<int>>(), []);
-    assert_eq!(range_step(200, 200, 1).collect::<Vec<int>>(), []);
-}
+    assert_eq!((0..20).step_by(5).collect::<Vec<isize>>(), [0, 5, 10, 15]);
+    assert_eq!((20..0).step_by(-5).collect::<Vec<isize>>(), [20, 15, 10, 5]);
+    assert_eq!((20..0).step_by(-6).collect::<Vec<isize>>(), [20, 14, 8, 2]);
+    assert_eq!((200..255).step_by(50).collect::<Vec<u8>>(), [200, 250]);
+    assert_eq!((200..-5).step_by(1).collect::<Vec<isize>>(), []);
+    assert_eq!((200..200).step_by(1).collect::<Vec<isize>>(), []);
 
-#[test]
-fn test_range_step_inclusive() {
-    assert_eq!(range_step_inclusive(0, 20, 5).collect::<Vec<int>>(), [0, 5, 10, 15, 20]);
-    assert_eq!(range_step_inclusive(20, 0, -5).collect::<Vec<int>>(), [20, 15, 10, 5, 0]);
-    assert_eq!(range_step_inclusive(20, 0, -6).collect::<Vec<int>>(), [20, 14, 8, 2]);
-    assert_eq!(range_step_inclusive(200, 255, 50).collect::<Vec<u8>>(), [200, 250]);
-    assert_eq!(range_step_inclusive(200, -5, 1).collect::<Vec<int>>(), []);
-    assert_eq!(range_step_inclusive(200, 200, 1).collect::<Vec<int>>(), [200]);
+    assert_eq!((0..20).step_by(1).size_hint(), (20, Some(20)));
+    assert_eq!((0..20).step_by(21).size_hint(), (1, Some(1)));
+    assert_eq!((0..20).step_by(5).size_hint(), (4, Some(4)));
+    assert_eq!((20..0).step_by(-5).size_hint(), (4, Some(4)));
+    assert_eq!((20..0).step_by(-6).size_hint(), (4, Some(4)));
+    assert_eq!((20..-5).step_by(1).size_hint(), (0, Some(0)));
+    assert_eq!((20..20).step_by(1).size_hint(), (0, Some(0)));
+    assert_eq!((0..1).step_by(0).size_hint(), (0, None));
+    assert_eq!((i8::MAX..i8::MIN).step_by(i8::MIN).size_hint(), (2, Some(2)));
+    assert_eq!((i16::MIN..i16::MAX).step_by(i16::MAX).size_hint(), (3, Some(3)));
+    assert_eq!((isize::MIN..isize::MAX).step_by(1).size_hint(), (usize::MAX, Some(usize::MAX)));
 }
 
 #[test]
@@ -811,7 +1002,7 @@ fn test_peekable_is_empty() {
 
 #[test]
 fn test_min_max() {
-    let v: [int; 0] = [];
+    let v: [isize; 0] = [];
     assert_eq!(v.iter().min_max(), NoElements);
 
     let v = [1];
@@ -829,7 +1020,7 @@ fn test_min_max() {
 
 #[test]
 fn test_min_max_result() {
-    let r: MinMaxResult<int> = NoElements;
+    let r: MinMaxResult<isize> = NoElements;
     assert_eq!(r.into_option(), None);
 
     let r = OneElement(1);
@@ -874,9 +1065,53 @@ fn test_fuse() {
     assert_eq!(it.len(), 0);
 }
 
+#[test]
+fn test_fuse_nth() {
+    let xs = [0, 1, 2];
+    let mut it = xs.iter();
+
+    assert_eq!(it.len(), 3);
+    assert_eq!(it.nth(2), Some(&2));
+    assert_eq!(it.len(), 0);
+    assert_eq!(it.nth(2), None);
+    assert_eq!(it.len(), 0);
+}
+
+#[test]
+fn test_fuse_last() {
+    let xs = [0, 1, 2];
+    let it = xs.iter();
+
+    assert_eq!(it.len(), 3);
+    assert_eq!(it.last(), Some(&2));
+}
+
+#[test]
+fn test_fuse_count() {
+    let xs = [0, 1, 2];
+    let it = xs.iter();
+
+    assert_eq!(it.len(), 3);
+    assert_eq!(it.count(), 3);
+    // Can't check len now because count consumes.
+}
+
+#[test]
+fn test_once() {
+    let mut it = once(42);
+    assert_eq!(it.next(), Some(42));
+    assert_eq!(it.next(), None);
+}
+
+#[test]
+fn test_empty() {
+    let mut it = empty::<i32>();
+    assert_eq!(it.next(), None);
+}
+
 #[bench]
 fn bench_rposition(b: &mut Bencher) {
-    let it: Vec<uint> = (0..300).collect();
+    let it: Vec<usize> = (0..300).collect();
     b.iter(|| {
         it.iter().rposition(|&x| x <= 150);
     });
@@ -900,4 +1135,35 @@ fn bench_multiple_take(b: &mut Bencher) {
             it.clone().take(it.next().unwrap()).all(|_| true);
         }
     });
+}
+
+fn scatter(x: i32) -> i32 { (x * 31) % 127 }
+
+#[bench]
+fn bench_max_by(b: &mut Bencher) {
+    b.iter(|| {
+        let it = 0..100;
+        it.max_by(|&x| scatter(x))
+    })
+}
+
+// http://www.reddit.com/r/rust/comments/31syce/using_iterators_to_find_the_index_of_the_min_or/
+#[bench]
+fn bench_max_by2(b: &mut Bencher) {
+    fn max_index_iter(array: &[i32]) -> usize {
+        array.iter().enumerate().max_by(|&(_, item)| item).unwrap().0
+    }
+
+    let mut data = vec![0i32; 1638];
+    data[514] = 9999;
+
+    b.iter(|| max_index_iter(&data));
+}
+
+#[bench]
+fn bench_max(b: &mut Bencher) {
+    b.iter(|| {
+        let it = 0..100;
+        it.map(scatter).max()
+    })
 }

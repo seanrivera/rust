@@ -8,8 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(unsafe_destructor)]
-
 static mut DROP_RAN: bool = false;
 
 trait Bar {
@@ -23,9 +21,8 @@ impl Bar for BarImpl {
 }
 
 
-struct Foo<B>(B);
+struct Foo<B: Bar>(B);
 
-#[unsafe_destructor]
 impl<B: Bar> Drop for Foo<B> {
     fn drop(&mut self) {
         unsafe {

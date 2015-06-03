@@ -70,21 +70,18 @@ This API is completely unstable and subject to change.
 #![crate_type = "dylib"]
 #![crate_type = "rlib"]
 #![doc(html_logo_url = "http://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-      html_favicon_url = "http://www.rust-lang.org/favicon.ico",
+      html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
       html_root_url = "http://doc.rust-lang.org/nightly/")]
 
 #![allow(non_camel_case_types)]
 
 #![feature(box_patterns)]
 #![feature(box_syntax)]
-#![feature(collections)]
+#![feature(collections, collections_drain)]
 #![feature(core)]
-#![feature(int_uint)]
-#![feature(std_misc)]
 #![feature(quote)]
 #![feature(rustc_diagnostic_macros)]
 #![feature(rustc_private)]
-#![feature(unsafe_destructor)]
 #![feature(staged_api)]
 
 #[macro_use] extern crate log;
@@ -120,35 +117,35 @@ use std::cell::RefCell;
 // registered before they are used.
 pub mod diagnostics;
 
-mod check;
+pub mod check;
 mod rscope;
 mod astconv;
-mod collect;
+pub mod collect;
 mod constrained_type_params;
-mod coherence;
-mod variance;
+pub mod coherence;
+pub mod variance;
 
-struct TypeAndSubsts<'tcx> {
+pub struct TypeAndSubsts<'tcx> {
     pub substs: subst::Substs<'tcx>,
     pub ty: Ty<'tcx>,
 }
 
-struct CrateCtxt<'a, 'tcx: 'a> {
+pub struct CrateCtxt<'a, 'tcx: 'a> {
     // A mapping from method call sites to traits that have that method.
-    trait_map: ty::TraitMap,
+    pub trait_map: ty::TraitMap,
     /// A vector of every trait accessible in the whole crate
     /// (i.e. including those from subcrates). This is used only for
     /// error reporting, and so is lazily initialised and generally
     /// shouldn't taint the common path (hence the RefCell).
-    all_traits: RefCell<Option<check::method::AllTraitsVec>>,
-    tcx: &'a ty::ctxt<'tcx>,
+    pub all_traits: RefCell<Option<check::method::AllTraitsVec>>,
+    pub tcx: &'a ty::ctxt<'tcx>,
 }
 
 // Functions that write types into the node type table
 fn write_ty_to_tcx<'tcx>(tcx: &ty::ctxt<'tcx>, node_id: ast::NodeId, ty: Ty<'tcx>) {
     debug!("write_ty_to_tcx({}, {})", node_id, ppaux::ty_to_string(tcx, ty));
     assert!(!ty::type_needs_infer(ty));
-    tcx.node_types.borrow_mut().insert(node_id, ty);
+    tcx.node_type_insert(node_id, ty);
 }
 
 fn write_substs_to_tcx<'tcx>(tcx: &ty::ctxt<'tcx>,
@@ -202,7 +199,7 @@ fn require_same_types<'a, 'tcx, M>(tcx: &ty::ctxt<'tcx>,
                                       msg(),
                                       ty::type_err_to_str(tcx,
                                                           terr));
-            ty::note_and_explain_type_err(tcx, terr);
+            ty::note_and_explain_type_err(tcx, terr, span);
             false
         }
     }
@@ -218,7 +215,7 @@ fn check_main_fn_ty(ccx: &CrateCtxt,
             match tcx.map.find(main_id) {
                 Some(ast_map::NodeItem(it)) => {
                     match it.node {
-                        ast::ItemFn(_, _, _, ref ps, _)
+                        ast::ItemFn(_, _, _, _, ref ps, _)
                         if ps.is_parameterized() => {
                             span_err!(ccx.tcx.sess, main_span, E0131,
                                       "main function is not allowed to have type parameters");
@@ -265,7 +262,7 @@ fn check_start_fn_ty(ccx: &CrateCtxt,
             match tcx.map.find(start_id) {
                 Some(ast_map::NodeItem(it)) => {
                     match it.node {
-                        ast::ItemFn(_,_,_,ref ps,_)
+                        ast::ItemFn(_,_,_,_,ref ps,_)
                         if ps.is_parameterized() => {
                             span_err!(tcx.sess, start_span, E0132,
                                       "start function is not allowed to have type parameters");
@@ -282,10 +279,10 @@ fn check_start_fn_ty(ccx: &CrateCtxt,
                 abi: abi::Rust,
                 sig: ty::Binder(ty::FnSig {
                     inputs: vec!(
-                        tcx.types.int,
+                        tcx.types.isize,
                         ty::mk_imm_ptr(tcx, ty::mk_imm_ptr(tcx, tcx.types.u8))
                     ),
-                    output: ty::FnConverging(tcx.types.int),
+                    output: ty::FnConverging(tcx.types.isize),
                     variadic: false,
                 }),
             }));
@@ -346,3 +343,5 @@ pub fn check_crate(tcx: &ty::ctxt, trait_map: ty::TraitMap) {
     check_for_entry_fn(&ccx);
     tcx.sess.abort_if_errors();
 }
+
+__build_diagnostic_array! { librustc_typeck, DIAGNOSTICS }

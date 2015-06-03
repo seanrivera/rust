@@ -9,6 +9,7 @@
 // except according to those terms.
 
 
+
 trait Foo {
     fn bar(&self) -> String {
         format!("test")

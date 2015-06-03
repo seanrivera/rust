@@ -11,18 +11,19 @@
 // Test that non-static methods can be assigned to local variables as
 // function pointers.
 
+
 trait Foo {
-    fn foo(&self) -> uint;
+    fn foo(&self) -> usize;
 }
 
-struct A(uint);
+struct A(usize);
 
 impl A {
-    fn bar(&self) -> uint { self.0 }
+    fn bar(&self) -> usize { self.0 }
 }
 
 impl Foo for A {
-    fn foo(&self) -> uint { self.bar() }
+    fn foo(&self) -> usize { self.bar() }
 }
 
 fn main() {

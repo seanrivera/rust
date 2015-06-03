@@ -11,6 +11,7 @@
 // Tests that matching rvalues with drops does not crash.
 
 
+
 pub fn main() {
     match vec!(1, 2, 3) {
         x => {

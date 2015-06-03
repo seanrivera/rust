@@ -12,8 +12,7 @@ pub use self::AnnNode::*;
 
 use abi;
 use ast;
-use ast::{MethodImplItem, RegionTyParamBound, TraitTyParamBound, TraitBoundModifier};
-use ast::{RequiredMethod, ProvidedMethod, TypeImplItem, TypeTraitItem};
+use ast::{RegionTyParamBound, TraitTyParamBound, TraitBoundModifier};
 use ast_util;
 use attr;
 use owned_slice::OwnedSlice;
@@ -29,7 +28,7 @@ use print::pp::Breaks::{Consistent, Inconsistent};
 use ptr::P;
 use std_inject;
 
-use std::{ascii, mem};
+use std::ascii;
 use std::io::{self, Write, Read};
 use std::iter;
 
@@ -38,6 +37,7 @@ pub enum AnnNode<'a> {
     NodeName(&'a ast::Name),
     NodeBlock(&'a ast::Block),
     NodeItem(&'a ast::Item),
+    NodeSubItem(ast::NodeId),
     NodeExpr(&'a ast::Expr),
     NodePat(&'a ast::Pat),
 }
@@ -47,12 +47,12 @@ pub trait PpAnn {
     fn post(&self, _state: &mut State, _node: AnnNode) -> io::Result<()> { Ok(()) }
 }
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub struct NoAnn;
 
 impl PpAnn for NoAnn {}
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub struct CurrentCommentAndLiteral {
     cur_cmnt: usize,
     cur_lit: usize,
@@ -66,7 +66,6 @@ pub struct State<'a> {
     cur_cmnt_and_lit: CurrentCommentAndLiteral,
     boxes: Vec<pp::Breaks>,
     ann: &'a (PpAnn+'a),
-    encode_idents_with_hygiene: bool,
 }
 
 pub fn rust_printer<'a>(writer: Box<Write+'a>) -> State<'a> {
@@ -87,7 +86,6 @@ pub fn rust_printer_annotated<'a>(writer: Box<Write+'a>,
         },
         boxes: Vec::new(),
         ann: ann,
-        encode_idents_with_hygiene: false,
     }
 }
 
@@ -179,7 +177,6 @@ impl<'a> State<'a> {
             },
             boxes: Vec::new(),
             ann: ann,
-            encode_idents_with_hygiene: false,
         }
     }
 }
@@ -187,18 +184,13 @@ impl<'a> State<'a> {
 pub fn to_string<F>(f: F) -> String where
     F: FnOnce(&mut State) -> io::Result<()>,
 {
-    use std::raw::TraitObject;
-    let mut s = rust_printer(box Vec::new());
-    f(&mut s).unwrap();
-    eof(&mut s.s).unwrap();
-    let wr = unsafe {
-        // FIXME(pcwalton): A nasty function to extract the string from an `Write`
-        // that we "know" to be a `Vec<u8>` that works around the lack of checked
-        // downcasts.
-        let obj: &TraitObject = mem::transmute(&s.s.out);
-        mem::transmute::<*mut (), &Vec<u8>>(obj.data)
-    };
-    String::from_utf8(wr.clone()).unwrap()
+    let mut wr = Vec::new();
+    {
+        let mut printer = rust_printer(Box::new(&mut wr));
+        f(&mut printer).unwrap();
+        eof(&mut printer.s).unwrap();
+    }
+    String::from_utf8(wr).unwrap()
 }
 
 pub fn binop_to_string(op: BinOpToken) -> &'static str {
@@ -295,104 +287,115 @@ pub fn token_to_string(tok: &Token) -> String {
         token::SpecialVarNt(var)    => format!("${}", var.as_str()),
 
         token::Interpolated(ref nt) => match *nt {
-            token::NtExpr(ref e)  => expr_to_string(&**e),
-            token::NtMeta(ref e)  => meta_item_to_string(&**e),
-            token::NtTy(ref e)    => ty_to_string(&**e),
-            token::NtPath(ref e)  => path_to_string(&**e),
-            token::NtItem(..)     => "an interpolated item".to_string(),
-            token::NtBlock(..)    => "an interpolated block".to_string(),
-            token::NtStmt(..)     => "an interpolated statement".to_string(),
-            token::NtPat(..)      => "an interpolated pattern".to_string(),
-            token::NtIdent(..)    => "an interpolated identifier".to_string(),
-            token::NtTT(..)       => "an interpolated tt".to_string(),
+            token::NtExpr(ref e)        => expr_to_string(&**e),
+            token::NtMeta(ref e)        => meta_item_to_string(&**e),
+            token::NtTy(ref e)          => ty_to_string(&**e),
+            token::NtPath(ref e)        => path_to_string(&**e),
+            token::NtItem(ref e)        => item_to_string(&**e),
+            token::NtBlock(ref e)       => block_to_string(&**e),
+            token::NtStmt(ref e)        => stmt_to_string(&**e),
+            token::NtPat(ref e)         => pat_to_string(&**e),
+            token::NtIdent(ref e, _)    => ident_to_string(&**e),
+            token::NtTT(ref e)          => tt_to_string(&**e),
+            token::NtArm(ref e)         => arm_to_string(&*e),
+            token::NtImplItem(ref e)    => impl_item_to_string(&**e),
+            token::NtTraitItem(ref e)   => trait_item_to_string(&**e),
+            token::NtGenerics(ref e)    => generics_to_string(&*e),
+            token::NtWhereClause(ref e) => where_clause_to_string(&*e),
         }
     }
 }
 
-// FIXME (Issue #16472): the thing_to_string_impls macro should go away
-// after we revise the syntax::ext::quote::ToToken impls to go directly
-// to token-trees instead of thing -> string -> token-trees.
-
-macro_rules! thing_to_string_impls {
-    ($to_string:ident) => {
-
 pub fn ty_to_string(ty: &ast::Ty) -> String {
-    $to_string(|s| s.print_type(ty))
+    to_string(|s| s.print_type(ty))
 }
 
 pub fn bounds_to_string(bounds: &[ast::TyParamBound]) -> String {
-    $to_string(|s| s.print_bounds("", bounds))
+    to_string(|s| s.print_bounds("", bounds))
 }
 
 pub fn pat_to_string(pat: &ast::Pat) -> String {
-    $to_string(|s| s.print_pat(pat))
+    to_string(|s| s.print_pat(pat))
 }
 
 pub fn arm_to_string(arm: &ast::Arm) -> String {
-    $to_string(|s| s.print_arm(arm))
+    to_string(|s| s.print_arm(arm))
 }
 
 pub fn expr_to_string(e: &ast::Expr) -> String {
-    $to_string(|s| s.print_expr(e))
+    to_string(|s| s.print_expr(e))
 }
 
 pub fn lifetime_to_string(e: &ast::Lifetime) -> String {
-    $to_string(|s| s.print_lifetime(e))
+    to_string(|s| s.print_lifetime(e))
 }
 
 pub fn tt_to_string(tt: &ast::TokenTree) -> String {
-    $to_string(|s| s.print_tt(tt))
+    to_string(|s| s.print_tt(tt))
 }
 
 pub fn tts_to_string(tts: &[ast::TokenTree]) -> String {
-    $to_string(|s| s.print_tts(tts))
+    to_string(|s| s.print_tts(tts))
 }
 
 pub fn stmt_to_string(stmt: &ast::Stmt) -> String {
-    $to_string(|s| s.print_stmt(stmt))
+    to_string(|s| s.print_stmt(stmt))
+}
+
+pub fn attr_to_string(attr: &ast::Attribute) -> String {
+    to_string(|s| s.print_attribute(attr))
 }
 
 pub fn item_to_string(i: &ast::Item) -> String {
-    $to_string(|s| s.print_item(i))
+    to_string(|s| s.print_item(i))
+}
+
+pub fn impl_item_to_string(i: &ast::ImplItem) -> String {
+    to_string(|s| s.print_impl_item(i))
+}
+
+pub fn trait_item_to_string(i: &ast::TraitItem) -> String {
+    to_string(|s| s.print_trait_item(i))
 }
 
 pub fn generics_to_string(generics: &ast::Generics) -> String {
-    $to_string(|s| s.print_generics(generics))
+    to_string(|s| s.print_generics(generics))
 }
 
-pub fn ty_method_to_string(p: &ast::TypeMethod) -> String {
-    $to_string(|s| s.print_ty_method(p))
-}
-
-pub fn method_to_string(p: &ast::Method) -> String {
-    $to_string(|s| s.print_method(p))
+pub fn where_clause_to_string(i: &ast::WhereClause) -> String {
+    to_string(|s| s.print_where_clause(i))
 }
 
 pub fn fn_block_to_string(p: &ast::FnDecl) -> String {
-    $to_string(|s| s.print_fn_block_args(p))
+    to_string(|s| s.print_fn_block_args(p))
 }
 
 pub fn path_to_string(p: &ast::Path) -> String {
-    $to_string(|s| s.print_path(p, false, 0))
+    to_string(|s| s.print_path(p, false, 0))
 }
 
 pub fn ident_to_string(id: &ast::Ident) -> String {
-    $to_string(|s| s.print_ident(*id))
+    to_string(|s| s.print_ident(*id))
 }
 
-pub fn fun_to_string(decl: &ast::FnDecl, unsafety: ast::Unsafety, name: ast::Ident,
-                  opt_explicit_self: Option<&ast::ExplicitSelf_>,
-                  generics: &ast::Generics) -> String {
-    $to_string(|s| {
-        try!(s.print_fn(decl, Some(unsafety), abi::Rust,
-                        name, generics, opt_explicit_self, ast::Inherited));
+pub fn fun_to_string(decl: &ast::FnDecl,
+                     unsafety: ast::Unsafety,
+                     constness: ast::Constness,
+                     name: ast::Ident,
+                     opt_explicit_self: Option<&ast::ExplicitSelf_>,
+                     generics: &ast::Generics)
+                     -> String {
+    to_string(|s| {
+        try!(s.head(""));
+        try!(s.print_fn(decl, unsafety, constness, abi::Rust, Some(name),
+                        generics, opt_explicit_self, ast::Inherited));
         try!(s.end()); // Close the head box
         s.end() // Close the outer box
     })
 }
 
 pub fn block_to_string(blk: &ast::Block) -> String {
-    $to_string(|s| {
+    to_string(|s| {
         // containing cbox, will be closed by print-block at }
         try!(s.cbox(indent_unit));
         // head-ibox, will be closed by print-block after {
@@ -402,59 +405,31 @@ pub fn block_to_string(blk: &ast::Block) -> String {
 }
 
 pub fn meta_item_to_string(mi: &ast::MetaItem) -> String {
-    $to_string(|s| s.print_meta_item(mi))
+    to_string(|s| s.print_meta_item(mi))
 }
 
 pub fn attribute_to_string(attr: &ast::Attribute) -> String {
-    $to_string(|s| s.print_attribute(attr))
+    to_string(|s| s.print_attribute(attr))
 }
 
 pub fn lit_to_string(l: &ast::Lit) -> String {
-    $to_string(|s| s.print_literal(l))
+    to_string(|s| s.print_literal(l))
 }
 
 pub fn explicit_self_to_string(explicit_self: &ast::ExplicitSelf_) -> String {
-    $to_string(|s| s.print_explicit_self(explicit_self, ast::MutImmutable).map(|_| {}))
+    to_string(|s| s.print_explicit_self(explicit_self, ast::MutImmutable).map(|_| {}))
 }
 
 pub fn variant_to_string(var: &ast::Variant) -> String {
-    $to_string(|s| s.print_variant(var))
+    to_string(|s| s.print_variant(var))
 }
 
 pub fn arg_to_string(arg: &ast::Arg) -> String {
-    $to_string(|s| s.print_arg(arg))
+    to_string(|s| s.print_arg(arg))
 }
 
 pub fn mac_to_string(arg: &ast::Mac) -> String {
-    $to_string(|s| s.print_mac(arg, ::parse::token::Paren))
-}
-
-} }
-
-thing_to_string_impls! { to_string }
-
-// FIXME (Issue #16472): the whole `with_hygiene` mod should go away
-// after we revise the syntax::ext::quote::ToToken impls to go directly
-// to token-trees instea of thing -> string -> token-trees.
-
-pub mod with_hygiene {
-    use abi;
-    use ast;
-    use std::io;
-    use super::indent_unit;
-
-    // This function is the trick that all the rest of the routines
-    // hang on.
-    pub fn to_string_hyg<F>(f: F) -> String where
-        F: FnOnce(&mut super::State) -> io::Result<()>,
-    {
-        super::to_string(move |s| {
-            s.encode_idents_with_hygiene = true;
-            f(s)
-        })
-    }
-
-    thing_to_string_impls! { to_string_hyg }
+    to_string(|s| s.print_mac(arg, ::parse::token::Paren))
 }
 
 pub fn visibility_qualified(vis: ast::Visibility, s: &str) -> String {
@@ -768,8 +743,11 @@ impl<'a> State<'a> {
         try!(self.print_outer_attributes(&item.attrs));
         match item.node {
             ast::ForeignItemFn(ref decl, ref generics) => {
-                try!(self.print_fn(&**decl, None, abi::Rust, item.ident, generics,
-                                   None, item.vis));
+                try!(self.head(""));
+                try!(self.print_fn(decl, ast::Unsafety::Normal,
+                                   ast::Constness::NotConst,
+                                   abi::Rust, Some(item.ident),
+                                   generics, None, item.vis));
                 try!(self.end()); // end head-ibox
                 try!(word(&mut self.s, ";"));
                 self.end() // end the outer fn box
@@ -790,21 +768,41 @@ impl<'a> State<'a> {
         }
     }
 
-    fn print_associated_type(&mut self, typedef: &ast::AssociatedType)
-                             -> io::Result<()>
+    fn print_associated_const(&mut self,
+                              ident: ast::Ident,
+                              ty: &ast::Ty,
+                              default: Option<&ast::Expr>,
+                              vis: ast::Visibility)
+                              -> io::Result<()>
     {
-        try!(self.print_outer_attributes(&typedef.attrs));
-        try!(self.word_space("type"));
-        try!(self.print_ty_param(&typedef.ty_param));
+        try!(word(&mut self.s, &visibility_qualified(vis, "")));
+        try!(self.word_space("const"));
+        try!(self.print_ident(ident));
+        try!(self.word_space(":"));
+        try!(self.print_type(ty));
+        if let Some(expr) = default {
+            try!(space(&mut self.s));
+            try!(self.word_space("="));
+            try!(self.print_expr(expr));
+        }
         word(&mut self.s, ";")
     }
 
-    fn print_typedef(&mut self, typedef: &ast::Typedef) -> io::Result<()> {
+    fn print_associated_type(&mut self,
+                             ident: ast::Ident,
+                             bounds: Option<&ast::TyParamBounds>,
+                             ty: Option<&ast::Ty>)
+                             -> io::Result<()> {
         try!(self.word_space("type"));
-        try!(self.print_ident(typedef.ident));
-        try!(space(&mut self.s));
-        try!(self.word_space("="));
-        try!(self.print_type(&*typedef.typ));
+        try!(self.print_ident(ident));
+        if let Some(bounds) = bounds {
+            try!(self.print_bounds(":", bounds));
+        }
+        if let Some(ty) = ty {
+            try!(space(&mut self.s));
+            try!(self.word_space("="));
+            try!(self.print_type(ty));
+        }
         word(&mut self.s, ";")
     }
 
@@ -818,8 +816,13 @@ impl<'a> State<'a> {
             ast::ItemExternCrate(ref optional_path) => {
                 try!(self.head(&visibility_qualified(item.vis,
                                                      "extern crate")));
-                if let Some((ref p, style)) = *optional_path {
-                    try!(self.print_string(p, style));
+                if let Some(p) = *optional_path {
+                    let val = token::get_name(p);
+                    if val.contains("-") {
+                        try!(self.print_string(&val, ast::CookedStr));
+                    } else {
+                        try!(self.print_name(p));
+                    }
                     try!(space(&mut self.s));
                     try!(word(&mut self.s, "as"));
                     try!(space(&mut self.s));
@@ -868,12 +871,14 @@ impl<'a> State<'a> {
                 try!(word(&mut self.s, ";"));
                 try!(self.end()); // end the outer cbox
             }
-            ast::ItemFn(ref decl, unsafety, abi, ref typarams, ref body) => {
+            ast::ItemFn(ref decl, unsafety, constness, abi, ref typarams, ref body) => {
+                try!(self.head(""));
                 try!(self.print_fn(
-                    &**decl,
-                    Some(unsafety),
+                    decl,
+                    unsafety,
+                    constness,
                     abi,
-                    item.ident,
+                    Some(item.ident),
                     typarams,
                     None,
                     item.vis
@@ -905,10 +910,10 @@ impl<'a> State<'a> {
                 try!(self.print_generics(params));
                 try!(self.end()); // end the inner ibox
 
+                try!(self.print_where_clause(&params.where_clause));
                 try!(space(&mut self.s));
                 try!(self.word_space("="));
                 try!(self.print_type(&**ty));
-                try!(self.print_where_clause(params));
                 try!(word(&mut self.s, ";"));
                 try!(self.end()); // end the outer ibox
             }
@@ -971,24 +976,17 @@ impl<'a> State<'a> {
                 }
 
                 try!(self.print_type(&**ty));
-                try!(self.print_where_clause(generics));
+                try!(self.print_where_clause(&generics.where_clause));
 
                 try!(space(&mut self.s));
                 try!(self.bopen());
                 try!(self.print_inner_attributes(&item.attrs));
                 for impl_item in impl_items {
-                    match *impl_item {
-                        ast::MethodImplItem(ref meth) => {
-                            try!(self.print_method(&**meth));
-                        }
-                        ast::TypeImplItem(ref typ) => {
-                            try!(self.print_typedef(&**typ));
-                        }
-                    }
+                    try!(self.print_impl_item(impl_item));
                 }
                 try!(self.bclose(item.span));
             }
-            ast::ItemTrait(unsafety, ref generics, ref bounds, ref methods) => {
+            ast::ItemTrait(unsafety, ref generics, ref bounds, ref trait_items) => {
                 try!(self.head(""));
                 try!(self.print_visibility(item.vis));
                 try!(self.print_unsafety(unsafety));
@@ -1006,11 +1004,11 @@ impl<'a> State<'a> {
                     }
                 }
                 try!(self.print_bounds(":", &real_bounds[..]));
-                try!(self.print_where_clause(generics));
+                try!(self.print_where_clause(&generics.where_clause));
                 try!(word(&mut self.s, " "));
                 try!(self.bopen());
-                for meth in methods {
-                    try!(self.print_trait_method(meth));
+                for trait_item in trait_items {
+                    try!(self.print_trait_item(trait_item));
                 }
                 try!(self.bclose(item.span));
             }
@@ -1064,7 +1062,7 @@ impl<'a> State<'a> {
         try!(self.head(&visibility_qualified(visibility, "enum")));
         try!(self.print_ident(ident));
         try!(self.print_generics(generics));
-        try!(self.print_where_clause(generics));
+        try!(self.print_where_clause(&generics.where_clause));
         try!(space(&mut self.s));
         self.print_variants(&enum_definition.variants, span)
     }
@@ -1118,12 +1116,12 @@ impl<'a> State<'a> {
                 ));
                 try!(self.pclose());
             }
-            try!(self.print_where_clause(generics));
+            try!(self.print_where_clause(&generics.where_clause));
             try!(word(&mut self.s, ";"));
             try!(self.end());
             self.end() // close the outer-box
         } else {
-            try!(self.print_where_clause(generics));
+            try!(self.print_where_clause(&generics.where_clause));
             try!(self.nbsp());
             try!(self.bopen());
             try!(self.hardbreak_if_not_bol());
@@ -1242,60 +1240,73 @@ impl<'a> State<'a> {
         }
     }
 
-    pub fn print_ty_method(&mut self, m: &ast::TypeMethod) -> io::Result<()> {
-        try!(self.hardbreak_if_not_bol());
-        try!(self.maybe_print_comment(m.span.lo));
-        try!(self.print_outer_attributes(&m.attrs));
-        try!(self.print_ty_fn(m.abi,
-                              m.unsafety,
-                              &*m.decl,
-                              Some(m.ident),
-                              &m.generics,
-                              Some(&m.explicit_self.node)));
-        word(&mut self.s, ";")
+    pub fn print_method_sig(&mut self,
+                            ident: ast::Ident,
+                            m: &ast::MethodSig,
+                            vis: ast::Visibility)
+                            -> io::Result<()> {
+        self.print_fn(&m.decl,
+                      m.unsafety,
+                      m.constness,
+                      m.abi,
+                      Some(ident),
+                      &m.generics,
+                      Some(&m.explicit_self.node),
+                      vis)
     }
 
-    pub fn print_trait_method(&mut self,
-                              m: &ast::TraitItem) -> io::Result<()> {
-        match *m {
-            RequiredMethod(ref ty_m) => self.print_ty_method(ty_m),
-            ProvidedMethod(ref m) => self.print_method(&**m),
-            TypeTraitItem(ref t) => self.print_associated_type(&**t),
+    pub fn print_trait_item(&mut self, ti: &ast::TraitItem)
+                            -> io::Result<()> {
+        try!(self.ann.pre(self, NodeSubItem(ti.id)));
+        try!(self.hardbreak_if_not_bol());
+        try!(self.maybe_print_comment(ti.span.lo));
+        try!(self.print_outer_attributes(&ti.attrs));
+        match ti.node {
+            ast::ConstTraitItem(ref ty, ref default) => {
+                try!(self.print_associated_const(ti.ident, &ty,
+                                                 default.as_ref().map(|expr| &**expr),
+                                                 ast::Inherited));
+            }
+            ast::MethodTraitItem(ref sig, ref body) => {
+                if body.is_some() {
+                    try!(self.head(""));
+                }
+                try!(self.print_method_sig(ti.ident, sig, ast::Inherited));
+                if let Some(ref body) = *body {
+                    try!(self.nbsp());
+                    try!(self.print_block_with_attrs(body, &ti.attrs));
+                } else {
+                    try!(word(&mut self.s, ";"));
+                }
+            }
+            ast::TypeTraitItem(ref bounds, ref default) => {
+                try!(self.print_associated_type(ti.ident, Some(bounds),
+                                                default.as_ref().map(|ty| &**ty)));
+            }
         }
+        self.ann.post(self, NodeSubItem(ti.id))
     }
 
     pub fn print_impl_item(&mut self, ii: &ast::ImplItem) -> io::Result<()> {
-        match *ii {
-            MethodImplItem(ref m) => self.print_method(&**m),
-            TypeImplItem(ref td) => self.print_typedef(&**td),
-        }
-    }
-
-    pub fn print_method(&mut self, meth: &ast::Method) -> io::Result<()> {
+        try!(self.ann.pre(self, NodeSubItem(ii.id)));
         try!(self.hardbreak_if_not_bol());
-        try!(self.maybe_print_comment(meth.span.lo));
-        try!(self.print_outer_attributes(&meth.attrs));
-        match meth.node {
-            ast::MethDecl(ident,
-                          ref generics,
-                          abi,
-                          ref explicit_self,
-                          unsafety,
-                          ref decl,
-                          ref body,
-                          vis) => {
-                try!(self.print_fn(&**decl,
-                                   Some(unsafety),
-                                   abi,
-                                   ident,
-                                   generics,
-                                   Some(&explicit_self.node),
-                                   vis));
-                try!(word(&mut self.s, " "));
-                self.print_block_with_attrs(&**body, &meth.attrs)
-            },
-            ast::MethMac(codemap::Spanned { node: ast::MacInvocTT(ref pth, ref tts, _),
-                                            ..}) => {
+        try!(self.maybe_print_comment(ii.span.lo));
+        try!(self.print_outer_attributes(&ii.attrs));
+        match ii.node {
+            ast::ConstImplItem(ref ty, ref expr) => {
+                try!(self.print_associated_const(ii.ident, &ty, Some(&expr), ii.vis));
+            }
+            ast::MethodImplItem(ref sig, ref body) => {
+                try!(self.head(""));
+                try!(self.print_method_sig(ii.ident, sig, ii.vis));
+                try!(self.nbsp());
+                try!(self.print_block_with_attrs(body, &ii.attrs));
+            }
+            ast::TypeImplItem(ref ty) => {
+                try!(self.print_associated_type(ii.ident, None, Some(ty)));
+            }
+            ast::MacImplItem(codemap::Spanned { node: ast::MacInvocTT(ref pth, ref tts, _),
+                                                ..}) => {
                 // code copied from ItemMac:
                 try!(self.print_path(pth, false, 0));
                 try!(word(&mut self.s, "! "));
@@ -1304,9 +1315,10 @@ impl<'a> State<'a> {
                 try!(self.print_tts(&tts[..]));
                 try!(self.pclose());
                 try!(word(&mut self.s, ";"));
-                self.end()
+                try!(self.end())
             }
         }
+        self.ann.post(self, NodeSubItem(ii.id))
     }
 
     pub fn print_outer_attributes(&mut self,
@@ -1640,7 +1652,7 @@ impl<'a> State<'a> {
         try!(self.print_expr(&*args[0]));
         try!(word(&mut self.s, "."));
         try!(self.print_ident(ident.node));
-        if tys.len() > 0 {
+        if !tys.is_empty() {
             try!(word(&mut self.s, "::<"));
             try!(self.commasep(Inconsistent, tys,
                                |s, ty| s.print_type(&**ty)));
@@ -1787,7 +1799,12 @@ impl<'a> State<'a> {
                 try!(self.print_fn_block_args(&**decl));
                 try!(space(&mut self.s));
 
-                if !body.stmts.is_empty() || !body.expr.is_some() {
+                let default_return = match decl.output {
+                    ast::DefaultReturn(..) => true,
+                    _ => false
+                };
+
+                if !default_return || !body.stmts.is_empty() || body.expr.is_none() {
                     try!(self.print_block_unclosed(&**body));
                 } else {
                     // we extract the block, so as not to create another set of boxes
@@ -1935,7 +1952,7 @@ impl<'a> State<'a> {
                     options.push("intel");
                 }
 
-                if options.len() > 0 {
+                if !options.is_empty() {
                     try!(space(&mut self.s));
                     try!(self.word_space(":"));
                     try!(self.commasep(Inconsistent, &*options,
@@ -1990,12 +2007,7 @@ impl<'a> State<'a> {
     }
 
     pub fn print_ident(&mut self, ident: ast::Ident) -> io::Result<()> {
-        if self.encode_idents_with_hygiene {
-            let encoded = ident.encode_with_hygiene();
-            try!(word(&mut self.s, &encoded[..]))
-        } else {
-            try!(word(&mut self.s, &token::get_ident(ident)))
-        }
+        try!(word(&mut self.s, &token::get_ident(ident)));
         self.ann.post(self, NodeIdent(&ident))
     }
 
@@ -2176,6 +2188,9 @@ impl<'a> State<'a> {
                     }
                 }
             }
+            ast::PatQPath(ref qself, ref path) => {
+                try!(self.print_qpath(path, qself, false));
+            }
             ast::PatStruct(ref path, ref fields, etc) => {
                 try!(self.print_path(path, true, 0));
                 try!(self.nbsp());
@@ -2193,7 +2208,7 @@ impl<'a> State<'a> {
                     },
                     |f| f.node.pat.span));
                 if etc {
-                    if fields.len() != 0 { try!(self.word_space(",")); }
+                    if !fields.is_empty() { try!(self.word_space(",")); }
                     try!(word(&mut self.s, ".."));
                 }
                 try!(space(&mut self.s));
@@ -2326,19 +2341,22 @@ impl<'a> State<'a> {
 
     pub fn print_fn(&mut self,
                     decl: &ast::FnDecl,
-                    unsafety: Option<ast::Unsafety>,
+                    unsafety: ast::Unsafety,
+                    constness: ast::Constness,
                     abi: abi::Abi,
-                    name: ast::Ident,
+                    name: Option<ast::Ident>,
                     generics: &ast::Generics,
                     opt_explicit_self: Option<&ast::ExplicitSelf_>,
                     vis: ast::Visibility) -> io::Result<()> {
-        try!(self.head(""));
-        try!(self.print_fn_header_info(unsafety, abi, vis));
-        try!(self.nbsp());
-        try!(self.print_ident(name));
+        try!(self.print_fn_header_info(unsafety, constness, abi, vis));
+
+        if let Some(name) = name {
+            try!(self.nbsp());
+            try!(self.print_ident(name));
+        }
         try!(self.print_generics(generics));
         try!(self.print_fn_args_and_ret(decl, opt_explicit_self));
-        self.print_where_clause(generics)
+        self.print_where_clause(&generics.where_clause)
     }
 
     pub fn print_fn_args(&mut self, decl: &ast::FnDecl,
@@ -2521,19 +2539,16 @@ impl<'a> State<'a> {
         }
     }
 
-    pub fn print_where_clause(&mut self, generics: &ast::Generics)
+    pub fn print_where_clause(&mut self, where_clause: &ast::WhereClause)
                               -> io::Result<()> {
-        if generics.where_clause.predicates.len() == 0 {
+        if where_clause.predicates.is_empty() {
             return Ok(())
         }
 
         try!(space(&mut self.s));
         try!(self.word_space("where"));
 
-        for (i, predicate) in generics.where_clause
-                                      .predicates
-                                      .iter()
-                                      .enumerate() {
+        for (i, predicate) in where_clause.predicates.iter().enumerate() {
             if i != 0 {
                 try!(self.word_space(","));
             }
@@ -2702,25 +2717,31 @@ impl<'a> State<'a> {
                        abi: abi::Abi,
                        unsafety: ast::Unsafety,
                        decl: &ast::FnDecl,
-                       id: Option<ast::Ident>,
+                       name: Option<ast::Ident>,
                        generics: &ast::Generics,
                        opt_explicit_self: Option<&ast::ExplicitSelf_>)
                        -> io::Result<()> {
         try!(self.ibox(indent_unit));
-        try!(self.print_fn_header_info(Some(unsafety), abi, ast::Inherited));
-
-        match id {
-            Some(id) => {
-                try!(word(&mut self.s, " "));
-                try!(self.print_ident(id));
-            }
-            _ => ()
+        if !generics.lifetimes.is_empty() || !generics.ty_params.is_empty() {
+            try!(word(&mut self.s, "for"));
+            try!(self.print_generics(generics));
         }
-
-        try!(self.print_generics(generics));
-        try!(zerobreak(&mut self.s));
-        try!(self.print_fn_args_and_ret(decl, opt_explicit_self));
-        try!(self.print_where_clause(generics));
+        let generics = ast::Generics {
+            lifetimes: Vec::new(),
+            ty_params: OwnedSlice::empty(),
+            where_clause: ast::WhereClause {
+                id: ast::DUMMY_NODE_ID,
+                predicates: Vec::new(),
+            },
+        };
+        try!(self.print_fn(decl,
+                           unsafety,
+                           ast::Constness::NotConst,
+                           abi,
+                           name,
+                           &generics,
+                           opt_explicit_self,
+                           ast::Inherited));
         self.end()
     }
 
@@ -2778,13 +2799,13 @@ impl<'a> State<'a> {
         match lit.node {
             ast::LitStr(ref st, style) => self.print_string(&st, style),
             ast::LitByte(byte) => {
-                let mut res = String::from_str("b'");
+                let mut res = String::from("b'");
                 res.extend(ascii::escape_default(byte).map(|c| c as char));
                 res.push('\'');
                 word(&mut self.s, &res[..])
             }
             ast::LitChar(ch) => {
-                let mut res = String::from_str("'");
+                let mut res = String::from("'");
                 res.extend(ch.escape_default());
                 res.push('\'');
                 word(&mut self.s, &res[..])
@@ -2825,7 +2846,7 @@ impl<'a> State<'a> {
             ast::LitBinary(ref v) => {
                 let mut escaped: String = String::new();
                 for &ch in &**v {
-                    escaped.extend(ascii::escape_default(ch as u8)
+                    escaped.extend(ascii::escape_default(ch)
                                          .map(|c| c as char));
                 }
                 word(&mut self.s, &format!("b\"{}\"", escaped))
@@ -2942,14 +2963,6 @@ impl<'a> State<'a> {
         }
     }
 
-    pub fn print_opt_unsafety(&mut self,
-                            opt_unsafety: Option<ast::Unsafety>) -> io::Result<()> {
-        match opt_unsafety {
-            Some(unsafety) => self.print_unsafety(unsafety),
-            None => Ok(())
-        }
-    }
-
     pub fn print_opt_abi_and_extern_if_nondefault(&mut self,
                                                   opt_abi: Option<abi::Abi>)
         -> io::Result<()> {
@@ -2975,11 +2988,17 @@ impl<'a> State<'a> {
     }
 
     pub fn print_fn_header_info(&mut self,
-                                opt_unsafety: Option<ast::Unsafety>,
+                                unsafety: ast::Unsafety,
+                                constness: ast::Constness,
                                 abi: abi::Abi,
                                 vis: ast::Visibility) -> io::Result<()> {
         try!(word(&mut self.s, &visibility_qualified(vis, "")));
-        try!(self.print_opt_unsafety(opt_unsafety));
+        try!(self.print_unsafety(unsafety));
+
+        match constness {
+            ast::Constness::NotConst => {}
+            ast::Constness::Const => try!(self.word_nbsp("const"))
+        }
 
         if abi != abi::Rust {
             try!(self.word_nbsp("extern"));
@@ -3000,7 +3019,7 @@ impl<'a> State<'a> {
 fn repeat(s: &str, n: usize) -> String { iter::repeat(s).take(n).collect() }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
 
     use ast;
@@ -3018,8 +3037,10 @@ mod test {
             variadic: false
         };
         let generics = ast_util::empty_generics();
-        assert_eq!(fun_to_string(&decl, ast::Unsafety::Normal, abba_ident,
-                               None, &generics),
+        assert_eq!(fun_to_string(&decl, ast::Unsafety::Normal,
+                                 ast::Constness::NotConst,
+                                 abba_ident,
+                                 None, &generics),
                    "fn abba()");
     }
 
@@ -3044,7 +3065,7 @@ mod test {
     #[test]
     fn test_signed_int_to_string() {
         let pos_int = ast::LitInt(42, ast::SignedIntLit(ast::TyI32, ast::Plus));
-        let neg_int = ast::LitInt((-42) as u64, ast::SignedIntLit(ast::TyI32, ast::Minus));
+        let neg_int = ast::LitInt((!42 + 1) as u64, ast::SignedIntLit(ast::TyI32, ast::Minus));
         assert_eq!(format!("-{}", lit_to_string(&codemap::dummy_spanned(pos_int))),
                    lit_to_string(&codemap::dummy_spanned(neg_int)));
     }

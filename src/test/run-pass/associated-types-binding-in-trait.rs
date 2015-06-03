@@ -11,6 +11,7 @@
 // Test a case where the associated type binding (to `bool`, in this
 // case) is derived from the trait definition. Issue #21636.
 
+
 use std::vec;
 
 pub trait BitIter {

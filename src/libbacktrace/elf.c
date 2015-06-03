@@ -1,5 +1,5 @@
 /* elf.c -- Get debug data from an ELF file for backtraces.
-   Copyright (C) 2012-2014 Free Software Foundation, Inc.
+   Copyright (C) 2012-2015 Free Software Foundation, Inc.
    Written by Ian Lance Taylor, Google.
 
 Redistribution and use in source and binary forms, with or without
@@ -407,8 +407,8 @@ elf_initialize_syminfo (struct backtrace_state *state,
       ++j;
     }
 
-  qsort (elf_symbols, elf_symbol_count, sizeof (struct elf_symbol),
-	 elf_symbol_compare);
+  backtrace_qsort (elf_symbols, elf_symbol_count, sizeof (struct elf_symbol),
+		   elf_symbol_compare);
 
   sdata->next = NULL;
   sdata->symbols = elf_symbols;

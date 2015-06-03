@@ -12,10 +12,10 @@ trait Trait<T> {
     fn f(&self, x: T);
 }
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 struct Struct {
-    x: int,
-    y: int,
+    x: isize,
+    y: isize,
 }
 
 impl Trait<&'static str> for Struct {
@@ -32,4 +32,3 @@ pub fn main() {
     let c: &Trait<&'static str> = &a;
     c.f("Joe");
 }
-

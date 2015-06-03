@@ -10,11 +10,11 @@
 
 //! Exposes the NonZero lang item which provides optimization hints.
 
-use marker::{Sized, MarkerTrait};
-use ops::Deref;
+use marker::Sized;
+use ops::{CoerceUnsized, Deref};
 
 /// Unsafe trait to indicate what types are usable with the NonZero struct
-pub unsafe trait Zeroable : MarkerTrait {}
+pub unsafe trait Zeroable {}
 
 unsafe impl<T:?Sized> Zeroable for *const T {}
 unsafe impl<T:?Sized> Zeroable for *mut T {}
@@ -31,13 +31,13 @@ unsafe impl Zeroable for u64 {}
 
 /// A wrapper type for raw pointers and integers that will never be
 /// NULL or 0 that might allow certain optimizations.
-#[lang="non_zero"]
+#[lang = "non_zero"]
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug, Hash)]
 #[unstable(feature = "core")]
 pub struct NonZero<T: Zeroable>(T);
 
 impl<T: Zeroable> NonZero<T> {
-    /// Create an instance of NonZero with the provided value.
+    /// Creates an instance of NonZero with the provided value.
     /// You must indeed ensure that the value is actually "non-zero".
     #[inline(always)]
     pub unsafe fn new(inner: T) -> NonZero<T> {
@@ -54,3 +54,5 @@ impl<T: Zeroable> Deref for NonZero<T> {
         inner
     }
 }
+
+impl<T: Zeroable+CoerceUnsized<U>, U: Zeroable> CoerceUnsized<NonZero<U>> for NonZero<T> {}

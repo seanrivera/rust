@@ -21,7 +21,7 @@ use util::common::time;
 use util::common::path2cstr;
 use syntax::codemap;
 use syntax::diagnostic;
-use syntax::diagnostic::{Emitter, Handler, Level, mk_handler};
+use syntax::diagnostic::{Emitter, Handler, Level};
 
 use std::ffi::{CStr, CString};
 use std::fs;
@@ -86,8 +86,8 @@ struct Diagnostic {
 }
 
 // We use an Arc instead of just returning a list of diagnostics from the
-// child task because we need to make sure that the messages are seen even
-// if the child task panics (for example, when `fatal` is called).
+// child thread because we need to make sure that the messages are seen even
+// if the child thread panics (for example, when `fatal` is called).
 #[derive(Clone)]
 struct SharedEmitter {
     buffer: Arc<Mutex<Vec<Diagnostic>>>,
@@ -319,6 +319,8 @@ struct CodegenContext<'a> {
     lto_ctxt: Option<(&'a Session, &'a [String])>,
     // Handler to use for diagnostics produced during codegen.
     handler: &'a Handler,
+    // LLVM passes added by plugins.
+    plugin_passes: Vec<String>,
     // LLVM optimizations for which we want to print remarks.
     remark: Passes,
 }
@@ -328,6 +330,7 @@ impl<'a> CodegenContext<'a> {
         CodegenContext {
             lto_ctxt: Some((sess, reachable)),
             handler: sess.diagnostic().handler(),
+            plugin_passes: sess.plugin_llvm_passes.borrow().clone(),
             remark: sess.opts.cg.remark.clone(),
         }
     }
@@ -339,13 +342,13 @@ struct HandlerFreeVars<'a> {
 }
 
 unsafe extern "C" fn report_inline_asm<'a, 'b>(cgcx: &'a CodegenContext<'a>,
-                                           msg: &'b str,
-                                           cookie: c_uint) {
+                                               msg: &'b str,
+                                               cookie: c_uint) {
     use syntax::codemap::ExpnId;
 
     match cgcx.lto_ctxt {
         Some((sess, _)) => {
-            sess.codemap().with_expn_info(ExpnId::from_llvm_cookie(cookie), |info| match info {
+            sess.codemap().with_expn_info(ExpnId::from_u32(cookie), |info| match info {
                 Some(ei) => sess.span_err(ei.call_site, msg),
                 None     => sess.err(msg),
             });
@@ -460,6 +463,16 @@ unsafe fn optimize_and_codegen(cgcx: &CodegenContext,
                     cgcx.handler.warn(&format!("unknown pass {:?}, ignoring", pass));
                 }
             }
+
+            for pass in &cgcx.plugin_passes {
+                let pass = CString::new(pass.clone()).unwrap();
+                if !llvm::LLVMRustAddPass(mpm, pass.as_ptr()) {
+                    cgcx.handler.err(&format!("a plugin asked for LLVM pass {:?} but LLVM \
+                                               does not recognize it", pass));
+                }
+            }
+
+            cgcx.handler.abort_if_errors();
 
             // Finally, run the actual optimization passes
             time(config.time_passes, "llvm function passes", (), |()|
@@ -624,7 +637,7 @@ pub fn run_passes(sess: &Session,
     metadata_config.set_flags(sess, trans);
 
 
-    // Populate a buffer with a list of codegen tasks.  Items are processed in
+    // Populate a buffer with a list of codegen threads.  Items are processed in
     // LIFO order, just because it's a tiny bit simpler that way.  (The order
     // doesn't actually matter.)
     let mut work_items = Vec::with_capacity(1 + trans.modules.len());
@@ -898,7 +911,7 @@ fn run_work_singlethreaded(sess: &Session,
 
 fn run_work_multithreaded(sess: &Session,
                           work_items: Vec<WorkItem>,
-                          num_workers: uint) {
+                          num_workers: usize) {
     // Run some workers to process the work items.
     let work_items_arc = Arc::new(Mutex::new(work_items));
     let mut diag_emitter = SharedEmitter::new();
@@ -907,6 +920,7 @@ fn run_work_multithreaded(sess: &Session,
     for i in 0..num_workers {
         let work_items_arc = work_items_arc.clone();
         let diag_emitter = diag_emitter.clone();
+        let plugin_passes = sess.plugin_llvm_passes.borrow().clone();
         let remark = sess.opts.cg.remark.clone();
 
         let (tx, rx) = channel();
@@ -914,13 +928,14 @@ fn run_work_multithreaded(sess: &Session,
         futures.push(rx);
 
         thread::Builder::new().name(format!("codegen-{}", i)).spawn(move || {
-            let diag_handler = mk_handler(true, box diag_emitter);
+            let diag_handler = Handler::with_emitter(true, box diag_emitter);
 
             // Must construct cgcx inside the proc because it has non-Send
             // fields.
             let cgcx = CodegenContext {
                 lto_ctxt: None,
                 handler: &diag_handler,
+                plugin_passes: plugin_passes,
                 remark: remark,
             };
 
@@ -990,8 +1005,8 @@ pub fn run_assembler(sess: &Session, outputs: &OutputFilenames) {
 }
 
 unsafe fn configure_llvm(sess: &Session) {
-    use std::sync::{Once, ONCE_INIT};
-    static INIT: Once = ONCE_INIT;
+    use std::sync::Once;
+    static INIT: Once = Once::new();
 
     // Copy what clang does by turning on loop vectorization at O2 and
     // slp vectorization at O3

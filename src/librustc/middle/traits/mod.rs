@@ -15,6 +15,7 @@ pub use self::FulfillmentErrorCode::*;
 pub use self::Vtable::*;
 pub use self::ObligationCauseCode::*;
 
+use middle::free_region::FreeRegionMap;
 use middle::subst;
 use middle::ty::{self, HasProjectionTypes, Ty};
 use middle::ty_fold::TypeFoldable;
@@ -23,9 +24,11 @@ use std::slice::Iter;
 use std::rc::Rc;
 use syntax::ast;
 use syntax::codemap::{Span, DUMMY_SP};
-use util::ppaux::{Repr, UserString};
+use util::ppaux::Repr;
 
 pub use self::error_reporting::report_fulfillment_errors;
+pub use self::error_reporting::report_overflow_error;
+pub use self::error_reporting::report_selection_error;
 pub use self::error_reporting::suggest_new_overflow_limit;
 pub use self::coherence::orphan_check;
 pub use self::coherence::overlapping_impls;
@@ -38,6 +41,7 @@ pub use self::object_safety::is_object_safe;
 pub use self::object_safety::object_safety_violations;
 pub use self::object_safety::ObjectSafetyViolation;
 pub use self::object_safety::MethodViolationCode;
+pub use self::object_safety::is_vtable_safe_method;
 pub use self::select::SelectionContext;
 pub use self::select::SelectionCache;
 pub use self::select::{MethodMatchResult, MethodMatched, MethodAmbiguous, MethodDidNotMatch};
@@ -45,8 +49,11 @@ pub use self::select::{MethodMatchedData}; // intentionally don't export variant
 pub use self::util::elaborate_predicates;
 pub use self::util::get_vtable_index_of_object_method;
 pub use self::util::trait_ref_for_builtin_bound;
+pub use self::util::predicate_for_trait_def;
 pub use self::util::supertraits;
 pub use self::util::Supertraits;
+pub use self::util::supertrait_def_ids;
+pub use self::util::SupertraitDefIds;
 pub use self::util::transitive_bounds;
 pub use self::util::upcast;
 
@@ -67,7 +74,7 @@ mod util;
 #[derive(Clone, PartialEq, Eq)]
 pub struct Obligation<'tcx, T> {
     pub cause: ObligationCause<'tcx>,
-    pub recursion_depth: uint,
+    pub recursion_depth: usize,
     pub predicate: T,
 }
 
@@ -116,9 +123,6 @@ pub enum ObligationCauseCode<'tcx> {
     // Types of fields (other than the last) in a struct must be sized.
     FieldSized,
 
-    // Only Sized types can be made into objects
-    ObjectSized,
-
     // static items must have `Sync` type
     SharedStatic,
 
@@ -151,10 +155,10 @@ pub type Selection<'tcx> = Vtable<'tcx, PredicateObligation<'tcx>>;
 #[derive(Clone,Debug)]
 pub enum SelectionError<'tcx> {
     Unimplemented,
-    Overflow,
     OutputTypeParameterMismatch(ty::PolyTraitRef<'tcx>,
                                 ty::PolyTraitRef<'tcx>,
                                 ty::type_err<'tcx>),
+    TraitNotObjectSafe(ast::DefId),
 }
 
 pub struct FulfillmentError<'tcx> {
@@ -327,16 +331,9 @@ pub fn evaluate_builtin_bound<'a,'tcx>(infcx: &InferCtxt<'a,'tcx>,
     let result = match fulfill_cx.select_all_or_error(infcx, typer) {
         Ok(()) => Ok(Some(())), // Success, we know it implements Copy.
         Err(errors) => {
-            // Check if overflow occurred anywhere and propagate that.
-            if errors.iter().any(
-                |err| match err.code { CodeSelectionError(Overflow) => true, _ => false })
-            {
-                return Err(Overflow);
-            }
-
-            // Otherwise, if there were any hard errors, propagate an
-            // arbitrary one of those. If no hard errors at all,
-            // report ambiguity.
+            // If there were any hard errors, propagate an arbitrary
+            // one of those. If no hard errors at all, report
+            // ambiguity.
             let sel_error =
                 errors.iter()
                       .filter_map(|err| {
@@ -384,16 +381,8 @@ pub fn type_known_to_meet_builtin_bound<'a,'tcx>(infcx: &InferCtxt<'a,'tcx>,
             // soldering on, so just treat this like not implemented
             false
         }
-        Err(Overflow) => {
-            span_err!(infcx.tcx.sess, span, E0285,
-                "overflow evaluating whether `{}` is `{}`",
-                      ty.user_string(infcx.tcx),
-                      bound.user_string(infcx.tcx));
-            suggest_new_overflow_limit(infcx.tcx, span);
-            false
-        }
         Err(_) => {
-            // other errors: not implemented.
+            // errors: not implemented.
             false
         }
     }
@@ -436,7 +425,8 @@ pub fn normalize_param_env_or_error<'a,'tcx>(unnormalized_env: ty::ParameterEnvi
         }
     };
 
-    infcx.resolve_regions_and_report_errors(body_id);
+    let free_regions = FreeRegionMap::new();
+    infcx.resolve_regions_and_report_errors(&free_regions, body_id);
     let predicates = match infcx.fully_resolve(&predicates) {
         Ok(predicates) => predicates,
         Err(fixup_err) => {
@@ -497,7 +487,7 @@ impl<'tcx,O> Obligation<'tcx,O> {
     }
 
     fn with_depth(cause: ObligationCause<'tcx>,
-                  recursion_depth: uint,
+                  recursion_depth: usize,
                   trait_ref: O)
                   -> Obligation<'tcx, O>
     {
@@ -546,7 +536,9 @@ impl<'tcx, N> Vtable<'tcx, N> {
         }
     }
 
-    pub fn map_nested<M, F>(&self, op: F) -> Vtable<'tcx, M> where F: FnMut(&N) -> M {
+    pub fn map_nested<M, F>(&self, op: F) -> Vtable<'tcx, M> where
+        F: FnMut(&N) -> M,
+    {
         match *self {
             VtableImpl(ref i) => VtableImpl(i.map_nested(op)),
             VtableDefaultImpl(ref t) => VtableDefaultImpl(t.map_nested(op)),
@@ -652,19 +644,10 @@ impl<'tcx> FulfillmentError<'tcx> {
     {
         FulfillmentError { obligation: obligation, code: code }
     }
-
-    pub fn is_overflow(&self) -> bool {
-        match self.code {
-            CodeAmbiguity => false,
-            CodeSelectionError(Overflow) => true,
-            CodeSelectionError(_) => false,
-            CodeProjectionError(_) => false,
-        }
-    }
 }
 
 impl<'tcx> TraitObligation<'tcx> {
-    fn self_ty(&self) -> Ty<'tcx> {
-        self.predicate.0.self_ty()
+    fn self_ty(&self) -> ty::Binder<Ty<'tcx>> {
+        ty::Binder(self.predicate.skip_binder().self_ty())
     }
 }

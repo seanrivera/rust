@@ -13,7 +13,7 @@ use middle::ty;
 use util::nodemap::FnvHashMap;
 
 use syntax::ast;
-use syntax::ast_util::{walk_pat};
+use syntax::ast_util::walk_pat;
 use syntax::codemap::{Span, DUMMY_SP};
 
 pub type PatIdMap = FnvHashMap<ast::Ident, ast::NodeId>;
@@ -30,7 +30,7 @@ pub fn pat_id_map(dm: &DefMap, pat: &ast::Pat) -> PatIdMap {
 
 pub fn pat_is_refutable(dm: &DefMap, pat: &ast::Pat) -> bool {
     match pat.node {
-        ast::PatLit(_) | ast::PatRange(_, _) => true,
+        ast::PatLit(_) | ast::PatRange(_, _) | ast::PatQPath(..) => true,
         ast::PatEnum(_, _) |
         ast::PatIdent(_, _, None) |
         ast::PatStruct(..) => {
@@ -60,9 +60,25 @@ pub fn pat_is_variant_or_struct(dm: &DefMap, pat: &ast::Pat) -> bool {
 
 pub fn pat_is_const(dm: &DefMap, pat: &ast::Pat) -> bool {
     match pat.node {
-        ast::PatIdent(_, _, None) | ast::PatEnum(..) => {
+        ast::PatIdent(_, _, None) | ast::PatEnum(..) | ast::PatQPath(..) => {
             match dm.borrow().get(&pat.id).map(|d| d.full_def()) {
-                Some(DefConst(..)) => true,
+                Some(DefConst(..)) | Some(DefAssociatedConst(..)) => true,
+                _ => false
+            }
+        }
+        _ => false
+    }
+}
+
+// Same as above, except that partially-resolved defs cause `false` to be
+// returned instead of a panic.
+pub fn pat_is_resolved_const(dm: &DefMap, pat: &ast::Pat) -> bool {
+    match pat.node {
+        ast::PatIdent(_, _, None) | ast::PatEnum(..) | ast::PatQPath(..) => {
+            match dm.borrow().get(&pat.id)
+                    .and_then(|d| if d.depth == 0 { Some(d.base_def) }
+                                  else { None } ) {
+                Some(DefConst(..)) | Some(DefAssociatedConst(..)) => true,
                 _ => false
             }
         }
@@ -117,6 +133,24 @@ pub fn pat_contains_bindings(dm: &DefMap, pat: &ast::Pat) -> bool {
         }
     });
     contains_bindings
+}
+
+/// Checks if the pattern contains any `ref` or `ref mut` bindings.
+pub fn pat_contains_ref_binding(dm: &DefMap, pat: &ast::Pat) -> bool {
+    let mut result = false;
+    pat_bindings(dm, pat, |mode, _, _, _| {
+        match mode {
+            ast::BindingMode::BindByRef(_) => { result = true; }
+            ast::BindingMode::BindByValue(_) => { }
+        }
+    });
+    result
+}
+
+/// Checks if the patterns for this arm contain any `ref` or `ref mut`
+/// bindings.
+pub fn arm_contains_ref_binding(dm: &DefMap, arm: &ast::Arm) -> bool {
+    arm.pats.iter().any(|pat| pat_contains_ref_binding(dm, pat))
 }
 
 /// Checks if the pattern contains any patterns that bind something to

@@ -8,7 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 //
-// ignore-lexer-test FIXME #15877
 
 
 trait Cat {
@@ -17,7 +16,7 @@ trait Cat {
     fn purr(&self) -> bool { true }
 }
 
-impl Cat for int {
+impl Cat for isize {
     fn meow(&self) -> bool {
         self.scratch()
     }

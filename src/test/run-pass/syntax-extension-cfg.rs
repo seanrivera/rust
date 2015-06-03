@@ -10,6 +10,7 @@
 
 // compile-flags: --cfg foo --cfg qux="foo"
 
+
 pub fn main() {
     // check
     if ! cfg!(foo) { panic!() }

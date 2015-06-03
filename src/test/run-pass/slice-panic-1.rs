@@ -10,11 +10,12 @@
 
 // Test that if a slicing expr[..] fails, the correct cleanups happen.
 
+
 use std::thread;
 
 struct Foo;
 
-static mut DTOR_COUNT: int = 0;
+static mut DTOR_COUNT: isize = 0;
 
 impl Drop for Foo {
     fn drop(&mut self) { unsafe { DTOR_COUNT += 1; } }

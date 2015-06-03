@@ -8,12 +8,14 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![feature(collections)]
+
 use std::string::String;
 
 #[derive(PartialEq)]
 enum t { a, b(String), }
 
-fn make(i: int) -> t {
+fn make(i: isize) -> t {
     if i > 10 { return t::a; }
     let mut s = String::from_str("hello");
     // Ensure s is non-const.

@@ -19,15 +19,15 @@
 use prelude::v1::*;
 
 use error::Error;
-use ffi::{OsString, AsOsStr};
+use ffi::{OsStr, OsString};
 use fmt;
 use io;
-use path::{AsPath, PathBuf};
-use sync::atomic::{AtomicIsize, ATOMIC_ISIZE_INIT, Ordering};
-use sync::{StaticMutex, MUTEX_INIT};
+use path::{Path, PathBuf};
+use sync::atomic::{AtomicIsize, Ordering};
+use sync::StaticMutex;
 use sys::os as os_imp;
 
-/// Returns the current working directory as a `Path`.
+/// Returns the current working directory as a `PathBuf`.
 ///
 /// # Errors
 ///
@@ -38,9 +38,9 @@ use sys::os as os_imp;
 /// * There are insufficient permissions to access the current directory.
 /// * The internal buffer is not large enough to hold the path.
 ///
-/// # Example
+/// # Examples
 ///
-/// ```rust
+/// ```
 /// use std::env;
 ///
 /// // We assume that we are in a valid directory.
@@ -55,9 +55,9 @@ pub fn current_dir() -> io::Result<PathBuf> {
 /// Changes the current working directory to the specified path, returning
 /// whether the change was completed successfully or not.
 ///
-/// # Example
+/// # Examples
 ///
-/// ```rust
+/// ```
 /// use std::env;
 /// use std::path::Path;
 ///
@@ -66,11 +66,11 @@ pub fn current_dir() -> io::Result<PathBuf> {
 /// println!("Successfully changed working directory to {}!", root.display());
 /// ```
 #[stable(feature = "env", since = "1.0.0")]
-pub fn set_current_dir<P: AsPath + ?Sized>(p: &P) -> io::Result<()> {
-    os_imp::chdir(p.as_path())
+pub fn set_current_dir<P: AsRef<Path>>(p: P) -> io::Result<()> {
+    os_imp::chdir(p.as_ref())
 }
 
-static ENV_LOCK: StaticMutex = MUTEX_INIT;
+static ENV_LOCK: StaticMutex = StaticMutex::new();
 
 /// An iterator over a snapshot of the environment variables of this process.
 ///
@@ -99,9 +99,9 @@ pub struct VarsOs { inner: os_imp::Env }
 /// environment is not valid unicode. If this is not desired, consider using the
 /// `env::vars_os` function.
 ///
-/// # Example
+/// # Examples
 ///
-/// ```rust
+/// ```
 /// use std::env;
 ///
 /// // We will iterate through the references to the element returned by
@@ -122,9 +122,9 @@ pub fn vars() -> Vars {
 /// variables at the time of this invocation, modifications to environment
 /// variables afterwards will not be reflected in the returned iterator.
 ///
-/// # Example
+/// # Examples
 ///
-/// ```rust
+/// ```
 /// use std::env;
 ///
 /// // We will iterate through the references to the element returned by
@@ -163,9 +163,9 @@ impl Iterator for VarsOs {
 /// valid unicode. If the environment variable is not present, or it is not
 /// valid unicode, then `Err` will be returned.
 ///
-/// # Example
+/// # Examples
 ///
-/// ```rust
+/// ```
 /// use std::env;
 ///
 /// let key = "HOME";
@@ -175,7 +175,7 @@ impl Iterator for VarsOs {
 /// }
 /// ```
 #[stable(feature = "env", since = "1.0.0")]
-pub fn var<K: ?Sized>(key: &K) -> Result<String, VarError> where K: AsOsStr {
+pub fn var<K: AsRef<OsStr>>(key: K) -> Result<String, VarError> {
     match var_os(key) {
         Some(s) => s.into_string().map_err(VarError::NotUnicode),
         None => Err(VarError::NotPresent)
@@ -185,9 +185,9 @@ pub fn var<K: ?Sized>(key: &K) -> Result<String, VarError> where K: AsOsStr {
 /// Fetches the environment variable `key` from the current process, returning
 /// None if the variable isn't set.
 ///
-/// # Example
+/// # Examples
 ///
-/// ```rust
+/// ```
 /// use std::env;
 ///
 /// let key = "HOME";
@@ -197,9 +197,9 @@ pub fn var<K: ?Sized>(key: &K) -> Result<String, VarError> where K: AsOsStr {
 /// }
 /// ```
 #[stable(feature = "env", since = "1.0.0")]
-pub fn var_os<K: ?Sized>(key: &K) -> Option<OsString> where K: AsOsStr {
+pub fn var_os<K: AsRef<OsStr>>(key: K) -> Option<OsString> {
     let _g = ENV_LOCK.lock();
-    os_imp::getenv(key.as_os_str())
+    os_imp::getenv(key.as_ref())
 }
 
 /// Possible errors from the `env::var` method.
@@ -243,9 +243,20 @@ impl Error for VarError {
 /// Sets the environment variable `k` to the value `v` for the currently running
 /// process.
 ///
-/// # Example
+/// Note that while concurrent access to environment variables is safe in Rust,
+/// some platforms only expose inherently unsafe non-threadsafe APIs for
+/// inspecting the environment. As a result extra care needs to be taken when
+/// auditing calls to unsafe external FFI functions to ensure that any external
+/// environment accesses are properly synchronized with accesses in Rust.
 ///
-/// ```rust
+/// Discussion of this unsafety on Unix may be found in:
+///
+///  - [Austin Group Bugzilla](http://austingroupbugs.net/view.php?id=188)
+///  - [GNU C library Bugzilla](https://sourceware.org/bugzilla/show_bug.cgi?id=15607#c2)
+///
+/// # Examples
+///
+/// ```
 /// use std::env;
 ///
 /// let key = "KEY";
@@ -253,18 +264,40 @@ impl Error for VarError {
 /// assert_eq!(env::var(key), Ok("VALUE".to_string()));
 /// ```
 #[stable(feature = "env", since = "1.0.0")]
-pub fn set_var<K: ?Sized, V: ?Sized>(k: &K, v: &V)
-    where K: AsOsStr, V: AsOsStr
-{
+pub fn set_var<K: AsRef<OsStr>, V: AsRef<OsStr>>(k: K, v: V) {
     let _g = ENV_LOCK.lock();
-    os_imp::setenv(k.as_os_str(), v.as_os_str())
+    os_imp::setenv(k.as_ref(), v.as_ref())
 }
 
-/// Remove a variable from the environment entirely.
+/// Removes an environment variable from the environment of the currently running process.
+///
+/// Note that while concurrent access to environment variables is safe in Rust,
+/// some platforms only expose inherently unsafe non-threadsafe APIs for
+/// inspecting the environment. As a result extra care needs to be taken when
+/// auditing calls to unsafe external FFI functions to ensure that any external
+/// environment accesses are properly synchronized with accesses in Rust.
+///
+/// Discussion of this unsafety on Unix may be found in:
+///
+///  - [Austin Group Bugzilla](http://austingroupbugs.net/view.php?id=188)
+///  - [GNU C library Bugzilla](https://sourceware.org/bugzilla/show_bug.cgi?id=15607#c2)
+///
+/// # Examples
+///
+/// ```
+/// use std::env;
+///
+/// let key = "KEY";
+/// env::set_var(key, "VALUE");
+/// assert_eq!(env::var(key), Ok("VALUE".to_string()));
+///
+/// env::remove_var(key);
+/// assert!(env::var(key).is_err());
+/// ```
 #[stable(feature = "env", since = "1.0.0")]
-pub fn remove_var<K: ?Sized>(k: &K) where K: AsOsStr {
+pub fn remove_var<K: AsRef<OsStr>>(k: K) {
     let _g = ENV_LOCK.lock();
-    os_imp::unsetenv(k.as_os_str())
+    os_imp::unsetenv(k.as_ref())
 }
 
 /// An iterator over `Path` instances for parsing an environment variable
@@ -279,9 +312,9 @@ pub struct SplitPaths<'a> { inner: os_imp::SplitPaths<'a> }
 ///
 /// Returns an iterator over the paths contained in `unparsed`.
 ///
-/// # Example
+/// # Examples
 ///
-/// ```rust
+/// ```
 /// use std::env;
 ///
 /// let key = "PATH";
@@ -295,8 +328,8 @@ pub struct SplitPaths<'a> { inner: os_imp::SplitPaths<'a> }
 /// }
 /// ```
 #[stable(feature = "env", since = "1.0.0")]
-pub fn split_paths<T: AsOsStr + ?Sized>(unparsed: &T) -> SplitPaths {
-    SplitPaths { inner: os_imp::split_paths(unparsed.as_os_str()) }
+pub fn split_paths<T: AsRef<OsStr> + ?Sized>(unparsed: &T) -> SplitPaths {
+    SplitPaths { inner: os_imp::split_paths(unparsed.as_ref()) }
 }
 
 #[stable(feature = "env", since = "1.0.0")]
@@ -323,24 +356,24 @@ pub struct JoinPathsError {
 /// `Path`s contains an invalid character for constructing the `PATH`
 /// variable (a double quote on Windows or a colon on Unix).
 ///
-/// # Example
+/// # Examples
 ///
-/// ```rust
+/// ```
 /// use std::env;
 /// use std::path::PathBuf;
 ///
 /// if let Some(path) = env::var_os("PATH") {
 ///     let mut paths = env::split_paths(&path).collect::<Vec<_>>();
-///     paths.push(PathBuf::new("/home/xyz/bin"));
+///     paths.push(PathBuf::from("/home/xyz/bin"));
 ///     let new_path = env::join_paths(paths.iter()).unwrap();
 ///     env::set_var("PATH", &new_path);
 /// }
 /// ```
 #[stable(feature = "env", since = "1.0.0")]
 pub fn join_paths<I, T>(paths: I) -> Result<OsString, JoinPathsError>
-    where I: Iterator<Item=T>, T: AsOsStr
+    where I: IntoIterator<Item=T>, T: AsRef<OsStr>
 {
-    os_imp::join_paths(paths).map_err(|e| {
+    os_imp::join_paths(paths.into_iter()).map_err(|e| {
         JoinPathsError { inner: e }
     })
 }
@@ -371,9 +404,9 @@ impl Error for JoinPathsError {
 /// 'USERPROFILE' environment variable if it is set and not equal to the empty
 /// string.
 ///
-/// # Example
+/// # Examples
 ///
-/// ```rust
+/// ```
 /// use std::env;
 ///
 /// match env::home_dir() {
@@ -396,6 +429,19 @@ pub fn home_dir() -> Option<PathBuf> {
 /// On Windows, returns the value of, in order, the 'TMP', 'TEMP',
 /// 'USERPROFILE' environment variable  if any are set and not the empty
 /// string. Otherwise, tmpdir returns the path to the Windows directory.
+///
+/// ```
+/// use std::env;
+/// use std::fs::File;
+///
+/// # fn foo() -> std::io::Result<()> {
+/// let mut dir = env::temp_dir();
+/// dir.push("foo.txt");
+///
+/// let f = try!(File::create(dir));
+/// # Ok(())
+/// # }
+/// ```
 #[stable(feature = "env", since = "1.0.0")]
 pub fn temp_dir() -> PathBuf {
     os_imp::temp_dir()
@@ -415,7 +461,7 @@ pub fn temp_dir() -> PathBuf {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```
 /// use std::env;
 ///
 /// match env::current_exe() {
@@ -429,12 +475,12 @@ pub fn current_exe() -> io::Result<PathBuf> {
     os_imp::current_exe()
 }
 
-static EXIT_STATUS: AtomicIsize = ATOMIC_ISIZE_INIT;
+static EXIT_STATUS: AtomicIsize = AtomicIsize::new(0);
 
 /// Sets the process exit code
 ///
-/// Sets the exit code returned by the process if all supervised tasks
-/// terminate successfully (without panicking). If the current root task panics
+/// Sets the exit code returned by the process if all supervised threads
+/// terminate successfully (without panicking). If the current root thread panics
 /// and is supervised by the scheduler then any user-specified exit status is
 /// ignored and the process exits with the default panic status.
 ///
@@ -451,7 +497,7 @@ pub fn get_exit_status() -> i32 {
     EXIT_STATUS.load(Ordering::SeqCst) as i32
 }
 
-/// An iterator over the arguments of a process, yielding an `String` value
+/// An iterator over the arguments of a process, yielding a `String` value
 /// for each argument.
 ///
 /// This structure is created through the `std::env::args` method.
@@ -478,9 +524,9 @@ pub struct ArgsOs { inner: os_imp::Args }
 /// process is not valid unicode. If this is not desired it is recommended to
 /// use the `args_os` function instead.
 ///
-/// # Example
+/// # Examples
 ///
-/// ```rust
+/// ```
 /// use std::env;
 ///
 /// // Prints each argument on a separate line
@@ -500,9 +546,9 @@ pub fn args() -> Args {
 /// set to arbitrary text, and it may not even exist, so this property should
 /// not be relied upon for security purposes.
 ///
-/// # Example
+/// # Examples
 ///
-/// ```rust
+/// ```
 /// use std::env;
 ///
 /// // Prints each argument on a separate line
@@ -552,39 +598,94 @@ pub fn page_size() -> usize {
 pub mod consts {
     /// A string describing the architecture of the CPU that this is currently
     /// in use.
+    ///
+    /// Some possible values:
+    ///
+    /// - x86
+    /// - x86_64
+    /// - arm
+    /// - aarch64
+    /// - mips
+    /// - mipsel
+    /// - powerpc
     #[stable(feature = "env", since = "1.0.0")]
     pub const ARCH: &'static str = super::arch::ARCH;
 
+    /// The family of the operating system. In this case, `unix`.
+    ///
+    /// Some possible values:
+    ///
+    /// - unix
+    /// - windows
     #[stable(feature = "env", since = "1.0.0")]
     pub const FAMILY: &'static str = super::os::FAMILY;
 
     /// A string describing the specific operating system in use: in this
     /// case, `linux`.
+    ///
+    /// Some possible values:
+    ///
+    /// - linux
+    /// - macos
+    /// - ios
+    /// - freebsd
+    /// - dragonfly
+    /// - bitrig
+    /// - openbsd
+    /// - android
+    /// - windows
     #[stable(feature = "env", since = "1.0.0")]
     pub const OS: &'static str = super::os::OS;
 
     /// Specifies the filename prefix used for shared libraries on this
     /// platform: in this case, `lib`.
+    ///
+    /// Some possible values:
+    ///
+    /// - lib
+    /// - `""` (an empty string)
     #[stable(feature = "env", since = "1.0.0")]
     pub const DLL_PREFIX: &'static str = super::os::DLL_PREFIX;
 
     /// Specifies the filename suffix used for shared libraries on this
     /// platform: in this case, `.so`.
+    ///
+    /// Some possible values:
+    ///
+    /// - .so
+    /// - .dylib
+    /// - .dll
     #[stable(feature = "env", since = "1.0.0")]
     pub const DLL_SUFFIX: &'static str = super::os::DLL_SUFFIX;
 
     /// Specifies the file extension used for shared libraries on this
     /// platform that goes after the dot: in this case, `so`.
+    ///
+    /// Some possible values:
+    ///
+    /// - .so
+    /// - .dylib
+    /// - .dll
     #[stable(feature = "env", since = "1.0.0")]
     pub const DLL_EXTENSION: &'static str = super::os::DLL_EXTENSION;
 
     /// Specifies the filename suffix used for executable binaries on this
     /// platform: in this case, the empty string.
+    ///
+    /// Some possible values:
+    ///
+    /// - exe
+    /// - `""` (an empty string)
     #[stable(feature = "env", since = "1.0.0")]
     pub const EXE_SUFFIX: &'static str = super::os::EXE_SUFFIX;
 
     /// Specifies the file extension, if any, used for executable binaries
     /// on this platform: in this case, the empty string.
+    ///
+    /// Some possible values:
+    ///
+    /// - exe
+    /// - `""` (an empty string)
     #[stable(feature = "env", since = "1.0.0")]
     pub const EXE_EXTENSION: &'static str = super::os::EXE_EXTENSION;
 
@@ -728,22 +829,23 @@ mod arch {
 mod tests {
     use prelude::v1::*;
     use super::*;
+
     use iter::repeat;
     use rand::{self, Rng};
     use ffi::{OsString, OsStr};
-    use path::PathBuf;
+    use path::{Path, PathBuf};
 
     fn make_rand_name() -> OsString {
         let mut rng = rand::thread_rng();
         let n = format!("TEST{}", rng.gen_ascii_chars().take(10)
                                      .collect::<String>());
-        let n = OsString::from_string(n);
+        let n = OsString::from(n);
         assert!(var_os(&n).is_none());
         n
     }
 
     fn eq(a: Option<OsString>, b: Option<&str>) {
-        assert_eq!(a.as_ref().map(|s| &**s), b.map(OsStr::from_str).map(|s| &*s));
+        assert_eq!(a.as_ref().map(|s| &**s), b.map(OsStr::new).map(|s| &*s));
     }
 
     #[test]
@@ -780,8 +882,8 @@ mod tests {
             i += 1;
         }
         let n = make_rand_name();
-        set_var(&n, s.as_slice());
-        eq(var_os(&n), Some(s.as_slice()));
+        set_var(&n, &s);
+        eq(var_os(&n), Some(&s));
     }
 
     #[test]
@@ -799,7 +901,7 @@ mod tests {
         let n = make_rand_name();
         let s = repeat("x").take(10000).collect::<String>();
         set_var(&n, &s);
-        eq(var_os(&n), Some(s.as_slice()));
+        eq(var_os(&n), Some(&s));
         remove_var(&n);
         eq(var_os(&n), None);
     }
@@ -831,7 +933,7 @@ mod tests {
     fn split_paths_windows() {
         fn check_parse(unparsed: &str, parsed: &[&str]) -> bool {
             split_paths(unparsed).collect::<Vec<_>>() ==
-                parsed.iter().map(|s| PathBuf::new(*s)).collect::<Vec<_>>()
+                parsed.iter().map(|s| PathBuf::from(*s)).collect::<Vec<_>>()
         }
 
         assert!(check_parse("", &mut [""]));
@@ -851,7 +953,7 @@ mod tests {
     fn split_paths_unix() {
         fn check_parse(unparsed: &str, parsed: &[&str]) -> bool {
             split_paths(unparsed).collect::<Vec<_>>() ==
-                parsed.iter().map(|s| PathBuf::new(*s)).collect::<Vec<_>>()
+                parsed.iter().map(|s| PathBuf::from(*s)).collect::<Vec<_>>()
         }
 
         assert!(check_parse("", &mut [""]));
@@ -866,7 +968,7 @@ mod tests {
     fn join_paths_unix() {
         fn test_eq(input: &[&str], output: &str) -> bool {
             &*join_paths(input.iter().cloned()).unwrap() ==
-                OsStr::from_str(output)
+                OsStr::new(output)
         }
 
         assert!(test_eq(&[], ""));
@@ -882,7 +984,7 @@ mod tests {
     fn join_paths_windows() {
         fn test_eq(input: &[&str], output: &str) -> bool {
             &*join_paths(input.iter().cloned()).unwrap() ==
-                OsStr::from_str(output)
+                OsStr::new(output)
         }
 
         assert!(test_eq(&[], ""));

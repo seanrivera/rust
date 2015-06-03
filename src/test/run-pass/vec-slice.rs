@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 pub fn main() {
     let  v = vec![1,2,3,4,5];
     let v2 = &v[1..3];

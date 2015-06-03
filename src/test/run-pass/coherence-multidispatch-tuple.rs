@@ -8,6 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+// pretty-expanded FIXME #23616
+
 use std::fmt::Debug;
 use std::default::Default;
 
@@ -15,15 +17,15 @@ use std::default::Default;
 // heterogeneous pair.
 
 trait MyTrait {
-    fn get(&self) -> uint;
+    fn get(&self) -> usize;
 }
 
 impl<T> MyTrait for (T,T) {
-    fn get(&self) -> uint { 0 }
+    fn get(&self) -> usize { 0 }
 }
 
-impl MyTrait for (uint,int) {
-    fn get(&self) -> uint { 0 }
+impl MyTrait for (usize,isize) {
+    fn get(&self) -> usize { 0 }
 }
 
 fn main() {

@@ -10,6 +10,7 @@
 
 // aux-build:macro_crate_def_only.rs
 
+
 #[macro_use] #[no_link]
 extern crate macro_crate_def_only;
 

@@ -8,9 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+// compile-flags: -Z parse-only
+
 fn main() {
     assert!(1 == 2)
     assert!(3 == 4) //~ ERROR expected one of `.`, `;`, `}`, or an operator, found `assert`
     println!("hello");
 }
-

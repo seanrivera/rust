@@ -13,9 +13,6 @@
 
 #![feature(unboxed_closures)]
 
-use std::mem;
-use std::old_io::stdio::println;
-
 fn call_it<F>(f: F)
     where F : FnOnce(String) -> String
 {
@@ -62,8 +59,8 @@ pub fn main() {
 
     // External functions
 
-    call_bare(println);
+    fn foo(s: &str) {}
+    call_bare(foo);
 
-    call_bare_again(println);
+    call_bare_again(foo);
 }
-

@@ -12,6 +12,7 @@
 // should not upset the variance inference for actual occurrences of
 // that lifetime in type expressions.
 
+
 pub trait HasLife<'a> {
     fn dummy(&'a self) { } // just to induce a variance on 'a
 }

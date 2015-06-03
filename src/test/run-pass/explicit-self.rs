@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 #![allow(unknown_features)]
 #![feature(box_syntax)]
 
@@ -50,7 +51,7 @@ struct thing {
 
 #[derive(Clone)]
 struct A {
-    a: int
+    a: isize
 }
 
 fn thing(x: A) -> thing {
@@ -60,10 +61,10 @@ fn thing(x: A) -> thing {
 }
 
 impl thing {
-    pub fn bar(self: Box<thing>) -> int { self.x.a }
-    pub fn quux(&self) -> int { self.x.a }
+    pub fn bar(self: Box<thing>) -> isize { self.x.a }
+    pub fn quux(&self) -> isize { self.x.a }
     pub fn baz<'a>(&'a self) -> &'a A { &self.x }
-    pub fn spam(self) -> int { self.x.a }
+    pub fn spam(self) -> isize { self.x.a }
 }
 
 trait Nus { fn f(&self); }

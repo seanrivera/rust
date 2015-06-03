@@ -11,7 +11,8 @@
 // This briefly tests the capability of `Cell` and `RefCell` to implement the
 // `Encodable` and `Decodable` traits via `#[derive(Encodable, Decodable)]`
 
-#![feature(old_orphan_check)]
+
+#![feature(rustc_private)]
 
 extern crate serialize;
 
@@ -21,7 +22,7 @@ use serialize::json;
 
 #[derive(Encodable, Decodable)]
 struct A {
-    baz: int
+    baz: isize
 }
 
 #[derive(Encodable, Decodable)]

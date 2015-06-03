@@ -9,6 +9,7 @@
 // except according to those terms.
 
 
+
 struct Foo;
 
 impl Foo {

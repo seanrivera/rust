@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 mod foo {
     pub mod bar {
         pub mod baz {
@@ -19,6 +20,6 @@ mod foo {
 }
 
 fn main() {
-    assert_eq!(module_path!(), "issue-18859");
-    assert_eq!(foo::bar::baz::name(), "issue-18859::foo::bar::baz");
+    assert_eq!(module_path!(), "issue_18859");
+    assert_eq!(foo::bar::baz::name(), "issue_18859::foo::bar::baz");
 }

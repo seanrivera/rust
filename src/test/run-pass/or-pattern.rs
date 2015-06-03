@@ -8,9 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-enum blah { a(int, int, uint), b(int, int), c, }
 
-fn or_alt(q: blah) -> int {
+enum blah { a(isize, isize, usize), b(isize, isize), c, }
+
+fn or_alt(q: blah) -> isize {
     match q { blah::a(x, y, _) | blah::b(x, y) => { return x + y; } blah::c => { return 0; } }
 }
 

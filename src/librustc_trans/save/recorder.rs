@@ -62,7 +62,10 @@ macro_rules! svec {
     })
 }
 
-#[derive(Copy, Debug, Eq, PartialEq)]
+// FIXME recorder should operate on super::Data, rather than lots of ad hoc
+// data.
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Row {
     Variable,
     Enum,

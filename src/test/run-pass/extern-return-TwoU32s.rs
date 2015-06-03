@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 pub struct TwoU32s {
     one: u32, two: u32
 }

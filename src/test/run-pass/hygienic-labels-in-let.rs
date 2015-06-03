@@ -10,6 +10,14 @@
 
 // ignore-pretty: pprust doesn't print hygiene output
 
+// Test that labels injected by macros do not break hygiene.  This
+// checks cases where the macros invocations are under the rhs of a
+// let statement.
+
+// Issue #24278: The label/lifetime shadowing checker from #24162
+// conservatively ignores hygiene, and thus issues warnings that are
+// both true- and false-positives for this test.
+
 macro_rules! loop_x {
     ($e: expr) => {
         // $e shouldn't be able to interact with this 'x
@@ -34,7 +42,7 @@ macro_rules! run_once {
 pub fn main() {
     let mut i = 0;
 
-    let j: int = {
+    let j: isize = {
         'x: loop {
             // this 'x should refer to the outer loop, lexically
             loop_x!(break 'x);
@@ -44,7 +52,7 @@ pub fn main() {
     };
     assert_eq!(j, 1);
 
-    let k: int = {
+    let k: isize = {
         'x: for _ in 0..1 {
             // ditto
             loop_x!(break 'x);
@@ -54,7 +62,7 @@ pub fn main() {
     };
     assert_eq!(k, 1);
 
-    let l: int = {
+    let l: isize = {
         'x: for _ in 0..1 {
             // ditto
             while_true!(break 'x);
@@ -64,7 +72,7 @@ pub fn main() {
     };
     assert_eq!(l, 1);
 
-    let n: int = {
+    let n: isize = {
         'x: for _ in 0..1 {
             // ditto
             run_once!(continue 'x);

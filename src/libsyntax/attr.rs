@@ -282,7 +282,24 @@ pub fn find_crate_name(attrs: &[Attribute]) -> Option<InternedString> {
     first_attr_value_str_by_name(attrs, "crate_name")
 }
 
-#[derive(Copy, PartialEq)]
+/// Find the value of #[export_name=*] attribute and check its validity.
+pub fn find_export_name_attr(diag: &SpanHandler, attrs: &[Attribute]) -> Option<InternedString> {
+    attrs.iter().fold(None, |ia,attr| {
+        if attr.check_name("export_name") {
+            if let s@Some(_) = attr.value_str() {
+                s
+            } else {
+                diag.span_err(attr.span, "export_name attribute has invalid format");
+                diag.handler.help("use #[export_name=\"*\"]");
+                None
+            }
+        } else {
+            ia
+        }
+    })
+}
+
+#[derive(Copy, Clone, PartialEq)]
 pub enum InlineAttr {
     None,
     Hint,
@@ -349,7 +366,7 @@ pub fn cfg_matches(diagnostic: &SpanHandler, cfgs: &[P<MetaItem>], cfg: &ast::Me
 }
 
 /// Represents the #[deprecated] and friends attributes.
-#[derive(RustcEncodable,RustcDecodable,Clone,Debug)]
+#[derive(RustcEncodable, RustcDecodable, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Stability {
     pub level: StabilityLevel,
     pub feature: InternedString,
@@ -361,7 +378,7 @@ pub struct Stability {
 }
 
 /// The available stability levels.
-#[derive(RustcEncodable,RustcDecodable,PartialEq,PartialOrd,Clone,Debug,Copy)]
+#[derive(RustcEncodable, RustcDecodable, PartialEq, PartialOrd, Clone, Debug, Copy, Eq, Hash)]
 pub enum StabilityLevel {
     Unstable,
     Stable,
@@ -503,8 +520,8 @@ pub fn require_unique_names(diagnostic: &SpanHandler, metas: &[P<MetaItem>]) {
         let name = meta.name();
 
         if !set.insert(name.clone()) {
-            diagnostic.span_fatal(meta.span,
-                                  &format!("duplicate meta item `{}`", name));
+            panic!(diagnostic.span_fatal(meta.span,
+                                  &format!("duplicate meta item `{}`", name)));
         }
     }
 }
@@ -565,15 +582,13 @@ fn int_type_of_word(s: &str) -> Option<IntType> {
         "u32" => Some(UnsignedInt(ast::TyU32)),
         "i64" => Some(SignedInt(ast::TyI64)),
         "u64" => Some(UnsignedInt(ast::TyU64)),
-        "int" => Some(SignedInt(ast::TyIs(true))),
-        "uint" => Some(UnsignedInt(ast::TyUs(true))),
-        "isize" => Some(SignedInt(ast::TyIs(false))),
-        "usize" => Some(UnsignedInt(ast::TyUs(false))),
+        "isize" => Some(SignedInt(ast::TyIs)),
+        "usize" => Some(UnsignedInt(ast::TyUs)),
         _ => None
     }
 }
 
-#[derive(PartialEq, Debug, RustcEncodable, RustcDecodable, Copy)]
+#[derive(PartialEq, Debug, RustcEncodable, RustcDecodable, Copy, Clone)]
 pub enum ReprAttr {
     ReprAny,
     ReprInt(Span, IntType),
@@ -592,7 +607,7 @@ impl ReprAttr {
     }
 }
 
-#[derive(Eq, Hash, PartialEq, Debug, RustcEncodable, RustcDecodable, Copy)]
+#[derive(Eq, Hash, PartialEq, Debug, RustcEncodable, RustcDecodable, Copy, Clone)]
 pub enum IntType {
     SignedInt(ast::IntTy),
     UnsignedInt(ast::UintTy)
@@ -612,7 +627,7 @@ impl IntType {
             SignedInt(ast::TyI16) | UnsignedInt(ast::TyU16) |
             SignedInt(ast::TyI32) | UnsignedInt(ast::TyU32) |
             SignedInt(ast::TyI64) | UnsignedInt(ast::TyU64) => true,
-            SignedInt(ast::TyIs(_)) | UnsignedInt(ast::TyUs(_)) => false
+            SignedInt(ast::TyIs) | UnsignedInt(ast::TyUs) => false
         }
     }
 }

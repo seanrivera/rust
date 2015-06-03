@@ -8,23 +8,20 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// ignore-android: FIXME(#10393)
+// ignore-android: FIXME(#10393) hangs without output
 // ignore-pretty very bad with line comments
 
-// multi tasking k-nucleotide
+// multi threading k-nucleotide
 
-#![feature(box_syntax)]
-
-use std::ascii::{AsciiExt, OwnedAsciiExt};
+use std::ascii::AsciiExt;
 use std::cmp::Ordering::{self, Less, Greater, Equal};
 use std::collections::HashMap;
 use std::mem::replace;
-use std::num::Float;
-use std::option;
-use std::os;
 use std::env;
 use std::sync::mpsc::{channel, Sender, Receiver};
 use std::thread;
+use std::io;
+use std::io::prelude::*;
 
 fn f64_cmp(x: f64, y: f64) -> Ordering {
     // arbitrarily decide that NaNs are larger than everything.
@@ -42,13 +39,13 @@ fn f64_cmp(x: f64, y: f64) -> Ordering {
 }
 
 // given a map, print a sorted version of it
-fn sort_and_fmt(mm: &HashMap<Vec<u8> , uint>, total: uint) -> String {
-   fn pct(xx: uint, yy: uint) -> f64 {
+fn sort_and_fmt(mm: &HashMap<Vec<u8> , usize>, total: usize) -> String {
+   fn pct(xx: usize, yy: usize) -> f64 {
       return (xx as f64) * 100.0 / (yy as f64);
    }
 
    // sort by key, then by value
-   fn sortKV(mut orig: Vec<(Vec<u8> ,f64)> ) -> Vec<(Vec<u8> ,f64)> {
+   fn sort_kv(mut orig: Vec<(Vec<u8> ,f64)> ) -> Vec<(Vec<u8> ,f64)> {
         orig.sort_by(|&(ref a, _), &(ref b, _)| a.cmp(b));
         orig.sort_by(|&(_, a), &(_, b)| f64_cmp(b, a));
         orig
@@ -61,7 +58,7 @@ fn sort_and_fmt(mm: &HashMap<Vec<u8> , uint>, total: uint) -> String {
       pairs.push(((*key).clone(), pct(val, total)));
    }
 
-   let pairs_sorted = sortKV(pairs);
+   let pairs_sorted = sort_kv(pairs);
 
    let mut buffer = String::new();
    for &(ref k, v) in &pairs_sorted {
@@ -74,16 +71,16 @@ fn sort_and_fmt(mm: &HashMap<Vec<u8> , uint>, total: uint) -> String {
 }
 
 // given a map, search for the frequency of a pattern
-fn find(mm: &HashMap<Vec<u8> , uint>, key: String) -> uint {
-   let key = key.into_ascii_lowercase();
+fn find(mm: &HashMap<Vec<u8> , usize>, key: String) -> usize {
+   let key = key.to_ascii_lowercase();
    match mm.get(key.as_bytes()) {
-      option::Option::None      => { return 0; }
-      option::Option::Some(&num) => { return num; }
+      None => 0,
+      Some(&num) => num,
    }
 }
 
 // given a map, increment the counter for a key
-fn update_freq(mm: &mut HashMap<Vec<u8> , uint>, key: &[u8]) {
+fn update_freq(mm: &mut HashMap<Vec<u8> , usize>, key: &[u8]) {
     let key = key.to_vec();
     let newval = match mm.remove(&key) {
         Some(v) => v + 1,
@@ -95,7 +92,7 @@ fn update_freq(mm: &mut HashMap<Vec<u8> , uint>, key: &[u8]) {
 // given a Vec<u8>, for each window call a function
 // i.e., for "hello" and windows of size four,
 // run it("hell") and it("ello"), then return "llo"
-fn windows_with_carry<F>(bb: &[u8], nn: uint, mut it: F) -> Vec<u8> where
+fn windows_with_carry<F>(bb: &[u8], nn: usize, mut it: F) -> Vec<u8> where
     F: FnMut(&[u8]),
 {
    let mut ii = 0;
@@ -109,12 +106,12 @@ fn windows_with_carry<F>(bb: &[u8], nn: uint, mut it: F) -> Vec<u8> where
    return bb[len - (nn - 1)..len].to_vec();
 }
 
-fn make_sequence_processor(sz: uint,
+fn make_sequence_processor(sz: usize,
                            from_parent: &Receiver<Vec<u8>>,
                            to_parent: &Sender<String>) {
-   let mut freqs: HashMap<Vec<u8>, uint> = HashMap::new();
+   let mut freqs: HashMap<Vec<u8>, usize> = HashMap::new();
    let mut carry = Vec::new();
-   let mut total: uint = 0;
+   let mut total: usize = 0;
 
    let mut line: Vec<u8>;
 
@@ -123,7 +120,7 @@ fn make_sequence_processor(sz: uint,
        line = from_parent.recv().unwrap();
        if line == Vec::new() { break; }
 
-       carry.push_all(&line);
+       carry.extend(line);
        carry = windows_with_carry(&carry, sz, |window| {
            update_freq(&mut freqs, window);
            total += 1;
@@ -147,15 +144,13 @@ fn make_sequence_processor(sz: uint,
 
 // given a FASTA file on stdin, process sequence THREE
 fn main() {
-    use std::old_io::{stdio, MemReader, BufferedReader};
-
+    let input = io::stdin();
     let rdr = if env::var_os("RUST_BENCH").is_some() {
-        let foo = include_bytes!("shootout-k-nucleotide.data");
-        box MemReader::new(foo.to_vec()) as Box<Reader>
+        let foo: &[u8] = include_bytes!("shootout-k-nucleotide.data");
+        Box::new(foo) as Box<BufRead>
     } else {
-        box stdio::stdin() as Box<Reader>
+        Box::new(input.lock()) as Box<BufRead>
     };
-    let mut rdr = BufferedReader::new(rdr);
 
     // initialize each sequence sorter
     let sizes: Vec<usize> = vec!(1,2,3,4,6,12,18);
@@ -187,13 +182,13 @@ fn main() {
    for line in rdr.lines() {
        let line = line.unwrap().trim().to_string();
 
-       if line.len() == 0 { continue; }
+       if line.is_empty() { continue; }
 
        match (line.as_bytes()[0] as char, proc_mode) {
 
            // start processing if this is the one
            ('>', false) => {
-               match line[1..].find_str("THREE") {
+               match line[1..].find("THREE") {
                    Some(_) => { proc_mode = true; }
                    None    => { }
                }

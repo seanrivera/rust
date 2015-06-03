@@ -10,32 +10,36 @@
 
 // Do not remove on snapshot creation. Needed for bootstrap. (Issue #22364)
 #![cfg_attr(stage0, feature(custom_attribute))]
+
 #![feature(box_syntax)]
-#![feature(int_uint)]
 #![feature(unboxed_closures)]
-#![feature(unsafe_destructor)]
 #![feature(core)]
+#![feature(const_fn)]
 #![feature(test)]
 #![feature(rand)]
 #![feature(unicode)]
 #![feature(std_misc)]
 #![feature(libc)]
 #![feature(hash)]
-#![feature(io)]
-#![feature(collections)]
-#![allow(deprecated)] // rand
+#![feature(unique)]
+#![feature(step_by)]
+#![feature(slice_patterns)]
+#![feature(float_from_str_radix)]
+#![feature(cell_extras)]
+#![feature(iter_empty)]
+#![feature(iter_once)]
 
 extern crate core;
 extern crate test;
 extern crate libc;
-extern crate unicode;
+extern crate rustc_unicode;
+extern crate rand;
 
 mod any;
 mod atomic;
 mod cell;
 mod char;
 mod cmp;
-mod finally;
 mod fmt;
 mod hash;
 mod iter;

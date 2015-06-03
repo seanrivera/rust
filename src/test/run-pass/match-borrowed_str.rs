@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 #![allow(unnecessary_allocation)]
 
 fn f1(ref_string: &str) -> String {

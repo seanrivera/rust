@@ -8,61 +8,46 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// ignore-linux see joyent/libuv#1189
 // ignore-android needs extra network permissions
 // ignore-openbsd system ulimit (Too many open files)
-// exec-env:RUST_LOG=debug
+// ignore-bitrig system ulimit (Too many open files)
 
-#[macro_use]
-extern crate log;
-extern crate libc;
-
+use std::io::prelude::*;
+use std::net::{TcpListener, TcpStream};
+use std::process;
 use std::sync::mpsc::channel;
-use std::old_io::net::tcp::{TcpListener, TcpStream};
-use std::old_io::{Acceptor, Listener};
-use std::thread::{Builder, Thread};
-use std::time::Duration;
+use std::thread::{self, Builder};
 
 fn main() {
     // This test has a chance to time out, try to not let it time out
-    Thread::spawn(move|| -> () {
-        use std::old_io::timer;
-        timer::sleep(Duration::milliseconds(30 * 1000));
-        println!("timed out!");
-        unsafe { libc::exit(1) }
+    thread::spawn(move|| -> () {
+        thread::sleep_ms(30 * 1000);
+        process::exit(1);
     });
 
-    let (tx, rx) = channel();
-    Thread::spawn(move || -> () {
-        let mut listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        tx.send(listener.socket_name().unwrap()).unwrap();
-        let mut acceptor = listener.listen();
+    let mut listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    thread::spawn(move || -> () {
         loop {
-            let mut stream = match acceptor.accept() {
-                Ok(stream) => stream,
-                Err(error) => {
-                    debug!("accept panicked: {}", error);
-                    continue;
-                }
+            let mut stream = match listener.accept() {
+                Ok(stream) => stream.0,
+                Err(error) => continue,
             };
-            stream.read_byte();
+            stream.read(&mut [0]);
             stream.write(&[2]);
         }
     });
-    let addr = rx.recv().unwrap();
 
     let (tx, rx) = channel();
     for _ in 0..1000 {
         let tx = tx.clone();
         Builder::new().stack_size(64 * 1024).spawn(move|| {
             match TcpStream::connect(addr) {
-                Ok(stream) => {
-                    let mut stream = stream;
+                Ok(mut stream) => {
                     stream.write(&[1]);
-                    let mut buf = [0];
-                    stream.read(&mut buf);
+                    stream.read(&mut [0]);
                 },
-                Err(e) => debug!("{}", e)
+                Err(..) => {}
             }
             tx.send(()).unwrap();
         });
@@ -74,5 +59,5 @@ fn main() {
     for _ in 0..1000 {
         rx.recv().unwrap();
     }
-    unsafe { libc::exit(0) }
+    process::exit(0);
 }

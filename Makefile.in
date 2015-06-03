@@ -76,7 +76,7 @@
 #
 #   * `CFG_ENABLE_VALGRIND=1` - Run tests under valgrind
 #   * `VALGRIND_COMPILE=1` - Run the compiler itself under valgrind
-#                            (may require `CFG_ENABLE_VALGRIND`)
+#                            (requires `CFG_ENABLE_VALGRIND`)
 #
 #   * `NO_REBUILD=1` - Don't rebootstrap when testing std
 #                      (and possibly other crates)
@@ -97,12 +97,7 @@
 #     make check-stage1-rpass TESTNAME=my-shiny-new-test
 #
 #     // Having trouble figuring out which test is failing? Turn off parallel tests
-#     make check-stage1-std RUST_TEST_TASKS=1
-#
-# This is hardly all there is to know of The Rust Build System's
-# mysteries. The tale continues on the wiki[1].
-#
-# [1]: https://github.com/rust-lang/rust/wiki/Note-testsuite
+#     make check-stage1-std RUST_TEST_THREADS=1
 #
 # If you really feel like getting your hands dirty, then:
 #
@@ -163,6 +158,13 @@
 # will just link against the libraries in the target lib directory.
 #
 # Admittedly this is a little convoluted.
+#
+# If you find yourself working on the make infrastructure itself, and trying to
+# find the value of a given variable after expansion, you can use:
+#
+# make print-VARIABLE_NAME
+#
+# To extract it
 #
 # </nitty-gritty>
 #
@@ -264,8 +266,3 @@ ifneq ($(strip $(findstring TAGS.emacs,$(MAKECMDGOALS)) \
   CFG_INFO := $(info cfg: including ctags rules)
   include $(CFG_SRC_DIR)mk/ctags.mk
 endif
-
-# Find all of the .d files and include them to add information about
-# header file dependencies.
-ALL_DEP_FILES := $(ALL_OBJ_FILES:%.o=%.d)
--include $(ALL_DEP_FILES)

@@ -10,6 +10,7 @@
 
 // Test references to `Self::Item` in the trait. Issue #20220.
 
+
 use std::vec;
 
 trait IntoIteratorX {

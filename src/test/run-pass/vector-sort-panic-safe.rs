@@ -8,8 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::sync::atomic::{AtomicUsize, ATOMIC_USIZE_INIT, Ordering};
-use std::rand::{thread_rng, Rng, Rand};
+
+#![feature(rand, core)]
+#![feature(const_fn)]
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::__rand::{thread_rng, Rng};
 use std::thread;
 
 const REPEATS: usize = 5;
@@ -17,34 +21,23 @@ const MAX_LEN: usize = 32;
 static drop_counts: [AtomicUsize;  MAX_LEN] =
     // FIXME #5244: AtomicUsize is not Copy.
     [
-        ATOMIC_USIZE_INIT, ATOMIC_USIZE_INIT, ATOMIC_USIZE_INIT,
-        ATOMIC_USIZE_INIT, ATOMIC_USIZE_INIT, ATOMIC_USIZE_INIT,
-        ATOMIC_USIZE_INIT, ATOMIC_USIZE_INIT, ATOMIC_USIZE_INIT,
-        ATOMIC_USIZE_INIT, ATOMIC_USIZE_INIT, ATOMIC_USIZE_INIT,
-        ATOMIC_USIZE_INIT, ATOMIC_USIZE_INIT, ATOMIC_USIZE_INIT,
-        ATOMIC_USIZE_INIT, ATOMIC_USIZE_INIT, ATOMIC_USIZE_INIT,
-        ATOMIC_USIZE_INIT, ATOMIC_USIZE_INIT, ATOMIC_USIZE_INIT,
-        ATOMIC_USIZE_INIT, ATOMIC_USIZE_INIT, ATOMIC_USIZE_INIT,
-        ATOMIC_USIZE_INIT, ATOMIC_USIZE_INIT, ATOMIC_USIZE_INIT,
-        ATOMIC_USIZE_INIT, ATOMIC_USIZE_INIT, ATOMIC_USIZE_INIT,
-        ATOMIC_USIZE_INIT, ATOMIC_USIZE_INIT,
+        AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
+        AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
+        AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
+        AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
+        AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
+        AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
+        AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
+        AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
+        AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
+        AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
+        AtomicUsize::new(0), AtomicUsize::new(0),
      ];
 
-static creation_count: AtomicUsize = ATOMIC_USIZE_INIT;
+static creation_count: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, PartialEq, PartialOrd, Eq, Ord)]
-struct DropCounter { x: usize, creation_id: usize }
-
-impl Rand for DropCounter {
-    fn rand<R: Rng>(rng: &mut R) -> DropCounter {
-        // (we're not using this concurrently, so Relaxed is fine.)
-        let num = creation_count.fetch_add(1, Ordering::Relaxed);
-        DropCounter {
-            x: rng.gen(),
-            creation_id: num
-        }
-    }
-}
+struct DropCounter { x: u32, creation_id: usize }
 
 impl Drop for DropCounter {
     fn drop(&mut self) {
@@ -53,7 +46,7 @@ impl Drop for DropCounter {
 }
 
 pub fn main() {
-    assert!(MAX_LEN <= std::usize::BITS as usize);
+    assert!(MAX_LEN <= std::usize::BITS);
     // len can't go above 64.
     for len in 2..MAX_LEN {
         for _ in 0..REPEATS {
@@ -61,9 +54,13 @@ pub fn main() {
             // IDs start from 0.
             creation_count.store(0, Ordering::Relaxed);
 
-            let main = thread_rng().gen_iter::<DropCounter>()
-                                 .take(len)
-                                 .collect::<Vec<DropCounter>>();
+            let mut rng = thread_rng();
+            let main = (0..len).map(|_| {
+                DropCounter {
+                    x: rng.next_u32(),
+                    creation_id: creation_count.fetch_add(1, Ordering::Relaxed),
+                }
+            }).collect::<Vec<_>>();
 
             // work out the total number of comparisons required to sort
             // this array...

@@ -110,11 +110,9 @@ fn test_partial_max() {
 
 #[test]
 fn test_user_defined_eq() {
-    use core::num::SignedInt;
-
     // Our type.
     struct SketchyNum {
-        num : int
+        num : isize
     }
 
     // Our implementation of `PartialEq` to support `==` and `!=`.

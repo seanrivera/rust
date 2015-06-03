@@ -7,8 +7,6 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
-//
-// ignore-lexer-test FIXME #15679
 
 //! Operations on ASCII strings and characters
 
@@ -16,62 +14,142 @@
 
 use prelude::v1::*;
 
+use ops::Range;
 use mem;
-use iter::Range;
 
 /// Extension methods for ASCII-subset only operations on owned strings
 #[unstable(feature = "std_misc",
            reason = "would prefer to do this in a more general way")]
 pub trait OwnedAsciiExt {
-    /// Convert the string to ASCII upper case:
+    /// Converts the string to ASCII upper case:
     /// ASCII letters 'a' to 'z' are mapped to 'A' to 'Z',
     /// but non-ASCII letters are unchanged.
     fn into_ascii_uppercase(self) -> Self;
 
-    /// Convert the string to ASCII lower case:
+    /// Converts the string to ASCII lower case:
     /// ASCII letters 'A' to 'Z' are mapped to 'a' to 'z',
     /// but non-ASCII letters are unchanged.
     fn into_ascii_lowercase(self) -> Self;
 }
 
-/// Extension methods for ASCII-subset only operations on string slices
+/// Extension methods for ASCII-subset only operations on string slices.
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait AsciiExt {
     /// Container type for copied ASCII characters.
     #[stable(feature = "rust1", since = "1.0.0")]
     type Owned;
 
-    /// Check if within the ASCII range.
+    /// Checks if within the ASCII range.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::ascii::AsciiExt;
+    ///
+    /// let ascii = 'a';
+    /// let utf8 = '❤';
+    ///
+    /// assert_eq!(true, ascii.is_ascii());
+    /// assert_eq!(false, utf8.is_ascii())
+    /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     fn is_ascii(&self) -> bool;
 
-    /// Makes a copy of the string in ASCII upper case:
+    /// Makes a copy of the string in ASCII upper case.
+    ///
     /// ASCII letters 'a' to 'z' are mapped to 'A' to 'Z',
     /// but non-ASCII letters are unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::ascii::AsciiExt;
+    ///
+    /// let ascii = 'a';
+    /// let utf8 = '❤';
+    ///
+    /// assert_eq!('A', ascii.to_ascii_uppercase());
+    /// assert_eq!('❤', utf8.to_ascii_uppercase());
+    /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     fn to_ascii_uppercase(&self) -> Self::Owned;
 
-    /// Makes a copy of the string in ASCII lower case:
+    /// Makes a copy of the string in ASCII lower case.
+    ///
     /// ASCII letters 'A' to 'Z' are mapped to 'a' to 'z',
     /// but non-ASCII letters are unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::ascii::AsciiExt;
+    ///
+    /// let ascii = 'A';
+    /// let utf8 = '❤';
+    ///
+    /// assert_eq!('a', ascii.to_ascii_lowercase());
+    /// assert_eq!('❤', utf8.to_ascii_lowercase());
+    /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     fn to_ascii_lowercase(&self) -> Self::Owned;
 
-    /// Check that two strings are an ASCII case-insensitive match.
+    /// Checks that two strings are an ASCII case-insensitive match.
+    ///
     /// Same as `to_ascii_lowercase(a) == to_ascii_lowercase(b)`,
     /// but without allocating and copying temporary strings.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::ascii::AsciiExt;
+    ///
+    /// let ascii1 = 'A';
+    /// let ascii2 = 'a';
+    /// let ascii3 = 'A';
+    /// let ascii4 = 'z';
+    ///
+    /// assert_eq!(true, ascii1.eq_ignore_ascii_case(&ascii2));
+    /// assert_eq!(true, ascii1.eq_ignore_ascii_case(&ascii3));
+    /// assert_eq!(false, ascii1.eq_ignore_ascii_case(&ascii4));
+    /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     fn eq_ignore_ascii_case(&self, other: &Self) -> bool;
 
-    /// Convert this type to its ASCII upper case equivalent in-place.
+    /// Converts this type to its ASCII upper case equivalent in-place.
     ///
     /// See `to_ascii_uppercase` for more information.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(ascii)]
+    /// use std::ascii::AsciiExt;
+    ///
+    /// let mut ascii = 'a';
+    ///
+    /// ascii.make_ascii_uppercase();
+    ///
+    /// assert_eq!('A', ascii);
+    /// ```
     #[unstable(feature = "ascii")]
     fn make_ascii_uppercase(&mut self);
 
-    /// Convert this type to its ASCII lower case equivalent in-place.
+    /// Converts this type to its ASCII lower case equivalent in-place.
     ///
     /// See `to_ascii_lowercase` for more information.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(ascii)]
+    /// use std::ascii::AsciiExt;
+    ///
+    /// let mut ascii = 'A';
+    ///
+    /// ascii.make_ascii_lowercase();
+    ///
+    /// assert_eq!('a', ascii);
+    /// ```
     #[unstable(feature = "ascii")]
     fn make_ascii_lowercase(&mut self);
 }
@@ -246,7 +324,7 @@ pub struct EscapeDefault {
     data: [u8; 4],
 }
 
-/// Returns a 'default' ASCII and C++11-like literal escape of a `u8`
+/// Returns an iterator that produces an escaped version of a `u8`.
 ///
 /// The default is chosen with a bias toward producing literals that are
 /// legal in a variety of languages, including C++11 and similar C-family
@@ -257,6 +335,20 @@ pub struct EscapeDefault {
 /// - Any other chars in the range [0x20,0x7e] are not escaped.
 /// - Any other chars are given hex escapes of the form '\xNN'.
 /// - Unicode escapes are never generated by this function.
+///
+/// # Examples
+///
+/// ```
+/// use std::ascii;
+///
+/// let escaped = ascii::escape_default(b'0').next().unwrap();
+/// assert_eq!(b'0', escaped);
+///
+/// let mut escaped = ascii::escape_default(b'\t');
+///
+/// assert_eq!(b'\\', escaped.next().unwrap());
+/// assert_eq!(b't', escaped.next().unwrap());
+/// ```
 #[stable(feature = "rust1", since = "1.0.0")]
 pub fn escape_default(c: u8) -> EscapeDefault {
     let (data, len) = match c {
@@ -270,7 +362,7 @@ pub fn escape_default(c: u8) -> EscapeDefault {
         _ => ([b'\\', b'x', hexify(c >> 4), hexify(c & 0xf)], 4),
     };
 
-    return EscapeDefault { range: range(0, len), data: data };
+    return EscapeDefault { range: (0.. len), data: data };
 
     fn hexify(b: u8) -> u8 {
         match b {

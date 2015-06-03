@@ -11,6 +11,7 @@
 // Test that we pick which version of `foo` to run based on the
 // type that is (ultimately) inferred for `x`.
 
+
 trait foo {
     fn foo(&self) -> i32;
 }

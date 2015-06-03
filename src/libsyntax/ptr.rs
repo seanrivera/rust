@@ -52,7 +52,7 @@ pub struct P<T> {
 /// Construct a `P<T>` from a `T` value.
 pub fn P<T: 'static>(value: T) -> P<T> {
     P {
-        ptr: box value
+        ptr: Box::new(value)
     }
 }
 
@@ -71,8 +71,8 @@ impl<T: 'static> P<T> {
     {
         unsafe {
             let p = &mut *self.ptr;
-            // FIXME(#5016) this shouldn't need to zero to be safe.
-            ptr::write(p, f(ptr::read_and_zero(p)));
+            // FIXME(#5016) this shouldn't need to drop-fill to be safe.
+            ptr::write(p, f(ptr::read_and_drop(p)));
         }
         self
     }
@@ -108,6 +108,13 @@ impl<T: Debug> Debug for P<T> {
 impl<T: Display> Display for P<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         Display::fmt(&**self, f)
+    }
+}
+
+#[stable(feature = "rust1", since = "1.0.0")]
+impl<T> fmt::Pointer for P<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Pointer::fmt(&self.ptr, f)
     }
 }
 

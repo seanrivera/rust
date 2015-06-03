@@ -128,7 +128,7 @@
 #![allow(unused_variables)]
 #![omit_gdb_pretty_printer_section]
 
-fn immediate_args(a: int, b: bool, c: f64) {
+fn immediate_args(a: isize, b: bool, c: f64) {
     ()
 }
 
@@ -156,7 +156,7 @@ fn assignment(mut a: u64, b: u64, c: f64) {
 }
 
 fn function_call(x: u64, y: u64, z: f64) {
-    std::old_io::stdio::print("Hi!")
+    println!("Hi!")
 }
 
 fn identifier(x: u64, y: u64, z: f64) -> u64 {

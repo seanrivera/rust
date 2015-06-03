@@ -8,11 +8,17 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-pub fn main() {
-    assert_eq!(0xffffffff, (-1 as u32));
-    assert_eq!(4294967295, (-1 as u32));
-    assert_eq!(0xffffffffffffffff, (-1 as u64));
-    assert_eq!(18446744073709551615, (-1 as u64));
 
-    assert_eq!(-2147483648 - 1, 2147483647);
+#![feature(core)]
+
+// Catch mistakes in the overflowing literals lint.
+#![deny(overflowing_literals)]
+
+pub fn main() {
+    assert_eq!(0xffffffff, (!0 as u32));
+    assert_eq!(4294967295, (!0 as u32));
+    assert_eq!(0xffffffffffffffff, (!0 as u64));
+    assert_eq!(18446744073709551615, (!0 as u64));
+
+    assert_eq!((-2147483648i32).wrapping_sub(1), 2147483647);
 }

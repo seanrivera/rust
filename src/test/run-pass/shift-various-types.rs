@@ -10,6 +10,7 @@
 
 // Test that we can do shifts by any integral type.
 
+
 struct Panolpy {
     i8: i8,
     i16: i16,

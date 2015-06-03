@@ -8,10 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// ignore-stage1
 // force-host
 
-#![feature(plugin_registrar, quote)]
+#![feature(plugin_registrar, quote, rustc_private)]
 #![crate_type = "dylib"]
 
 extern crate syntax;

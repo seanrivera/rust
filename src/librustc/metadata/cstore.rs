@@ -18,12 +18,11 @@ pub use self::LinkagePreference::*;
 pub use self::NativeLibraryKind::*;
 
 use back::svh::Svh;
-use metadata::decoder;
-use metadata::loader;
+use metadata::{creader, decoder, loader};
 use session::search_paths::PathKind;
 use util::nodemap::{FnvHashMap, NodeMap};
 
-use std::cell::RefCell;
+use std::cell::{RefCell, Ref};
 use std::rc::Rc;
 use std::path::PathBuf;
 use flate::Bytes;
@@ -58,7 +57,7 @@ pub struct crate_metadata {
     pub data: MetadataBlob,
     pub cnum_map: cnum_map,
     pub cnum: ast::CrateNum,
-    pub codemap_import_info: Vec<ImportedFileMap>,
+    pub codemap_import_info: RefCell<Vec<ImportedFileMap>>,
     pub span: codemap::Span,
 }
 
@@ -68,11 +67,13 @@ pub enum LinkagePreference {
     RequireStatic,
 }
 
-#[derive(Copy, Clone, PartialEq, FromPrimitive)]
-pub enum NativeLibraryKind {
-    NativeStatic,    // native static library (.a archive)
-    NativeFramework, // OSX-specific
-    NativeUnknown,   // default way to specify a dynamic library
+enum_from_u32! {
+    #[derive(Copy, Clone, PartialEq)]
+    pub enum NativeLibraryKind {
+        NativeStatic,    // native static library (.a archive)
+        NativeFramework, // OSX-specific
+        NativeUnknown,   // default way to specify a dynamic library
+    }
 }
 
 // Where a crate came from on the local filesystem. One of these two options
@@ -111,7 +112,7 @@ impl CStore {
     }
 
     pub fn get_crate_data(&self, cnum: ast::CrateNum) -> Rc<crate_metadata> {
-        (*self.metas.borrow())[cnum].clone()
+        self.metas.borrow().get(&cnum).unwrap().clone()
     }
 
     pub fn get_crate_hash(&self, cnum: ast::CrateNum) -> Svh {
@@ -238,12 +239,26 @@ impl crate_metadata {
     pub fn data<'a>(&'a self) -> &'a [u8] { self.data.as_slice() }
     pub fn name(&self) -> String { decoder::get_crate_name(self.data()) }
     pub fn hash(&self) -> Svh { decoder::get_crate_hash(self.data()) }
+    pub fn imported_filemaps<'a>(&'a self, codemap: &codemap::CodeMap)
+                                 -> Ref<'a, Vec<ImportedFileMap>> {
+        let filemaps = self.codemap_import_info.borrow();
+        if filemaps.is_empty() {
+            drop(filemaps);
+            let filemaps = creader::import_codemap(codemap, &self.data);
+
+            // This shouldn't borrow twice, but there is no way to downgrade RefMut to Ref.
+            *self.codemap_import_info.borrow_mut() = filemaps;
+            self.codemap_import_info.borrow()
+        } else {
+            filemaps
+        }
+    }
 }
 
 impl MetadataBlob {
     pub fn as_slice<'a>(&'a self) -> &'a [u8] {
         let slice = match *self {
-            MetadataVec(ref vec) => vec.as_slice(),
+            MetadataVec(ref vec) => &vec[..],
             MetadataArchive(ref ar) => ar.as_slice(),
         };
         if slice.len() < 4 {
@@ -252,7 +267,7 @@ impl MetadataBlob {
             let len = (((slice[0] as u32) << 24) |
                        ((slice[1] as u32) << 16) |
                        ((slice[2] as u32) << 8) |
-                       ((slice[3] as u32) << 0)) as uint;
+                       ((slice[3] as u32) << 0)) as usize;
             if len + 4 <= slice.len() {
                 &slice[4.. len + 4]
             } else {

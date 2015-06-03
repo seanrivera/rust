@@ -8,12 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// ignore-android: FIXME(#9116) Bus error
-
 use std::mem;
 
 #[repr(packed)]
-#[derive(Copy, PartialEq, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 struct Foo {
     bar: u8,
     baz: u64

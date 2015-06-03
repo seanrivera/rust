@@ -9,13 +9,14 @@
 // except according to those terms.
 
 
-fn want_slice(v: &[int]) -> int {
+
+fn want_slice(v: &[isize]) -> isize {
     let mut sum = 0;
     for i in v { sum += *i; }
     sum
 }
 
-fn has_mut_vec(v: Vec<int> ) -> int {
+fn has_mut_vec(v: Vec<isize> ) -> isize {
     want_slice(&v)
 }
 

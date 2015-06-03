@@ -10,6 +10,7 @@
 
 // aux-build:struct_destructuring_cross_crate.rs
 
+
 extern crate struct_destructuring_cross_crate;
 
 pub fn main() {

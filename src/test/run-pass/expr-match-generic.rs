@@ -9,6 +9,7 @@
 // except according to those terms.
 
 
+
 type compare<T> = extern "Rust" fn(T, T) -> bool;
 
 fn test_generic<T:Clone>(expected: T, eq: compare<T>) {
@@ -23,8 +24,8 @@ fn test_bool() {
 
 #[derive(Clone)]
 struct Pair {
-    a: int,
-    b: int,
+    a: isize,
+    b: isize,
 }
 
 fn test_rec() {

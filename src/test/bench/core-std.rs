@@ -8,20 +8,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// ignore-lexer-test FIXME #15679
 // Microbenchmarks for various functions in std and extra
 
-#![feature(unboxed_closures)]
+#![feature(rand, collections, std_misc, duration, duration_span)]
 
-use std::old_io::File;
 use std::iter::repeat;
 use std::mem::swap;
 use std::env;
-use std::rand::Rng;
-use std::rand;
+use std::__rand::{thread_rng, Rng};
 use std::str;
 use std::time::Duration;
-use std::vec;
 
 fn main() {
     let argv: Vec<String> = env::args().collect();
@@ -34,7 +30,6 @@ fn main() {
     }
 
     bench!(shift_push);
-    bench!(read_line);
     bench!(vec_plus);
     bench!(vec_append);
     bench!(vec_push_all);
@@ -47,7 +42,7 @@ fn maybe_run_test<F>(argv: &[String], name: String, test: F) where F: FnOnce() {
 
     if env::var_os("RUST_BENCH").is_some() {
         run_test = true
-    } else if argv.len() > 0 {
+    } else if !argv.is_empty() {
         run_test = argv.iter().any(|x| x == &"all".to_string()) || argv.iter().any(|x| x == &name)
     }
 
@@ -57,33 +52,20 @@ fn maybe_run_test<F>(argv: &[String], name: String, test: F) where F: FnOnce() {
 
     let dur = Duration::span(test);
 
-    println!("{}:\t\t{} ms", name, dur.num_milliseconds());
+    println!("{}:\t\t{}", name, dur);
 }
 
 fn shift_push() {
     let mut v1 = repeat(1).take(30000).collect::<Vec<_>>();
     let mut v2 = Vec::new();
 
-    while v1.len() > 0 {
+    while !v1.is_empty() {
         v2.push(v1.remove(0));
     }
 }
 
-fn read_line() {
-    use std::old_io::BufferedReader;
-
-    let mut path = Path::new(env!("CFG_SRC_DIR"));
-    path.push("src/test/bench/shootout-k-nucleotide.data");
-
-    for _ in 0..3 {
-        let mut reader = BufferedReader::new(File::open(&path).unwrap());
-        for _line in reader.lines() {
-        }
-    }
-}
-
 fn vec_plus() {
-    let mut r = rand::thread_rng();
+    let mut r = thread_rng();
 
     let mut v = Vec::new();
     let mut i = 0;
@@ -101,7 +83,7 @@ fn vec_plus() {
 }
 
 fn vec_append() {
-    let mut r = rand::thread_rng();
+    let mut r = thread_rng();
 
     let mut v = Vec::new();
     let mut i = 0;
@@ -122,7 +104,7 @@ fn vec_append() {
 }
 
 fn vec_push_all() {
-    let mut r = rand::thread_rng();
+    let mut r = thread_rng();
 
     let mut v = Vec::new();
     for i in 0..1500 {

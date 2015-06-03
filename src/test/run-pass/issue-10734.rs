@@ -8,9 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 #![feature(unsafe_no_drop_flag)]
 
-static mut drop_count: uint = 0;
+static mut drop_count: usize = 0;
 
 #[unsafe_no_drop_flag]
 struct Foo {

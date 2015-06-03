@@ -10,18 +10,16 @@
 
 // ignore-pretty
 
-#![feature(unsafe_destructor)]
-
 use std::rc::Rc;
 use std::cell::Cell;
 
 struct Field {
-    number: uint,
-    state: Rc<Cell<uint>>
+    number: usize,
+    state: Rc<Cell<usize>>
 }
 
 impl Field {
-    fn new(number: uint, state: Rc<Cell<uint>>) -> Field {
+    fn new(number: usize, state: Rc<Cell<usize>>) -> Field {
         Field {
             number: number,
             state: state
@@ -29,7 +27,6 @@ impl Field {
     }
 }
 
-#[unsafe_destructor] // because Field isn't Send
 impl Drop for Field {
     fn drop(&mut self) {
         println!("Dropping field {}", self.number);
@@ -50,7 +47,6 @@ struct HasDropImpl {
     _three: Field
 }
 
-#[unsafe_destructor] // because HasDropImpl isn't Send
 impl Drop for HasDropImpl {
     fn drop(&mut self) {
         println!("HasDropImpl.drop()");

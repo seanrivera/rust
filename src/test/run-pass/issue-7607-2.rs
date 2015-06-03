@@ -8,6 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+// pretty-expanded FIXME #23616
+
 pub mod a {
     pub struct Foo { a: usize }
 }
@@ -20,5 +22,3 @@ pub mod b {
 }
 
 pub fn main() { }
-
-

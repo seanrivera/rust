@@ -8,7 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// ignore-android: FIXME(#10381)
 // ignore-windows
 // min-lldb-version: 310
 
@@ -38,9 +37,9 @@
 // gdb-command:print padded_tuple.length
 // gdb-check:$8 = 2
 // gdb-command:print padded_tuple.data_ptr[0]
-// gdb-check:$9 = {6, 7}
+// gdb-check:$9 = {__0 = 6, __1 = 7}
 // gdb-command:print padded_tuple.data_ptr[1]
-// gdb-check:$10 = {8, 9}
+// gdb-check:$10 = {__0 = 8, __1 = 9}
 
 // gdb-command:print padded_struct.length
 // gdb-check:$11 = 2
@@ -49,9 +48,9 @@
 // gdb-command:print padded_struct.data_ptr[1]
 // gdb-check:$13 = {x = 13, y = 14, z = 15}
 
-// gdb-command:print 'vec-slices::MUT_VECT_SLICE'.length
+// gdb-command:print 'vec_slices::MUT_VECT_SLICE'.length
 // gdb-check:$14 = 2
-// gdb-command:print *((int64_t[2]*)('vec-slices::MUT_VECT_SLICE'.data_ptr))
+// gdb-command:print *((int64_t[2]*)('vec_slices::MUT_VECT_SLICE'.data_ptr))
 // gdb-check:$15 = {64, 65}
 
 
@@ -77,7 +76,7 @@
 // lldb-command:print padded_struct
 // lldb-check:[...]$5 = &[AStruct { x: 10, y: 11, z: 12 }, AStruct { x: 13, y: 14, z: 15 }]
 
-#![allow(unused_variables)]
+#![allow(dead_code, unused_variables)]
 #![omit_gdb_pretty_printer_section]
 
 struct AStruct {

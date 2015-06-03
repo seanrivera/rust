@@ -9,6 +9,8 @@
 // except according to those terms.
 
 
+#![feature(rustc_private)]
+
 extern crate serialize;
 
 use serialize::{json, Decodable};

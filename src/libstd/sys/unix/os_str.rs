@@ -16,7 +16,6 @@ use core::prelude::*;
 use borrow::Cow;
 use fmt::{self, Debug};
 use vec::Vec;
-use slice::SliceExt as StdSliceExt;
 use str;
 use string::String;
 use mem;
@@ -47,10 +46,6 @@ impl Buf {
         Buf { inner: s.into_bytes() }
     }
 
-    pub fn from_str(s: &str) -> Buf {
-        Buf { inner: s.as_bytes().to_vec() }
-    }
-
     pub fn as_slice(&self) -> &Slice {
         unsafe { mem::transmute(&*self.inner) }
     }
@@ -70,7 +65,7 @@ impl Slice {
     }
 
     pub fn from_str(s: &str) -> &Slice {
-        unsafe { mem::transmute(s.as_bytes()) }
+        Slice::from_u8_slice(s.as_bytes())
     }
 
     pub fn to_str(&self) -> Option<&str> {

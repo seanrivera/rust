@@ -13,6 +13,7 @@
 // check that cfg correctly chooses between the macro impls (see also
 // cfg-macros-foo.rs)
 
+
 #[cfg(foo)]
 #[macro_use]
 mod foo {

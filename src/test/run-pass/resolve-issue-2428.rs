@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-const foo: int = 4 >> 1;
+
+const foo: isize = 4 >> 1;
 enum bs { thing = foo }
-pub fn main() { assert!((bs::thing as int == foo)); }
+pub fn main() { assert!((bs::thing as isize == foo)); }

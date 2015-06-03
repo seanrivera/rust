@@ -18,122 +18,21 @@
 //! defined on type `X`, we only consider the definition of the type `X`
 //! and the definitions of any types it references.
 //!
-//! We only infer variance for type parameters found on *types*: structs,
-//! enums, and traits. We do not infer variance for type parameters found
-//! on fns or impls. This is because those things are not type definitions
-//! and variance doesn't really make sense in that context.
-//!
-//! It is worth covering what variance means in each case. For structs and
-//! enums, I think it is fairly straightforward. The variance of the type
+//! We only infer variance for type parameters found on *data types*
+//! like structs and enums. In these cases, there is fairly straightforward
+//! explanation for what variance means. The variance of the type
 //! or lifetime parameters defines whether `T<A>` is a subtype of `T<B>`
 //! (resp. `T<'a>` and `T<'b>`) based on the relationship of `A` and `B`
-//! (resp. `'a` and `'b`). (FIXME #3598 -- we do not currently make use of
-//! the variances we compute for type parameters.)
+//! (resp. `'a` and `'b`).
 //!
-//! ### Variance on traits
-//!
-//! The meaning of variance for trait parameters is more subtle and worth
-//! expanding upon. There are in fact two uses of the variance values we
-//! compute.
-//!
-//! #### Trait variance and object types
-//!
-//! The first is for object types. Just as with structs and enums, we can
-//! decide the subtyping relationship between two object types `&Trait<A>`
-//! and `&Trait<B>` based on the relationship of `A` and `B`. Note that
-//! for object types we ignore the `Self` type parameter -- it is unknown,
-//! and the nature of dynamic dispatch ensures that we will always call a
-//! function that is expected the appropriate `Self` type. However, we
-//! must be careful with the other type parameters, or else we could end
-//! up calling a function that is expecting one type but provided another.
-//!
-//! To see what I mean, consider a trait like so:
-//!
-//!     trait ConvertTo<A> {
-//!         fn convertTo(&self) -> A;
-//!     }
-//!
-//! Intuitively, If we had one object `O=&ConvertTo<Object>` and another
-//! `S=&ConvertTo<String>`, then `S <: O` because `String <: Object`
-//! (presuming Java-like "string" and "object" types, my go to examples
-//! for subtyping). The actual algorithm would be to compare the
-//! (explicit) type parameters pairwise respecting their variance: here,
-//! the type parameter A is covariant (it appears only in a return
-//! position), and hence we require that `String <: Object`.
-//!
-//! You'll note though that we did not consider the binding for the
-//! (implicit) `Self` type parameter: in fact, it is unknown, so that's
-//! good. The reason we can ignore that parameter is precisely because we
-//! don't need to know its value until a call occurs, and at that time (as
-//! you said) the dynamic nature of virtual dispatch means the code we run
-//! will be correct for whatever value `Self` happens to be bound to for
-//! the particular object whose method we called. `Self` is thus different
-//! from `A`, because the caller requires that `A` be known in order to
-//! know the return type of the method `convertTo()`. (As an aside, we
-//! have rules preventing methods where `Self` appears outside of the
-//! receiver position from being called via an object.)
-//!
-//! #### Trait variance and vtable resolution
-//!
-//! But traits aren't only used with objects. They're also used when
-//! deciding whether a given impl satisfies a given trait bound. To set the
-//! scene here, imagine I had a function:
-//!
-//!     fn convertAll<A,T:ConvertTo<A>>(v: &[T]) {
-//!         ...
-//!     }
-//!
-//! Now imagine that I have an implementation of `ConvertTo` for `Object`:
-//!
-//!     impl ConvertTo<int> for Object { ... }
-//!
-//! And I want to call `convertAll` on an array of strings. Suppose
-//! further that for whatever reason I specifically supply the value of
-//! `String` for the type parameter `T`:
-//!
-//!     let mut vector = ~["string", ...];
-//!     convertAll::<int, String>(v);
-//!
-//! Is this legal? To put another way, can we apply the `impl` for
-//! `Object` to the type `String`? The answer is yes, but to see why
-//! we have to expand out what will happen:
-//!
-//! - `convertAll` will create a pointer to one of the entries in the
-//!   vector, which will have type `&String`
-//! - It will then call the impl of `convertTo()` that is intended
-//!   for use with objects. This has the type:
-//!
-//!       fn(self: &Object) -> int
-//!
-//!   It is ok to provide a value for `self` of type `&String` because
-//!   `&String <: &Object`.
-//!
-//! OK, so intuitively we want this to be legal, so let's bring this back
-//! to variance and see whether we are computing the correct result. We
-//! must first figure out how to phrase the question "is an impl for
-//! `Object,int` usable where an impl for `String,int` is expected?"
-//!
-//! Maybe it's helpful to think of a dictionary-passing implementation of
-//! type classes. In that case, `convertAll()` takes an implicit parameter
-//! representing the impl. In short, we *have* an impl of type:
-//!
-//!     V_O = ConvertTo<int> for Object
-//!
-//! and the function prototype expects an impl of type:
-//!
-//!     V_S = ConvertTo<int> for String
-//!
-//! As with any argument, this is legal if the type of the value given
-//! (`V_O`) is a subtype of the type expected (`V_S`). So is `V_O <: V_S`?
-//! The answer will depend on the variance of the various parameters. In
-//! this case, because the `Self` parameter is contravariant and `A` is
-//! covariant, it means that:
-//!
-//!     V_O <: V_S iff
-//!         int <: int
-//!         String <: Object
-//!
-//! These conditions are satisfied and so we are happy.
+//! We do not infer variance for type parameters found on traits, fns,
+//! or impls. Variance on trait parameters can make indeed make sense
+//! (and we used to compute it) but it is actually rather subtle in
+//! meaning and not that useful in practice, so we removed it. See the
+//! addendum for some details. Variances on fn/impl parameters, otoh,
+//! doesn't make sense because these parameters are instantiated and
+//! then forgotten, they don't persist in types or compiled
+//! byproducts.
 //!
 //! ### The algorithm
 //!
@@ -204,35 +103,143 @@
 //! not well-formed. Basically we get to assume well-formedness of all
 //! types involved before considering variance.
 //!
-//! ### Associated types
+//! ### Addendum: Variance on traits
 //!
-//! Any trait with an associated type is invariant with respect to all
-//! of its inputs. To see why this makes sense, consider what
-//! subtyping for a trait reference means:
+//! As mentioned above, we used to permit variance on traits. This was
+//! computed based on the appearance of trait type parameters in
+//! method signatures and was used to represent the compatibility of
+//! vtables in trait objects (and also "virtual" vtables or dictionary
+//! in trait bounds). One complication was that variance for
+//! associated types is less obvious, since they can be projected out
+//! and put to myriad uses, so it's not clear when it is safe to allow
+//! `X<A>::Bar` to vary (or indeed just what that means). Moreover (as
+//! covered below) all inputs on any trait with an associated type had
+//! to be invariant, limiting the applicability. Finally, the
+//! annotations (`MarkerTrait`, `PhantomFn`) needed to ensure that all
+//! trait type parameters had a variance were confusing and annoying
+//! for little benefit.
+//!
+//! Just for historical reference,I am going to preserve some text indicating
+//! how one could interpret variance and trait matching.
+//!
+//! #### Variance and object types
+//!
+//! Just as with structs and enums, we can decide the subtyping
+//! relationship between two object types `&Trait<A>` and `&Trait<B>`
+//! based on the relationship of `A` and `B`. Note that for object
+//! types we ignore the `Self` type parameter -- it is unknown, and
+//! the nature of dynamic dispatch ensures that we will always call a
+//! function that is expected the appropriate `Self` type. However, we
+//! must be careful with the other type parameters, or else we could
+//! end up calling a function that is expecting one type but provided
+//! another.
+//!
+//! To see what I mean, consider a trait like so:
+//!
+//!     trait ConvertTo<A> {
+//!         fn convertTo(&self) -> A;
+//!     }
+//!
+//! Intuitively, If we had one object `O=&ConvertTo<Object>` and another
+//! `S=&ConvertTo<String>`, then `S <: O` because `String <: Object`
+//! (presuming Java-like "string" and "object" types, my go to examples
+//! for subtyping). The actual algorithm would be to compare the
+//! (explicit) type parameters pairwise respecting their variance: here,
+//! the type parameter A is covariant (it appears only in a return
+//! position), and hence we require that `String <: Object`.
+//!
+//! You'll note though that we did not consider the binding for the
+//! (implicit) `Self` type parameter: in fact, it is unknown, so that's
+//! good. The reason we can ignore that parameter is precisely because we
+//! don't need to know its value until a call occurs, and at that time (as
+//! you said) the dynamic nature of virtual dispatch means the code we run
+//! will be correct for whatever value `Self` happens to be bound to for
+//! the particular object whose method we called. `Self` is thus different
+//! from `A`, because the caller requires that `A` be known in order to
+//! know the return type of the method `convertTo()`. (As an aside, we
+//! have rules preventing methods where `Self` appears outside of the
+//! receiver position from being called via an object.)
+//!
+//! #### Trait variance and vtable resolution
+//!
+//! But traits aren't only used with objects. They're also used when
+//! deciding whether a given impl satisfies a given trait bound. To set the
+//! scene here, imagine I had a function:
+//!
+//!     fn convertAll<A,T:ConvertTo<A>>(v: &[T]) {
+//!         ...
+//!     }
+//!
+//! Now imagine that I have an implementation of `ConvertTo` for `Object`:
+//!
+//!     impl ConvertTo<int> for Object { ... }
+//!
+//! And I want to call `convertAll` on an array of strings. Suppose
+//! further that for whatever reason I specifically supply the value of
+//! `String` for the type parameter `T`:
+//!
+//!     let mut vector = vec!["string", ...];
+//!     convertAll::<int, String>(vector);
+//!
+//! Is this legal? To put another way, can we apply the `impl` for
+//! `Object` to the type `String`? The answer is yes, but to see why
+//! we have to expand out what will happen:
+//!
+//! - `convertAll` will create a pointer to one of the entries in the
+//!   vector, which will have type `&String`
+//! - It will then call the impl of `convertTo()` that is intended
+//!   for use with objects. This has the type:
+//!
+//!       fn(self: &Object) -> int
+//!
+//!   It is ok to provide a value for `self` of type `&String` because
+//!   `&String <: &Object`.
+//!
+//! OK, so intuitively we want this to be legal, so let's bring this back
+//! to variance and see whether we are computing the correct result. We
+//! must first figure out how to phrase the question "is an impl for
+//! `Object,int` usable where an impl for `String,int` is expected?"
+//!
+//! Maybe it's helpful to think of a dictionary-passing implementation of
+//! type classes. In that case, `convertAll()` takes an implicit parameter
+//! representing the impl. In short, we *have* an impl of type:
+//!
+//!     V_O = ConvertTo<int> for Object
+//!
+//! and the function prototype expects an impl of type:
+//!
+//!     V_S = ConvertTo<int> for String
+//!
+//! As with any argument, this is legal if the type of the value given
+//! (`V_O`) is a subtype of the type expected (`V_S`). So is `V_O <: V_S`?
+//! The answer will depend on the variance of the various parameters. In
+//! this case, because the `Self` parameter is contravariant and `A` is
+//! covariant, it means that:
+//!
+//!     V_O <: V_S iff
+//!         int <: int
+//!         String <: Object
+//!
+//! These conditions are satisfied and so we are happy.
+//!
+//! #### Variance and associated types
+//!
+//! Traits with associated types -- or at minimum projection
+//! expressions -- must be invariant with respect to all of their
+//! inputs. To see why this makes sense, consider what subtyping for a
+//! trait reference means:
 //!
 //!    <T as Trait> <: <U as Trait>
 //!
-//! means that if I know that `T as Trait`,
-//! I also know that `U as
-//! Trait`. Moreover, if you think of it as
-//! dictionary passing style, it means that
-//! a dictionary for `<T as Trait>` is safe
-//! to use where a dictionary for `<U as
-//! Trait>` is expected.
+//! means that if I know that `T as Trait`, I also know that `U as
+//! Trait`. Moreover, if you think of it as dictionary passing style,
+//! it means that a dictionary for `<T as Trait>` is safe to use where
+//! a dictionary for `<U as Trait>` is expected.
 //!
-//! The problem is that when you can
-//! project types out from `<T as Trait>`,
-//! the relationship to types projected out
-//! of `<U as Trait>` is completely unknown
-//! unless `T==U` (see #21726 for more
-//! details). Making `Trait` invariant
-//! ensures that this is true.
-//!
-//! *Historical note: we used to preserve this invariant another way,
-//! by tweaking the subtyping rules and requiring that when a type `T`
-//! appeared as part of a projection, that was considered an invariant
-//! location, but this version does away with the need for those
-//! somewhat "special-case-feeling" rules.*
+//! The problem is that when you can project types out from `<T as
+//! Trait>`, the relationship to types projected out of `<U as Trait>`
+//! is completely unknown unless `T==U` (see #21726 for more
+//! details). Making `Trait` invariant ensures that this is true.
 //!
 //! Another related reason is that if we didn't make traits with
 //! associated types invariant, then projection is no longer a
@@ -295,10 +302,10 @@ pub fn infer_variance(tcx: &ty::ctxt) {
 
 type VarianceTermPtr<'a> = &'a VarianceTerm<'a>;
 
-#[derive(Copy, Debug)]
-struct InferredIndex(uint);
+#[derive(Copy, Clone, Debug)]
+struct InferredIndex(usize);
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 enum VarianceTerm<'a> {
     ConstantTerm(ty::Variance),
     TransformTerm(VarianceTermPtr<'a>, VarianceTermPtr<'a>),
@@ -336,7 +343,7 @@ struct TermsContext<'a, 'tcx: 'a> {
     inferred_infos: Vec<InferredInfo<'a>> ,
 }
 
-#[derive(Copy, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 enum ParamKind {
     TypeParam,
     RegionParam,
@@ -346,7 +353,7 @@ struct InferredInfo<'a> {
     item_id: ast::NodeId,
     kind: ParamKind,
     space: ParamSpace,
-    index: uint,
+    index: usize,
     param_id: ast::NodeId,
     term: VarianceTermPtr<'a>,
 
@@ -383,7 +390,6 @@ fn determine_parameters_to_be_inferred<'a, 'tcx>(tcx: &'a ty::ctxt<'tcx>,
 
 fn lang_items(tcx: &ty::ctxt) -> Vec<(ast::NodeId,Vec<ty::Variance>)> {
     let all = vec![
-        (tcx.lang_items.phantom_fn(), vec![ty::Contravariant, ty::Covariant]),
         (tcx.lang_items.phantom_data(), vec![ty::Covariant]),
         (tcx.lang_items.unsafe_cell_type(), vec![ty::Invariant]),
 
@@ -457,7 +463,7 @@ impl<'a, 'tcx> TermsContext<'a, 'tcx> {
                     item_id: ast::NodeId,
                     kind: ParamKind,
                     space: ParamSpace,
-                    index: uint,
+                    index: usize,
                     param_id: ast::NodeId) {
         let inf_index = InferredIndex(self.inferred_infos.len());
         let term = self.arena.alloc(InferredTerm(inf_index));
@@ -488,7 +494,7 @@ impl<'a, 'tcx> TermsContext<'a, 'tcx> {
     fn pick_initial_variance(&self,
                              item_id: ast::NodeId,
                              space: ParamSpace,
-                             index: uint)
+                             index: usize)
                              -> ty::Variance
     {
         match space {
@@ -505,7 +511,7 @@ impl<'a, 'tcx> TermsContext<'a, 'tcx> {
         }
     }
 
-    fn num_inferred(&self) -> uint {
+    fn num_inferred(&self) -> usize {
         self.inferred_infos.len()
     }
 }
@@ -520,6 +526,9 @@ impl<'a, 'tcx, 'v> Visitor<'v> for TermsContext<'a, 'tcx> {
                 self.add_inferreds_for_item(item.id, false, generics);
             }
             ast::ItemTrait(_, ref generics, _, _) => {
+                // Note: all inputs for traits are ultimately
+                // constrained to be invariant. See `visit_item` in
+                // the impl for `ConstraintContext` below.
                 self.add_inferreds_for_item(item.id, true, generics);
                 visit::walk_item(self, item);
             }
@@ -560,7 +569,7 @@ struct ConstraintContext<'a, 'tcx: 'a> {
 
 /// Declares that the variable `decl_id` appears in a location with
 /// variance `variance`.
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 struct Constraint<'a> {
     inferred: InferredIndex,
     variance: &'a VarianceTerm<'a>,
@@ -644,39 +653,9 @@ impl<'a, 'tcx, 'v> Visitor<'v> for ConstraintContext<'a, 'tcx> {
 
             ast::ItemTrait(..) => {
                 let trait_def = ty::lookup_trait_def(tcx, did);
-                let predicates = ty::lookup_super_predicates(tcx, did);
-                self.add_constraints_from_predicates(&trait_def.generics,
-                                                     predicates.predicates.as_slice(),
-                                                     self.covariant);
-
-                let trait_items = ty::trait_items(tcx, did);
-                for trait_item in &*trait_items {
-                    match *trait_item {
-                        ty::MethodTraitItem(ref method) => {
-                            self.add_constraints_from_predicates(
-                                &method.generics,
-                                method.predicates.predicates.get_slice(FnSpace),
-                                self.contravariant);
-
-                            self.add_constraints_from_sig(
-                                &method.generics,
-                                &method.fty.sig,
-                                self.covariant);
-                        }
-                        ty::TypeTraitItem(ref data) => {
-                            // Any trait with an associated type is
-                            // invariant with respect to all of its
-                            // inputs. See length discussion in the comment
-                            // on this module.
-                            let projection_ty = ty::mk_projection(tcx,
-                                                                  trait_def.trait_ref.clone(),
-                                                                  data.name);
-                            self.add_constraints_from_ty(&trait_def.generics,
-                                                         projection_ty,
-                                                         self.invariant);
-                        }
-                    }
-                }
+                self.add_constraints_from_trait_ref(&trait_def.generics,
+                                                    trait_def.trait_ref,
+                                                    self.invariant);
             }
 
             ast::ItemExternCrate(_) |
@@ -791,7 +770,7 @@ impl<'a, 'tcx> ConstraintContext<'a, 'tcx> {
                          item_def_id: ast::DefId,
                          kind: ParamKind,
                          space: ParamSpace,
-                         index: uint)
+                         index: usize)
                          -> VarianceTermPtr<'a> {
         assert_eq!(param_def_id.krate, item_def_id.krate);
 
@@ -865,7 +844,7 @@ impl<'a, 'tcx> ConstraintContext<'a, 'tcx> {
 
     fn add_constraints_from_trait_ref(&mut self,
                                       generics: &ty::Generics<'tcx>,
-                                      trait_ref: &ty::TraitRef<'tcx>,
+                                      trait_ref: ty::TraitRef<'tcx>,
                                       variance: VarianceTermPtr<'a>) {
         debug!("add_constraints_from_trait_ref: trait_ref={} variance={:?}",
                trait_ref.repr(self.tcx()),
@@ -967,7 +946,7 @@ impl<'a, 'tcx> ConstraintContext<'a, 'tcx> {
                 self.add_constraints_from_region(generics, data.bounds.region_bound, contra);
 
                 // Ignore the SelfSpace, it is erased.
-                self.add_constraints_from_trait_ref(generics, &*poly_trait_ref.0, variance);
+                self.add_constraints_from_trait_ref(generics, poly_trait_ref.0, variance);
 
                 let projections = data.projection_bounds_with_self_ty(self.tcx(),
                                                                       self.tcx().types.err);
@@ -977,7 +956,7 @@ impl<'a, 'tcx> ConstraintContext<'a, 'tcx> {
             }
 
             ty::ty_param(ref data) => {
-                let def_id = generics.types.get(data.space, data.idx as uint).def_id;
+                let def_id = generics.types.get(data.space, data.idx as usize).def_id;
                 assert_eq!(def_id.krate, ast::LOCAL_CRATE);
                 match self.terms_cx.inferred_map.get(&def_id.node) {
                     Some(&index) => {
@@ -1027,9 +1006,9 @@ impl<'a, 'tcx> ConstraintContext<'a, 'tcx> {
         for p in type_param_defs {
             let variance_decl =
                 self.declared_variance(p.def_id, def_id, TypeParam,
-                                       p.space, p.index as uint);
+                                       p.space, p.index as usize);
             let variance_i = self.xform(variance, variance_decl);
-            let substs_ty = *substs.types.get(p.space, p.index as uint);
+            let substs_ty = *substs.types.get(p.space, p.index as usize);
             debug!("add_constraints_from_substs: variance_decl={:?} variance_i={:?}",
                    variance_decl, variance_i);
             self.add_constraints_from_ty(generics, substs_ty, variance_i);
@@ -1038,55 +1017,10 @@ impl<'a, 'tcx> ConstraintContext<'a, 'tcx> {
         for p in region_param_defs {
             let variance_decl =
                 self.declared_variance(p.def_id, def_id,
-                                       RegionParam, p.space, p.index as uint);
+                                       RegionParam, p.space, p.index as usize);
             let variance_i = self.xform(variance, variance_decl);
-            let substs_r = *substs.regions().get(p.space, p.index as uint);
+            let substs_r = *substs.regions().get(p.space, p.index as usize);
             self.add_constraints_from_region(generics, substs_r, variance_i);
-        }
-    }
-
-    fn add_constraints_from_predicates(&mut self,
-                                       generics: &ty::Generics<'tcx>,
-                                       predicates: &[ty::Predicate<'tcx>],
-                                       variance: VarianceTermPtr<'a>) {
-        debug!("add_constraints_from_generics({})",
-               generics.repr(self.tcx()));
-
-        for predicate in predicates.iter() {
-            match *predicate {
-                ty::Predicate::Trait(ty::Binder(ref data)) => {
-                    self.add_constraints_from_trait_ref(generics, &*data.trait_ref, variance);
-                }
-
-                ty::Predicate::Equate(ty::Binder(ref data)) => {
-                    self.add_constraints_from_ty(generics, data.0, variance);
-                    self.add_constraints_from_ty(generics, data.1, variance);
-                }
-
-                ty::Predicate::TypeOutlives(ty::Binder(ref data)) => {
-                    self.add_constraints_from_ty(generics, data.0, variance);
-
-                    let variance_r = self.xform(variance, self.contravariant);
-                    self.add_constraints_from_region(generics, data.1, variance_r);
-                }
-
-                ty::Predicate::RegionOutlives(ty::Binder(ref data)) => {
-                    // `'a : 'b` is still true if 'a gets bigger
-                    self.add_constraints_from_region(generics, data.0, variance);
-
-                    // `'a : 'b` is still true if 'b gets smaller
-                    let variance_r = self.xform(variance, self.contravariant);
-                    self.add_constraints_from_region(generics, data.1, variance_r);
-                }
-
-                ty::Predicate::Projection(ty::Binder(ref data)) => {
-                    self.add_constraints_from_trait_ref(generics,
-                                                        &*data.projection_ty.trait_ref,
-                                                        variance);
-
-                    self.add_constraints_from_ty(generics, data.ty, self.invariant);
-                }
-            }
         }
     }
 
@@ -1112,9 +1046,9 @@ impl<'a, 'tcx> ConstraintContext<'a, 'tcx> {
                                    region: ty::Region,
                                    variance: VarianceTermPtr<'a>) {
         match region {
-            ty::ReEarlyBound(param_id, _, _, _) => {
-                if self.is_to_be_inferred(param_id) {
-                    let index = self.inferred_index(param_id);
+            ty::ReEarlyBound(ref data) => {
+                if self.is_to_be_inferred(data.param_id) {
+                    let index = self.inferred_index(data.param_id);
                     self.add_constraint(index, variance);
                 }
             }
@@ -1350,4 +1284,3 @@ fn glb(v1: ty::Variance, v2: ty::Variance) -> ty::Variance {
         (x, ty::Bivariant) | (ty::Bivariant, x) => x,
     }
 }
-

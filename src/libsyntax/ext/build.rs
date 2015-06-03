@@ -146,7 +146,7 @@ pub trait AstBuilder {
     fn expr_lit(&self, sp: Span, lit: ast::Lit_) -> P<ast::Expr>;
 
     fn expr_usize(&self, span: Span, i: usize) -> P<ast::Expr>;
-    fn expr_int(&self, sp: Span, i: isize) -> P<ast::Expr>;
+    fn expr_isize(&self, sp: Span, i: isize) -> P<ast::Expr>;
     fn expr_u8(&self, sp: Span, u: u8) -> P<ast::Expr>;
     fn expr_u32(&self, sp: Span, u: u32) -> P<ast::Expr>;
     fn expr_bool(&self, sp: Span, value: bool) -> P<ast::Expr>;
@@ -696,10 +696,10 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
         self.expr(sp, ast::ExprLit(P(respan(sp, lit))))
     }
     fn expr_usize(&self, span: Span, i: usize) -> P<ast::Expr> {
-        self.expr_lit(span, ast::LitInt(i as u64, ast::UnsignedIntLit(ast::TyUs(false))))
+        self.expr_lit(span, ast::LitInt(i as u64, ast::UnsignedIntLit(ast::TyUs)))
     }
-    fn expr_int(&self, sp: Span, i: isize) -> P<ast::Expr> {
-        self.expr_lit(sp, ast::LitInt(i as u64, ast::SignedIntLit(ast::TyIs(false),
+    fn expr_isize(&self, sp: Span, i: isize) -> P<ast::Expr> {
+        self.expr_lit(sp, ast::LitInt(i as u64, ast::SignedIntLit(ast::TyIs,
                                                                   ast::Sign::new(i))))
     }
     fn expr_u32(&self, sp: Span, u: u32) -> P<ast::Expr> {
@@ -767,7 +767,7 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
         let loc = self.codemap().lookup_char_pos(span.lo);
         let expr_file = self.expr_str(span,
                                       token::intern_and_get_ident(&loc.file.name));
-        let expr_line = self.expr_usize(span, loc.line);
+        let expr_line = self.expr_u32(span, loc.line as u32);
         let expr_file_line_tuple = self.expr_tuple(span, vec!(expr_file, expr_line));
         let expr_file_line_ptr = self.expr_addr_of(span, expr_file_line_tuple);
         self.expr_call_global(
@@ -1034,6 +1034,7 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
                   Vec::new(),
                   ast::ItemFn(self.fn_decl(inputs, output),
                               ast::Unsafety::Normal,
+                              ast::Constness::NotConst,
                               abi::Rust,
                               generics,
                               body))

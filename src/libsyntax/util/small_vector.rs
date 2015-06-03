@@ -64,8 +64,25 @@ impl<T> SmallVector<T> {
                 let result: &[T] = &[];
                 result
             }
-            One(ref v) => slice::ref_slice(v),
+            One(ref v) => {
+                // FIXME: Could be replaced with `slice::ref_slice(v)` when it is stable.
+                unsafe { slice::from_raw_parts(v, 1) }
+            }
             Many(ref vs) => vs
+        }
+    }
+
+    pub fn pop(&mut self) -> Option<T> {
+        match self.repr {
+            Zero => None,
+            One(..) => {
+                let one = mem::replace(&mut self.repr, Zero);
+                match one {
+                    One(v1) => Some(v1),
+                    _ => unreachable!()
+                }
+            }
+            Many(ref mut vs) => vs.pop(),
         }
     }
 
@@ -187,7 +204,7 @@ impl<T> MoveMap<T> for SmallVector<T> {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
 
     #[test]
@@ -226,23 +243,23 @@ mod test {
     fn test_move_iter() {
         let v = SmallVector::zero();
         let v: Vec<isize> = v.into_iter().collect();
-        assert_eq!(Vec::new(), v);
+        assert_eq!(v, Vec::new());
 
         let v = SmallVector::one(1);
-        assert_eq!([1], v.into_iter().collect::<Vec<_>>());
+        assert_eq!(v.into_iter().collect::<Vec<_>>(), [1]);
 
         let v = SmallVector::many(vec![1, 2, 3]);
-        assert_eq!([1, 2, 3], v.into_iter().collect::<Vec<_>>());
+        assert_eq!(v.into_iter().collect::<Vec<_>>(), [1, 2, 3]);
     }
 
     #[test]
-    #[should_fail]
+    #[should_panic]
     fn test_expect_one_zero() {
         let _: isize = SmallVector::zero().expect_one("");
     }
 
     #[test]
-    #[should_fail]
+    #[should_panic]
     fn test_expect_one_many() {
         SmallVector::many(vec!(1, 2)).expect_one("");
     }

@@ -11,7 +11,8 @@
 // Tests calls to closure arguments where the closure takes 1 argument.
 // This is a bit tricky due to rust-call ABI.
 
-fn foo(f: &mut FnMut(int) -> int) -> int {
+
+fn foo(f: &mut FnMut(isize) -> isize) -> isize {
     f(22)
 }
 

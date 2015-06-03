@@ -12,9 +12,7 @@
 
 // this is surprisingly complicated to be both generic & correct
 
-use core::prelude::{PartialOrd};
-use core::num::Int;
-use core::num::wrapping::WrappingOps;
+use core::prelude::PartialOrd;
 
 use Rng;
 use distributions::{Sample, IndependentSample};
@@ -32,22 +30,6 @@ use distributions::{Sample, IndependentSample};
 /// including `high`, but this may be very difficult. All the
 /// primitive integer types satisfy this property, and the float types
 /// normally satisfy it, but rounding may mean `high` can occur.
-///
-/// # Example
-///
-/// ```rust
-/// use std::rand::distributions::{IndependentSample, Range};
-///
-/// fn main() {
-///     let between = Range::new(10, 10000);
-///     let mut rng = std::rand::thread_rng();
-///     let mut sum = 0;
-///     for _ in 0..1000 {
-///         sum += between.ind_sample(&mut rng);
-///     }
-///     println!("{}", sum);
-/// }
-/// ```
 pub struct Range<X> {
     low: X,
     range: X,
@@ -89,7 +71,7 @@ pub trait SampleRange {
 }
 
 macro_rules! integer_impl {
-    ($ty:ty, $unsigned:ty) => {
+    ($ty:ident, $unsigned:ident) => {
         impl SampleRange for $ty {
             // we play free and fast with unsigned vs signed here
             // (when $ty is signed), but that's fine, since the
@@ -99,7 +81,7 @@ macro_rules! integer_impl {
 
             fn construct_range(low: $ty, high: $ty) -> Range<$ty> {
                 let range = (high as $unsigned).wrapping_sub(low as $unsigned);
-                let unsigned_max: $unsigned = Int::max_value();
+                let unsigned_max: $unsigned = $unsigned::max_value();
 
                 // this is the largest number that fits into $unsigned
                 // that `range` divides evenly, so, if we've sampled
@@ -135,12 +117,12 @@ integer_impl! { i8, u8 }
 integer_impl! { i16, u16 }
 integer_impl! { i32, u32 }
 integer_impl! { i64, u64 }
-integer_impl! { int, uint }
+integer_impl! { isize, usize }
 integer_impl! { u8, u8 }
 integer_impl! { u16, u16 }
 integer_impl! { u32, u32 }
 integer_impl! { u64, u64 }
-integer_impl! { uint, uint }
+integer_impl! { usize, usize }
 
 macro_rules! float_impl {
     ($ty:ty) => {
@@ -153,7 +135,7 @@ macro_rules! float_impl {
                 }
             }
             fn sample_range<R: Rng>(r: &Range<$ty>, rng: &mut R) -> $ty {
-                r.low + r.range * rng.gen()
+                r.low + r.range * rng.gen::<$ty>()
             }
         }
     }
@@ -164,17 +146,16 @@ float_impl! { f64 }
 
 #[cfg(test)]
 mod tests {
-    use std::num::Int;
     use std::prelude::v1::*;
     use distributions::{Sample, IndependentSample};
     use super::Range as Range;
 
-    #[should_fail]
+    #[should_panic]
     #[test]
     fn test_range_bad_limits_equal() {
         Range::new(10, 10);
     }
-    #[should_fail]
+    #[should_panic]
     #[test]
     fn test_range_bad_limits_flipped() {
         Range::new(10, 5);
@@ -184,11 +165,11 @@ mod tests {
     fn test_integers() {
         let mut rng = ::test::rng();
         macro_rules! t {
-            ($($ty:ty),*) => {{
+            ($($ty:ident),*) => {{
                 $(
                    let v: &[($ty, $ty)] = &[(0, 10),
                                             (10, 127),
-                                            (Int::min_value(), Int::max_value())];
+                                            ($ty::min_value(), $ty::max_value())];
                    for &(low, high) in v {
                         let mut sampler: Range<$ty> = Range::new(low, high);
                         for _ in 0..1000 {
@@ -201,8 +182,8 @@ mod tests {
                  )*
             }}
         }
-        t!(i8, i16, i32, i64, int,
-           u8, u16, u32, u64, uint)
+        t!(i8, i16, i32, i64, isize,
+           u8, u16, u32, u64, usize)
     }
 
     #[test]

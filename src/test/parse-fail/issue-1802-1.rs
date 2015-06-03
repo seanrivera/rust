@@ -8,7 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+// compile-flags: -Z parse-only
+
 // error-pattern:no valid digits found for number
 fn main() {
-    log(error, 0b42);
+    log(error, 0b);
 }

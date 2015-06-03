@@ -11,6 +11,7 @@
 // Test case where an associated type is referenced from within the
 // supertrait definition. Issue #20220.
 
+
 use std::vec::IntoIter;
 
 pub trait Foo: Iterator<Item=<Self as Foo>::Key> {

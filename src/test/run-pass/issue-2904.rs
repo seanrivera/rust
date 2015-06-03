@@ -1,4 +1,3 @@
-
 // Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
@@ -10,10 +9,10 @@
 // except according to those terms.
 
 
-/// Map representation
+// Map representation
 
-use std::old_io;
 use std::fmt;
+use std::io::prelude::*;
 use square::{bot, wall, rock, lambda, closed_lift, open_lift, earth, empty};
 
 enum square {
@@ -59,9 +58,9 @@ fn square_from_char(c: char) -> square {
     }
 }
 
-fn read_board_grid<rdr:'static + old_io::Reader>(mut input: rdr)
+fn read_board_grid<rdr:'static + Read>(mut input: rdr)
                    -> Vec<Vec<square>> {
-    let mut input: &mut old_io::Reader = &mut input;
+    let mut input: &mut Read = &mut input;
     let mut grid = Vec::new();
     let mut line = [0; 10];
     input.read(&mut line);

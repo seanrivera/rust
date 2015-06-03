@@ -10,10 +10,13 @@
 
 // Test that we can resolve nested projection types. Issue #20666.
 
-use std::marker::MarkerTrait;
+// pretty-expanded FIXME #23616
+
+#![feature(core)]
+
 use std::slice;
 
-trait Bound : MarkerTrait {}
+trait Bound {}
 
 impl<'a> Bound for &'a i32 {}
 

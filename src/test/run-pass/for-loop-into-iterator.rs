@@ -10,6 +10,7 @@
 
 // Test that for loops can do what RFC #235 claims
 
+
 fn main() {
     let mut v = vec![1];
 

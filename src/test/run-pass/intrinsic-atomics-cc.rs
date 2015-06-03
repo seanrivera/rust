@@ -10,6 +10,7 @@
 
 // aux-build:cci_intrinsic.rs
 
+
 extern crate cci_intrinsic;
 use cci_intrinsic::atomic_xchg;
 

@@ -30,7 +30,7 @@
 //! A single-producer single-consumer concurrent queue
 //!
 //! This module contains the implementation of an SPSC queue which can be used
-//! concurrently between two tasks. This data structure is safe to use and
+//! concurrently between two threads. This data structure is safe to use and
 //! enforces the semantics that there is one pusher and one popper.
 
 #![unstable(feature = "std_misc")]
@@ -78,18 +78,16 @@ unsafe impl<T: Send> Send for Queue<T> { }
 
 unsafe impl<T: Send> Sync for Queue<T> { }
 
-impl<T: Send> Node<T> {
+impl<T> Node<T> {
     fn new() -> *mut Node<T> {
-        unsafe {
-            boxed::into_raw(box Node {
-                value: None,
-                next: AtomicPtr::new(ptr::null_mut::<Node<T>>()),
-            })
-        }
+        boxed::into_raw(box Node {
+            value: None,
+            next: AtomicPtr::new(ptr::null_mut::<Node<T>>()),
+        })
     }
 }
 
-impl<T: Send> Queue<T> {
+impl<T> Queue<T> {
     /// Creates a new queue.
     ///
     /// This is unsafe as the type system doesn't enforce a single
@@ -226,8 +224,7 @@ impl<T: Send> Queue<T> {
     }
 }
 
-#[unsafe_destructor]
-impl<T: Send> Drop for Queue<T> {
+impl<T> Drop for Queue<T> {
     fn drop(&mut self) {
         unsafe {
             let mut cur = *self.first.get();
@@ -241,7 +238,7 @@ impl<T: Send> Drop for Queue<T> {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use prelude::v1::*;
 
     use sync::Arc;

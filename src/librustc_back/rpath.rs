@@ -10,8 +10,8 @@
 
 use std::collections::HashSet;
 use std::env;
-use std::io;
 use std::path::{Path, PathBuf};
+use std::fs;
 use syntax::ast;
 
 pub struct RPathConfig<'a> {
@@ -20,7 +20,6 @@ pub struct RPathConfig<'a> {
     pub is_like_osx: bool,
     pub has_rpath: bool,
     pub get_install_prefix_lib_path: &'a mut FnMut() -> PathBuf,
-    pub realpath: &'a mut FnMut(&Path) -> io::Result<PathBuf>,
 }
 
 pub fn get_rpath_flags(config: &mut RPathConfig) -> Vec<String> {
@@ -95,33 +94,62 @@ fn get_rpath_relative_to_output(config: &mut RPathConfig, lib: &Path) -> String 
     };
 
     let cwd = env::current_dir().unwrap();
-    let mut lib = (config.realpath)(&cwd.join(lib)).unwrap();
+    let mut lib = fs::canonicalize(&cwd.join(lib)).unwrap_or(cwd.join(lib));
     lib.pop();
-    let mut output = (config.realpath)(&cwd.join(&config.out_filename)).unwrap();
+    let mut output = cwd.join(&config.out_filename);
     output.pop();
-    let relative = relativize(&lib, &output);
+    let output = fs::canonicalize(&output).unwrap_or(output);
+    let relative = path_relative_from(&lib, &output)
+        .expect(&format!("couldn't create relative path from {:?} to {:?}", output, lib));
     // FIXME (#9639): This needs to handle non-utf8 paths
     format!("{}/{}", prefix,
             relative.to_str().expect("non-utf8 component in path"))
 }
 
-fn relativize(path: &Path, rel: &Path) -> PathBuf {
-    let mut res = PathBuf::new("");
-    let mut cur = rel;
-    while !path.starts_with(cur) {
-        res.push("..");
-        match cur.parent() {
-            Some(p) => cur = p,
-            None => panic!("can't create relative paths across filesystems"),
-        }
-    }
-    match path.relative_from(cur) {
-        Some(s) => { res.push(s); res }
-        None => panic!("couldn't create relative path from {:?} to {:?}",
-                       rel, path),
-    }
+// This routine is adapted from the *old* Path's `path_relative_from`
+// function, which works differently from the new `relative_from` function.
+// In particular, this handles the case on unix where both paths are
+// absolute but with only the root as the common directory.
+fn path_relative_from(path: &Path, base: &Path) -> Option<PathBuf> {
+    use std::path::Component;
 
+    if path.is_absolute() != base.is_absolute() {
+        if path.is_absolute() {
+            Some(PathBuf::from(path))
+        } else {
+            None
+        }
+    } else {
+        let mut ita = path.components();
+        let mut itb = base.components();
+        let mut comps: Vec<Component> = vec![];
+        loop {
+            match (ita.next(), itb.next()) {
+                (None, None) => break,
+                (Some(a), None) => {
+                    comps.push(a);
+                    comps.extend(ita.by_ref());
+                    break;
+                }
+                (None, _) => comps.push(Component::ParentDir),
+                (Some(a), Some(b)) if comps.is_empty() && a == b => (),
+                (Some(a), Some(b)) if b == Component::CurDir => comps.push(a),
+                (Some(_), Some(b)) if b == Component::ParentDir => return None,
+                (Some(a), Some(_)) => {
+                    comps.push(Component::ParentDir);
+                    for _ in itb {
+                        comps.push(Component::ParentDir);
+                    }
+                    comps.push(a);
+                    comps.extend(ita.by_ref());
+                    break;
+                }
+            }
+        }
+        Some(comps.iter().map(|c| c.as_os_str()).collect())
+    }
 }
+
 
 fn get_install_prefix_rpath(config: &mut RPathConfig) -> String {
     let path = (config.get_install_prefix_lib_path)();
@@ -142,7 +170,7 @@ fn minimize_rpaths(rpaths: &[String]) -> Vec<String> {
 }
 
 #[cfg(all(unix, test))]
-mod test {
+mod tests {
     use super::{RPathConfig};
     use super::{minimize_rpaths, rpaths_to_flags, get_rpath_relative_to_output};
     use std::path::{Path, PathBuf};
@@ -200,9 +228,8 @@ mod test {
                 used_crates: Vec::new(),
                 has_rpath: true,
                 is_like_osx: true,
-                out_filename: PathBuf::new("bin/rustc"),
+                out_filename: PathBuf::from("bin/rustc"),
                 get_install_prefix_lib_path: &mut || panic!(),
-                realpath: &mut |p| Ok(p.to_path_buf()),
             };
             let res = get_rpath_relative_to_output(config,
                                                    Path::new("lib/libstd.so"));
@@ -210,11 +237,10 @@ mod test {
         } else {
             let config = &mut RPathConfig {
                 used_crates: Vec::new(),
-                out_filename: PathBuf::new("bin/rustc"),
+                out_filename: PathBuf::from("bin/rustc"),
                 get_install_prefix_lib_path: &mut || panic!(),
                 has_rpath: true,
                 is_like_osx: false,
-                realpath: &mut |p| Ok(p.to_path_buf()),
             };
             let res = get_rpath_relative_to_output(config,
                                                    Path::new("lib/libstd.so"));

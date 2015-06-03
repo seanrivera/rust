@@ -8,20 +8,25 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 use std::mem::size_of;
 
-pub fn main() {
-    let x: [int; 4] = [1, 2, 3, 4];
+#[cfg(not(target_pointer_width = "64"))]
+fn test_big_vec() {}
+
+#[cfg(target_pointer_width = "64")]
+fn test_big_vec()
+{
+    assert_eq!(size_of::<[u8; (1 << 32)]>(), (1 << 32));
+}
+
+fn main() {
+    let x: [isize; 4] = [1, 2, 3, 4];
     assert_eq!(x[0], 1);
     assert_eq!(x[1], 2);
     assert_eq!(x[2], 3);
     assert_eq!(x[3], 4);
 
     assert_eq!(size_of::<[u8; 4]>(), 4);
-
-    // FIXME #10183
-    // FIXME #18069
-    //if cfg!(target_pointer_width = "64") {
-    //    assert_eq!(size_of::<[u8; (1 << 32)]>(), (1 << 32));
-    //}
+    test_big_vec();
 }

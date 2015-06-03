@@ -16,19 +16,19 @@
 
 #![unstable(feature = "std_misc")]
 
-/// The entry point for panic of Rust tasks.
+/// The entry point for panic of Rust threads.
 ///
-/// This macro is used to inject panic into a Rust task, causing the task to
-/// unwind and panic entirely. Each task's panic can be reaped as the
+/// This macro is used to inject panic into a Rust thread, causing the thread to
+/// unwind and panic entirely. Each thread's panic can be reaped as the
 /// `Box<Any>` type, and the single-argument form of the `panic!` macro will be
 /// the value which is transmitted.
 ///
 /// The multi-argument form of this macro panics with a string and has the
 /// `format!` syntax for building a string.
 ///
-/// # Example
+/// # Examples
 ///
-/// ```should_fail
+/// ```should_panic
 /// # #![allow(unreachable_code)]
 /// panic!();
 /// panic!("this is a terrible mistake!");
@@ -37,6 +37,29 @@
 /// ```
 #[macro_export]
 #[stable(feature = "rust1", since = "1.0.0")]
+#[allow_internal_unstable]
+/// The entry point for panic of Rust threads.
+///
+/// This macro is used to inject panic into a Rust thread, causing the thread to
+/// unwind and panic entirely. Each thread's panic can be reaped as the
+/// `Box<Any>` type, and the single-argument form of the `panic!` macro will be
+/// the value which is transmitted.
+///
+/// The multi-argument form of this macro panics with a string and has the
+/// `format!` syntax for building a string.
+///
+/// # Examples
+///
+/// ```should_panic
+/// # #![allow(unreachable_code)]
+/// panic!();
+/// panic!("this is a terrible mistake!");
+/// panic!(4); // panic with the value of 4 to be collected elsewhere
+/// panic!("this is a {} {message}", "fancy", message = "message");
+/// ```
+#[macro_export]
+#[stable(feature = "rust1", since = "1.0.0")]
+#[allow_internal_unstable]
 macro_rules! panic {
     () => ({
         panic!("explicit panic")
@@ -44,7 +67,7 @@ macro_rules! panic {
     ($msg:expr) => ({
         $crate::rt::begin_unwind($msg, {
             // static requires less code at runtime, more constant data
-            static _FILE_LINE: (&'static str, usize) = (file!(), line!() as usize);
+            static _FILE_LINE: (&'static str, u32) = (file!(), line!());
             &_FILE_LINE
         })
     });
@@ -54,27 +77,33 @@ macro_rules! panic {
             // used inside a dead function. Just `#[allow(dead_code)]` is
             // insufficient, since the user may have
             // `#[forbid(dead_code)]` and which cannot be overridden.
-            static _FILE_LINE: (&'static str, usize) = (file!(), line!() as usize);
+            static _FILE_LINE: (&'static str, u32) = (file!(), line!());
             &_FILE_LINE
         })
     });
 }
 
+/// Macro for printing to the standard output.
+///
 /// Equivalent to the `println!` macro except that a newline is not printed at
 /// the end of the message.
+///
+/// Note that stdout is frequently line-buffered by default so it may be
+/// necessary to use `io::stdout().flush()` to ensure the output is emitted
+/// immediately.
 #[macro_export]
 #[stable(feature = "rust1", since = "1.0.0")]
+#[allow_internal_unstable]
 macro_rules! print {
-    ($($arg:tt)*) => ($crate::old_io::stdio::print_args(format_args!($($arg)*)))
+    ($($arg:tt)*) => ($crate::io::_print(format_args!($($arg)*)));
 }
 
-/// Macro for printing to a task's stdout handle.
+/// Macro for printing to the standard output.
 ///
-/// Each task can override its stdout handle via `std::old_io::stdio::set_stdout`.
-/// The syntax of this macro is the same as that used for `format!`. For more
-/// information, see `std::fmt` and `std::old_io::stdio`.
+/// Use the `format!` syntax to write data to the standard output.
+/// See `std::fmt` for more information.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```
 /// println!("hello there!");
@@ -83,19 +112,19 @@ macro_rules! print {
 #[macro_export]
 #[stable(feature = "rust1", since = "1.0.0")]
 macro_rules! println {
-    ($($arg:tt)*) => ($crate::old_io::stdio::println_args(format_args!($($arg)*)))
+    ($fmt:expr) => (print!(concat!($fmt, "\n")));
+    ($fmt:expr, $($arg:tt)*) => (print!(concat!($fmt, "\n"), $($arg)*));
 }
 
 /// Helper macro for unwrapping `Result` values while returning early with an
-/// error if the value of the expression is `Err`. For more information, see
-/// `std::io`.
+/// error if the value of the expression is `Err`.
 #[macro_export]
 #[stable(feature = "rust1", since = "1.0.0")]
 macro_rules! try {
     ($expr:expr) => (match $expr {
         $crate::result::Result::Ok(val) => val,
         $crate::result::Result::Err(err) => {
-            return $crate::result::Result::Err($crate::error::FromError::from_error(err))
+            return $crate::result::Result::Err($crate::convert::From::from(err))
         }
     })
 }
@@ -109,25 +138,28 @@ macro_rules! try {
 /// # Examples
 ///
 /// ```
+/// # #![feature(std_misc)]
 /// use std::thread;
 /// use std::sync::mpsc;
 ///
 /// // two placeholder functions for now
-/// fn long_running_task() {}
+/// fn long_running_thread() {}
 /// fn calculate_the_answer() -> u32 { 42 }
 ///
 /// let (tx1, rx1) = mpsc::channel();
 /// let (tx2, rx2) = mpsc::channel();
 ///
-/// thread::spawn(move|| { long_running_task(); tx1.send(()).unwrap(); });
+/// thread::spawn(move|| { long_running_thread(); tx1.send(()).unwrap(); });
 /// thread::spawn(move|| { tx2.send(calculate_the_answer()).unwrap(); });
 ///
-/// select! (
-///     _ = rx1.recv() => println!("the long running task finished first"),
+/// select! {
+///     _ = rx1.recv() => println!("the long running thread finished first"),
 ///     answer = rx2.recv() => {
 ///         println!("the answer was: {}", answer.unwrap());
 ///     }
-/// )
+/// }
+/// # drop(rx1.recv());
+/// # drop(rx2.recv());
 /// ```
 ///
 /// For more information about select, see the `std::sync::mpsc::Select` structure.
@@ -177,9 +209,9 @@ pub mod builtin {
     ///
     /// For more information, see the documentation in `std::fmt`.
     ///
-    /// # Example
+    /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// use std::fmt;
     ///
     /// let s = fmt::format(format_args!("hello {}", "world"));
@@ -200,9 +232,9 @@ pub mod builtin {
     /// will be emitted.  To not emit a compile error, use the `option_env!`
     /// macro instead.
     ///
-    /// # Example
+    /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// let path: &'static str = env!("PATH");
     /// println!("the $PATH variable at the time of compiling was: {}", path);
     /// ```
@@ -219,9 +251,9 @@ pub mod builtin {
     /// A compile time error is never emitted when using this macro regardless
     /// of whether the environment variable is present or not.
     ///
-    /// # Example
+    /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// let key: Option<&'static str> = option_env!("SECRET_KEY");
     /// println!("the secret key might be: {:?}", key);
     /// ```
@@ -263,7 +295,7 @@ pub mod builtin {
     /// Integer and floating point literals are stringified in order to be
     /// concatenated.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// let s = concat!("test", 10, 'b', true);
@@ -278,7 +310,7 @@ pub mod builtin {
     /// the invocation of the `line!()` macro itself, but rather the first macro
     /// invocation leading up to the invocation of the `line!()` macro.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// let current_line = line!();
@@ -293,7 +325,7 @@ pub mod builtin {
     /// the invocation of the `column!()` macro itself, but rather the first macro
     /// invocation leading up to the invocation of the `column!()` macro.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// let current_col = column!();
@@ -309,7 +341,7 @@ pub mod builtin {
     /// first macro invocation leading up to the invocation of the `file!()`
     /// macro.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// let this_file = file!();
@@ -324,7 +356,7 @@ pub mod builtin {
     /// stringification of all the tokens passed to the macro. No restrictions
     /// are placed on the syntax of the macro invocation itself.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// let one_plus_one = stringify!(1 + 1);
@@ -339,7 +371,7 @@ pub mod builtin {
     /// contents of the filename specified. The file is located relative to the
     /// current file (similarly to how modules are found),
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```rust,ignore
     /// let secret_key = include_str!("secret-key.ascii");
@@ -353,7 +385,7 @@ pub mod builtin {
     /// the contents of the filename specified. The file is located relative to
     /// the current file (similarly to how modules are found),
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```rust,ignore
     /// let secret_key = include_bytes!("secret-key.bin");
@@ -367,9 +399,9 @@ pub mod builtin {
     /// leading back up to the crate root. The first component of the path
     /// returned is the name of the crate currently being compiled.
     ///
-    /// # Example
+    /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// mod test {
     ///     pub fn foo() {
     ///         assert!(module_path!().ends_with("test"));
@@ -390,9 +422,9 @@ pub mod builtin {
     /// The syntax given to this macro is the same syntax as the `cfg`
     /// attribute.
     ///
-    /// # Example
+    /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// let my_directory = if cfg!(windows) {
     ///     "windows-specific-directory"
     /// } else {
@@ -401,4 +433,18 @@ pub mod builtin {
     /// ```
     #[macro_export]
     macro_rules! cfg { ($cfg:tt) => ({ /* compiler built-in */ }) }
+
+    /// Parse the current given file as an expression.
+    ///
+    /// This is generally a bad idea, because it's going to behave unhygienically.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// fn foo() {
+    ///     include!("/path/to/a/file")
+    /// }
+    /// ```
+    #[macro_export]
+    macro_rules! include { ($cfg:tt) => ({ /* compiler built-in */ }) }
 }

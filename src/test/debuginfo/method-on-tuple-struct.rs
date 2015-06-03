@@ -18,7 +18,7 @@
 
 // STACK BY REF
 // gdb-command:print *self
-// gdb-check:$1 = {100, -100.5}
+// gdb-check:$1 = {__0 = 100, __1 = -100.5}
 // gdb-command:print arg1
 // gdb-check:$2 = -1
 // gdb-command:print arg2
@@ -27,7 +27,7 @@
 
 // STACK BY VAL
 // gdb-command:print self
-// gdb-check:$4 = {100, -100.5}
+// gdb-check:$4 = {__0 = 100, __1 = -100.5}
 // gdb-command:print arg1
 // gdb-check:$5 = -3
 // gdb-command:print arg2
@@ -36,7 +36,7 @@
 
 // OWNED BY REF
 // gdb-command:print *self
-// gdb-check:$7 = {200, -200.5}
+// gdb-check:$7 = {__0 = 200, __1 = -200.5}
 // gdb-command:print arg1
 // gdb-check:$8 = -5
 // gdb-command:print arg2
@@ -45,7 +45,7 @@
 
 // OWNED BY VAL
 // gdb-command:print self
-// gdb-check:$10 = {200, -200.5}
+// gdb-check:$10 = {__0 = 200, __1 = -200.5}
 // gdb-command:print arg1
 // gdb-check:$11 = -7
 // gdb-command:print arg2
@@ -54,7 +54,7 @@
 
 // OWNED MOVED
 // gdb-command:print *self
-// gdb-check:$13 = {200, -200.5}
+// gdb-check:$13 = {__0 = 200, __1 = -200.5}
 // gdb-command:print arg1
 // gdb-check:$14 = -9
 // gdb-command:print arg2
@@ -115,22 +115,22 @@
 #![feature(box_syntax)]
 #![omit_gdb_pretty_printer_section]
 
-#[derive(Copy)]
-struct TupleStruct(int, f64);
+#[derive(Copy, Clone)]
+struct TupleStruct(isize, f64);
 
 impl TupleStruct {
 
-    fn self_by_ref(&self, arg1: int, arg2: int) -> int {
+    fn self_by_ref(&self, arg1: isize, arg2: isize) -> isize {
         zzz(); // #break
         arg1 + arg2
     }
 
-    fn self_by_val(self, arg1: int, arg2: int) -> int {
+    fn self_by_val(self, arg1: isize, arg2: isize) -> isize {
         zzz(); // #break
         arg1 + arg2
     }
 
-    fn self_owned(self: Box<TupleStruct>, arg1: int, arg2: int) -> int {
+    fn self_owned(self: Box<TupleStruct>, arg1: isize, arg2: isize) -> isize {
         zzz(); // #break
         arg1 + arg2
     }
@@ -148,4 +148,3 @@ fn main() {
 }
 
 fn zzz() {()}
-

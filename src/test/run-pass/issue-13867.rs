@@ -11,8 +11,9 @@
 // Test that codegen works correctly when there are multiple refutable
 // patterns in match expression.
 
+
 enum Foo {
-    FooUint(uint),
+    FooUint(usize),
     FooNullary,
 }
 

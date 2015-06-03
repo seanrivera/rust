@@ -8,10 +8,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 static mut DROPPED: [bool; 2] = [false, false];
 
-struct A(uint);
-struct Foo { _a: A, _b: int }
+struct A(usize);
+struct Foo { _a: A, _b: isize }
 
 impl Drop for A {
     fn drop(&mut self) {

@@ -14,6 +14,8 @@
 // lifetime parameters must be early bound in the type of the
 // associated item.
 
+// pretty-expanded FIXME #23616
+
 use std::marker;
 
 pub enum Value<'v> {
@@ -25,9 +27,7 @@ pub trait Decoder<'v> {
     fn read(&mut self) -> Value<'v>;
 }
 
-pub trait Decodable<'v, D: Decoder<'v>>
-    : marker::PhantomFn<(), &'v int>
-{
+pub trait Decodable<'v, D: Decoder<'v>> {
     fn decode(d: &mut D) -> Self;
 }
 

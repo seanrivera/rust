@@ -10,11 +10,12 @@
 
 // A basic test of using a higher-ranked trait bound.
 
+
 trait FnLike<A,R> {
     fn call(&self, arg: A) -> R;
 }
 
-type FnObject<'b> = for<'a> FnLike<&'a int, &'a int> + 'b;
+type FnObject<'b> = for<'a> FnLike<&'a isize, &'a isize> + 'b;
 
 struct Identity;
 

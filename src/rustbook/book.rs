@@ -13,7 +13,6 @@
 use std::io::prelude::*;
 use std::io::BufReader;
 use std::iter;
-use std::iter::AdditiveIterator;
 use std::path::{Path, PathBuf};
 
 pub struct BookItem {
@@ -102,8 +101,8 @@ pub fn parse_summary(input: &mut Read, src: &Path) -> Result<Book, Vec<String>> 
     // always include the introduction
     top_items.push(BookItem {
         title: "Introduction".to_string(),
-        path: PathBuf::new("README.md"),
-        path_to_root: PathBuf::new("."),
+        path: PathBuf::from("README.md"),
+        path_to_root: PathBuf::from("."),
         children: vec!(),
     });
 
@@ -133,10 +132,10 @@ pub fn parse_summary(input: &mut Read, src: &Path) -> Result<Book, Vec<String>> 
                 errors.push(format!("paths in SUMMARY.md must be relative, \
                                      but path '{}' for section '{}' is not.",
                                      given_path, title));
-                PathBuf::new("")
+                PathBuf::new()
             }
         };
-        let path_to_root = PathBuf::new(&iter::repeat("../")
+        let path_to_root = PathBuf::from(&iter::repeat("../")
                                          .take(path_from_root.components().count() - 1)
                                          .collect::<String>());
         let item = BookItem {
@@ -151,7 +150,7 @@ pub fn parse_summary(input: &mut Read, src: &Path) -> Result<Book, Vec<String>> 
                 '\t' => 4,
                 _ => unreachable!()
             }
-        }).sum() / 4 + 1;
+        }).sum::<usize>() / 4 + 1;
 
         if level > stack.len() + 1 {
             errors.push(format!("section '{}' is indented too deeply; \

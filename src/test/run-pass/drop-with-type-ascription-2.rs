@@ -8,10 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
+#![feature(collections)]
+
 fn main() {
     let args = vec!("foobie", "asdf::asdf");
-    let arr: Vec<&str> = args[1].split_str("::").collect();
+    let arr: Vec<&str> = args[1].split("::").collect();
     assert_eq!(arr[0], "asdf");
     assert_eq!(arr[0], "asdf");
 }
-

@@ -9,6 +9,9 @@
 // except according to those terms.
 
 
+
+#![feature(libc, std_misc)]
+
 extern crate libc;
 
 use std::ffi::CString;
@@ -22,9 +25,9 @@ mod mlibc {
     }
 }
 
-fn atol(s: String) -> int {
+fn atol(s: String) -> isize {
     let c = CString::new(s).unwrap();
-    unsafe { mlibc::atol(c.as_ptr()) as int }
+    unsafe { mlibc::atol(c.as_ptr()) as isize }
 }
 
 fn atoll(s: String) -> i64 {

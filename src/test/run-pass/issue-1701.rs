@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 enum pattern { tabby, tortoiseshell, calico }
 enum breed { beagle, rottweiler, pug }
 type name = String;

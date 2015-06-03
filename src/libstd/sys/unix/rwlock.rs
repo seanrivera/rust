@@ -10,29 +10,39 @@
 
 use prelude::v1::*;
 
+use libc;
 use cell::UnsafeCell;
 use sys::sync as ffi;
 
 pub struct RWLock { inner: UnsafeCell<ffi::pthread_rwlock_t> }
 
-pub const RWLOCK_INIT: RWLock = RWLock {
-    inner: UnsafeCell { value: ffi::PTHREAD_RWLOCK_INITIALIZER },
-};
-
 unsafe impl Send for RWLock {}
 unsafe impl Sync for RWLock {}
 
 impl RWLock {
-    #[inline]
-    pub unsafe fn new() -> RWLock {
-        // Might be moved and address is changing it is better to avoid
-        // initialization of potentially opaque OS data before it landed
-        RWLOCK_INIT
+    pub const fn new() -> RWLock {
+        RWLock { inner: UnsafeCell::new(ffi::PTHREAD_RWLOCK_INITIALIZER) }
     }
     #[inline]
     pub unsafe fn read(&self) {
         let r = ffi::pthread_rwlock_rdlock(self.inner.get());
-        debug_assert_eq!(r, 0);
+
+        // According to the pthread_rwlock_rdlock spec, this function **may**
+        // fail with EDEADLK if a deadlock is detected. On the other hand
+        // pthread mutexes will *never* return EDEADLK if they are initialized
+        // as the "fast" kind (which ours always are). As a result, a deadlock
+        // situation may actually return from the call to pthread_rwlock_rdlock
+        // instead of blocking forever (as mutexes and Windows rwlocks do). Note
+        // that not all unix implementations, however, will return EDEADLK for
+        // their rwlocks.
+        //
+        // We roughly maintain the deadlocking behavior by panicking to ensure
+        // that this lock acquisition does not succeed.
+        if r == libc::EDEADLK {
+            panic!("rwlock read lock would result in deadlock");
+        } else {
+            debug_assert_eq!(r, 0);
+        }
     }
     #[inline]
     pub unsafe fn try_read(&self) -> bool {
@@ -41,7 +51,12 @@ impl RWLock {
     #[inline]
     pub unsafe fn write(&self) {
         let r = ffi::pthread_rwlock_wrlock(self.inner.get());
-        debug_assert_eq!(r, 0);
+        // see comments above for why we check for EDEADLK
+        if r == libc::EDEADLK {
+            panic!("rwlock write lock would result in deadlock");
+        } else {
+            debug_assert_eq!(r, 0);
+        }
     }
     #[inline]
     pub unsafe fn try_write(&self) -> bool {
@@ -55,21 +70,16 @@ impl RWLock {
     #[inline]
     pub unsafe fn write_unlock(&self) { self.read_unlock() }
     #[inline]
-    #[cfg(not(target_os = "dragonfly"))]
     pub unsafe fn destroy(&self) {
-        let r = ffi::pthread_rwlock_destroy(self.inner.get());
-        debug_assert_eq!(r, 0);
-    }
-
-    #[inline]
-    #[cfg(target_os = "dragonfly")]
-    pub unsafe fn destroy(&self) {
-        use libc;
         let r = ffi::pthread_rwlock_destroy(self.inner.get());
         // On DragonFly pthread_rwlock_destroy() returns EINVAL if called on a
         // rwlock that was just initialized with
         // ffi::PTHREAD_RWLOCK_INITIALIZER. Once it is used (locked/unlocked)
         // or pthread_rwlock_init() is called, this behaviour no longer occurs.
-        debug_assert!(r == 0 || r == libc::EINVAL);
+        if cfg!(target_os = "dragonfly") {
+            debug_assert!(r == 0 || r == libc::EINVAL);
+        } else {
+            debug_assert_eq!(r, 0);
+        }
     }
 }

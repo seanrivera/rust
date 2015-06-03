@@ -9,6 +9,7 @@
 // except according to those terms.
 
 
+
 fn test_simple() {
     let r = match true { true => { true } false => { panic!() } };
     assert_eq!(r, true);

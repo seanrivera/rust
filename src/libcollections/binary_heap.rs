@@ -30,7 +30,7 @@
 //! use std::collections::BinaryHeap;
 //! use std::usize;
 //!
-//! #[derive(Copy, Eq, PartialEq)]
+//! #[derive(Copy, Clone, Eq, PartialEq)]
 //! struct State {
 //!     cost: usize,
 //!     position: usize,
@@ -152,9 +152,8 @@
 
 use core::prelude::*;
 
-use core::default::Default;
-use core::iter::{FromIterator, IntoIterator};
-use core::mem::{zeroed, replace, swap};
+use core::iter::{FromIterator};
+use core::mem::swap;
 use core::ptr;
 
 use slice;
@@ -163,6 +162,11 @@ use vec::{self, Vec};
 /// A priority queue implemented with a binary heap.
 ///
 /// This will be a max-heap.
+///
+/// It is a logic error for an item to be modified in such a way that the
+/// item's ordering relative to any other item, as determined by the `Ord`
+/// trait, changes while it is in the heap. This is normally only possible
+/// through `Cell`, `RefCell`, global state, I/O, or unsafe code.
 #[derive(Clone)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct BinaryHeap<T> {
@@ -211,6 +215,7 @@ impl<T: Ord> BinaryHeap<T> {
     /// # Examples
     ///
     /// ```
+    /// # #![feature(collections)]
     /// use std::collections::BinaryHeap;
     /// let heap = BinaryHeap::from_vec(vec![9, 1, 2, 7, 3, 2]);
     /// ```
@@ -230,6 +235,7 @@ impl<T: Ord> BinaryHeap<T> {
     /// # Examples
     ///
     /// ```
+    /// # #![feature(collections)]
     /// use std::collections::BinaryHeap;
     /// let heap = BinaryHeap::from_vec(vec![1, 2, 3, 4]);
     ///
@@ -241,27 +247,6 @@ impl<T: Ord> BinaryHeap<T> {
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn iter(&self) -> Iter<T> {
         Iter { iter: self.data.iter() }
-    }
-
-    /// Creates a consuming iterator, that is, one that moves each value out of
-    /// the binary heap in arbitrary order. The binary heap cannot be used
-    /// after calling this.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use std::collections::BinaryHeap;
-    /// let heap = BinaryHeap::from_vec(vec![1, 2, 3, 4]);
-    ///
-    /// // Print 1, 2, 3, 4 in arbitrary order
-    /// for x in heap.into_iter() {
-    ///     // x has type i32, not &i32
-    ///     println!("{}", x);
-    /// }
-    /// ```
-    #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn into_iter(self) -> IntoIter<T> {
-        IntoIter { iter: self.data.into_iter() }
     }
 
     /// Returns the greatest item in the binary heap, or `None` if it is empty.
@@ -355,6 +340,7 @@ impl<T: Ord> BinaryHeap<T> {
     /// # Examples
     ///
     /// ```
+    /// # #![feature(collections)]
     /// use std::collections::BinaryHeap;
     /// let mut heap = BinaryHeap::from_vec(vec![1, 3]);
     ///
@@ -400,6 +386,7 @@ impl<T: Ord> BinaryHeap<T> {
     /// # Examples
     ///
     /// ```
+    /// # #![feature(collections)]
     /// use std::collections::BinaryHeap;
     /// let mut heap = BinaryHeap::new();
     /// heap.push(1);
@@ -431,6 +418,7 @@ impl<T: Ord> BinaryHeap<T> {
     /// # Examples
     ///
     /// ```
+    /// # #![feature(collections)]
     /// use std::collections::BinaryHeap;
     /// let mut heap = BinaryHeap::new();
     ///
@@ -456,6 +444,7 @@ impl<T: Ord> BinaryHeap<T> {
     /// # Examples
     ///
     /// ```
+    /// # #![feature(collections)]
     /// use std::collections::BinaryHeap;
     /// let heap = BinaryHeap::from_vec(vec![1, 2, 3, 4, 5, 6, 7]);
     /// let vec = heap.into_vec();
@@ -473,6 +462,7 @@ impl<T: Ord> BinaryHeap<T> {
     /// # Examples
     ///
     /// ```
+    /// # #![feature(collections)]
     /// use std::collections::BinaryHeap;
     ///
     /// let mut heap = BinaryHeap::from_vec(vec![1, 2, 4, 5, 7]);
@@ -494,46 +484,42 @@ impl<T: Ord> BinaryHeap<T> {
 
     // The implementations of sift_up and sift_down use unsafe blocks in
     // order to move an element out of the vector (leaving behind a
-    // zeroed element), shift along the others and move it back into the
-    // vector over the junk element. This reduces the constant factor
-    // compared to using swaps, which involves twice as many moves.
-    fn sift_up(&mut self, start: usize, mut pos: usize) {
+    // hole), shift along the others and move the removed element back into the
+    // vector at the final location of the hole.
+    // The `Hole` type is used to represent this, and make sure
+    // the hole is filled back at the end of its scope, even on panic.
+    // Using a hole reduces the constant factor compared to using swaps,
+    // which involves twice as many moves.
+    fn sift_up(&mut self, start: usize, pos: usize) {
         unsafe {
-            let new = replace(&mut self.data[pos], zeroed());
+            // Take out the value at `pos` and create a hole.
+            let mut hole = Hole::new(&mut self.data, pos);
 
-            while pos > start {
-                let parent = (pos - 1) >> 1;
-
-                if new <= self.data[parent] { break; }
-
-                let x = replace(&mut self.data[parent], zeroed());
-                ptr::write(&mut self.data[pos], x);
-                pos = parent;
+            while hole.pos() > start {
+                let parent = (hole.pos() - 1) / 2;
+                if hole.removed() <= hole.get(parent) { break }
+                hole.move_to(parent);
             }
-            ptr::write(&mut self.data[pos], new);
         }
     }
 
     fn sift_down_range(&mut self, mut pos: usize, end: usize) {
+        let start = pos;
         unsafe {
-            let start = pos;
-            let new = replace(&mut self.data[pos], zeroed());
-
+            let mut hole = Hole::new(&mut self.data, pos);
             let mut child = 2 * pos + 1;
             while child < end {
                 let right = child + 1;
-                if right < end && !(self.data[child] > self.data[right]) {
+                if right < end && !(hole.get(child) > hole.get(right)) {
                     child = right;
                 }
-                let x = replace(&mut self.data[child], zeroed());
-                ptr::write(&mut self.data[pos], x);
-                pos = child;
-                child = 2 * pos + 1;
+                hole.move_to(child);
+                child = 2 * hole.pos() + 1;
             }
 
-            ptr::write(&mut self.data[pos], new);
-            self.sift_up(start, pos);
+            pos = hole.pos;
         }
+        self.sift_up(start, pos);
     }
 
     fn sift_down(&mut self, pos: usize) {
@@ -550,16 +536,85 @@ impl<T: Ord> BinaryHeap<T> {
     pub fn is_empty(&self) -> bool { self.len() == 0 }
 
     /// Clears the binary heap, returning an iterator over the removed elements.
+    ///
+    /// The elements are removed in arbitrary order.
     #[inline]
     #[unstable(feature = "collections",
                reason = "matches collection reform specification, waiting for dust to settle")]
     pub fn drain(&mut self) -> Drain<T> {
-        Drain { iter: self.data.drain() }
+        Drain { iter: self.data.drain(..) }
     }
 
     /// Drops all items from the binary heap.
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn clear(&mut self) { self.drain(); }
+}
+
+/// Hole represents a hole in a slice i.e. an index without valid value
+/// (because it was moved from or duplicated).
+/// In drop, `Hole` will restore the slice by filling the hole
+/// position with the value that was originally removed.
+struct Hole<'a, T: 'a> {
+    data: &'a mut [T],
+    /// `elt` is always `Some` from new until drop.
+    elt: Option<T>,
+    pos: usize,
+}
+
+impl<'a, T> Hole<'a, T> {
+    /// Create a new Hole at index `pos`.
+    fn new(data: &'a mut [T], pos: usize) -> Self {
+        unsafe {
+            let elt = ptr::read(&data[pos]);
+            Hole {
+                data: data,
+                elt: Some(elt),
+                pos: pos,
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn pos(&self) -> usize { self.pos }
+
+    /// Return a reference to the element removed
+    #[inline(always)]
+    fn removed(&self) -> &T {
+        self.elt.as_ref().unwrap()
+    }
+
+    /// Return a reference to the element at `index`.
+    ///
+    /// Panics if the index is out of bounds.
+    ///
+    /// Unsafe because index must not equal pos.
+    #[inline(always)]
+    unsafe fn get(&self, index: usize) -> &T {
+        debug_assert!(index != self.pos);
+        &self.data[index]
+    }
+
+    /// Move hole to new location
+    ///
+    /// Unsafe because index must not equal pos.
+    #[inline(always)]
+    unsafe fn move_to(&mut self, index: usize) {
+        debug_assert!(index != self.pos);
+        let index_ptr: *const _ = &self.data[index];
+        let hole_ptr = &mut self.data[self.pos];
+        ptr::copy_nonoverlapping(index_ptr, hole_ptr, 1);
+        self.pos = index;
+    }
+}
+
+impl<'a, T> Drop for Hole<'a, T> {
+    fn drop(&mut self) {
+        // fill the hole again
+        unsafe {
+            let pos = self.pos;
+            ptr::write(&mut self.data[pos], self.elt.take().unwrap());
+        }
+    }
 }
 
 /// `BinaryHeap` iterator.
@@ -660,8 +715,25 @@ impl<T: Ord> IntoIterator for BinaryHeap<T> {
     type Item = T;
     type IntoIter = IntoIter<T>;
 
+    /// Creates a consuming iterator, that is, one that moves each value out of
+    /// the binary heap in arbitrary order. The binary heap cannot be used
+    /// after calling this.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(collections)]
+    /// use std::collections::BinaryHeap;
+    /// let heap = BinaryHeap::from_vec(vec![1, 2, 3, 4]);
+    ///
+    /// // Print 1, 2, 3, 4 in arbitrary order
+    /// for x in heap.into_iter() {
+    ///     // x has type i32, not &i32
+    ///     println!("{}", x);
+    /// }
+    /// ```
     fn into_iter(self) -> IntoIter<T> {
-        self.into_iter()
+        IntoIter { iter: self.data.into_iter() }
     }
 }
 
@@ -686,220 +758,5 @@ impl<T: Ord> Extend<T> for BinaryHeap<T> {
         for elem in iter {
             self.push(elem);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use prelude::*;
-
-    use super::BinaryHeap;
-
-    #[test]
-    fn test_iterator() {
-        let data = vec![5, 9, 3];
-        let iterout = [9, 5, 3];
-        let heap = BinaryHeap::from_vec(data);
-        let mut i = 0;
-        for el in &heap {
-            assert_eq!(*el, iterout[i]);
-            i += 1;
-        }
-    }
-
-    #[test]
-    fn test_iterator_reverse() {
-        let data = vec![5, 9, 3];
-        let iterout = vec![3, 5, 9];
-        let pq = BinaryHeap::from_vec(data);
-
-        let v: Vec<_> = pq.iter().rev().cloned().collect();
-        assert_eq!(v, iterout);
-    }
-
-    #[test]
-    fn test_move_iter() {
-        let data = vec![5, 9, 3];
-        let iterout = vec![9, 5, 3];
-        let pq = BinaryHeap::from_vec(data);
-
-        let v: Vec<_> = pq.into_iter().collect();
-        assert_eq!(v, iterout);
-    }
-
-    #[test]
-    fn test_move_iter_size_hint() {
-        let data = vec![5, 9];
-        let pq = BinaryHeap::from_vec(data);
-
-        let mut it = pq.into_iter();
-
-        assert_eq!(it.size_hint(), (2, Some(2)));
-        assert_eq!(it.next(), Some(9));
-
-        assert_eq!(it.size_hint(), (1, Some(1)));
-        assert_eq!(it.next(), Some(5));
-
-        assert_eq!(it.size_hint(), (0, Some(0)));
-        assert_eq!(it.next(), None);
-    }
-
-    #[test]
-    fn test_move_iter_reverse() {
-        let data = vec![5, 9, 3];
-        let iterout = vec![3, 5, 9];
-        let pq = BinaryHeap::from_vec(data);
-
-        let v: Vec<_> = pq.into_iter().rev().collect();
-        assert_eq!(v, iterout);
-    }
-
-    #[test]
-    fn test_peek_and_pop() {
-        let data = vec![2, 4, 6, 2, 1, 8, 10, 3, 5, 7, 0, 9, 1];
-        let mut sorted = data.clone();
-        sorted.sort();
-        let mut heap = BinaryHeap::from_vec(data);
-        while !heap.is_empty() {
-            assert_eq!(heap.peek().unwrap(), sorted.last().unwrap());
-            assert_eq!(heap.pop().unwrap(), sorted.pop().unwrap());
-        }
-    }
-
-    #[test]
-    fn test_push() {
-        let mut heap = BinaryHeap::from_vec(vec![2, 4, 9]);
-        assert_eq!(heap.len(), 3);
-        assert!(*heap.peek().unwrap() == 9);
-        heap.push(11);
-        assert_eq!(heap.len(), 4);
-        assert!(*heap.peek().unwrap() == 11);
-        heap.push(5);
-        assert_eq!(heap.len(), 5);
-        assert!(*heap.peek().unwrap() == 11);
-        heap.push(27);
-        assert_eq!(heap.len(), 6);
-        assert!(*heap.peek().unwrap() == 27);
-        heap.push(3);
-        assert_eq!(heap.len(), 7);
-        assert!(*heap.peek().unwrap() == 27);
-        heap.push(103);
-        assert_eq!(heap.len(), 8);
-        assert!(*heap.peek().unwrap() == 103);
-    }
-
-    #[test]
-    fn test_push_unique() {
-        let mut heap = BinaryHeap::<Box<_>>::from_vec(vec![box 2, box 4, box 9]);
-        assert_eq!(heap.len(), 3);
-        assert!(*heap.peek().unwrap() == box 9);
-        heap.push(box 11);
-        assert_eq!(heap.len(), 4);
-        assert!(*heap.peek().unwrap() == box 11);
-        heap.push(box 5);
-        assert_eq!(heap.len(), 5);
-        assert!(*heap.peek().unwrap() == box 11);
-        heap.push(box 27);
-        assert_eq!(heap.len(), 6);
-        assert!(*heap.peek().unwrap() == box 27);
-        heap.push(box 3);
-        assert_eq!(heap.len(), 7);
-        assert!(*heap.peek().unwrap() == box 27);
-        heap.push(box 103);
-        assert_eq!(heap.len(), 8);
-        assert!(*heap.peek().unwrap() == box 103);
-    }
-
-    #[test]
-    fn test_push_pop() {
-        let mut heap = BinaryHeap::from_vec(vec![5, 5, 2, 1, 3]);
-        assert_eq!(heap.len(), 5);
-        assert_eq!(heap.push_pop(6), 6);
-        assert_eq!(heap.len(), 5);
-        assert_eq!(heap.push_pop(0), 5);
-        assert_eq!(heap.len(), 5);
-        assert_eq!(heap.push_pop(4), 5);
-        assert_eq!(heap.len(), 5);
-        assert_eq!(heap.push_pop(1), 4);
-        assert_eq!(heap.len(), 5);
-    }
-
-    #[test]
-    fn test_replace() {
-        let mut heap = BinaryHeap::from_vec(vec![5, 5, 2, 1, 3]);
-        assert_eq!(heap.len(), 5);
-        assert_eq!(heap.replace(6).unwrap(), 5);
-        assert_eq!(heap.len(), 5);
-        assert_eq!(heap.replace(0).unwrap(), 6);
-        assert_eq!(heap.len(), 5);
-        assert_eq!(heap.replace(4).unwrap(), 5);
-        assert_eq!(heap.len(), 5);
-        assert_eq!(heap.replace(1).unwrap(), 4);
-        assert_eq!(heap.len(), 5);
-    }
-
-    fn check_to_vec(mut data: Vec<i32>) {
-        let heap = BinaryHeap::from_vec(data.clone());
-        let mut v = heap.clone().into_vec();
-        v.sort();
-        data.sort();
-
-        assert_eq!(v, data);
-        assert_eq!(heap.into_sorted_vec(), data);
-    }
-
-    #[test]
-    fn test_to_vec() {
-        check_to_vec(vec![]);
-        check_to_vec(vec![5]);
-        check_to_vec(vec![3, 2]);
-        check_to_vec(vec![2, 3]);
-        check_to_vec(vec![5, 1, 2]);
-        check_to_vec(vec![1, 100, 2, 3]);
-        check_to_vec(vec![1, 3, 5, 7, 9, 2, 4, 6, 8, 0]);
-        check_to_vec(vec![2, 4, 6, 2, 1, 8, 10, 3, 5, 7, 0, 9, 1]);
-        check_to_vec(vec![9, 11, 9, 9, 9, 9, 11, 2, 3, 4, 11, 9, 0, 0, 0, 0]);
-        check_to_vec(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-        check_to_vec(vec![10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]);
-        check_to_vec(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 0, 0, 1, 2]);
-        check_to_vec(vec![5, 4, 3, 2, 1, 5, 4, 3, 2, 1, 5, 4, 3, 2, 1]);
-    }
-
-    #[test]
-    fn test_empty_pop() {
-        let mut heap = BinaryHeap::<i32>::new();
-        assert!(heap.pop().is_none());
-    }
-
-    #[test]
-    fn test_empty_peek() {
-        let empty = BinaryHeap::<i32>::new();
-        assert!(empty.peek().is_none());
-    }
-
-    #[test]
-    fn test_empty_replace() {
-        let mut heap = BinaryHeap::new();
-        assert!(heap.replace(5).is_none());
-    }
-
-    #[test]
-    fn test_from_iter() {
-        let xs = vec![9, 8, 7, 6, 5, 4, 3, 2, 1];
-
-        let mut q: BinaryHeap<_> = xs.iter().rev().cloned().collect();
-
-        for &x in &xs {
-            assert_eq!(q.pop().unwrap(), x);
-        }
-    }
-
-    #[test]
-    fn test_drain() {
-        let mut q: BinaryHeap<_> = [9, 8, 7, 6, 5, 4, 3, 2, 1].iter().cloned().collect();
-
-        assert_eq!(q.drain().take(5).count(), 5);
-
-        assert!(q.is_empty());
     }
 }

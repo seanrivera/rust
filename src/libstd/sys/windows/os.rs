@@ -13,23 +13,22 @@
 #![allow(bad_style)]
 
 use prelude::v1::*;
-use os::windows::*;
+use os::windows::prelude::*;
 
 use error::Error as StdError;
-use ffi::{OsString, OsStr, AsOsStr};
+use ffi::{OsString, OsStr};
 use fmt;
 use io;
 use libc::types::os::arch::extra::LPWCH;
 use libc::{self, c_int, c_void};
 use mem;
-use old_io::{IoError, IoResult};
 use ops::Range;
+use os::windows::ffi::EncodeWide;
 use path::{self, PathBuf};
 use ptr;
 use slice;
 use sys::c;
-use sys::fs::FileDesc;
-use sys::handle::Handle as RawHandle;
+use sys::handle::Handle;
 
 use libc::funcs::extra::kernel32::{
     GetEnvironmentStringsW,
@@ -40,7 +39,7 @@ pub fn errno() -> i32 {
     unsafe { libc::GetLastError() as i32 }
 }
 
-/// Get a detailed string description for the given error number
+/// Gets a detailed string description for the given error number.
 pub fn error_string(errnum: i32) -> String {
     use libc::types::os::arch::extra::DWORD;
     use libc::types::os::arch::extra::LPWSTR;
@@ -107,7 +106,7 @@ impl Iterator for Env {
             if *self.cur == 0 { return None }
             let p = &*self.cur;
             let mut len = 0;
-            while *(p as *const _).offset(len) != 0 {
+            while *(p as *const u16).offset(len) != 0 {
                 len += 1;
             }
             let p = p as *const u16;
@@ -134,7 +133,7 @@ pub fn env() -> Env {
         let ch = GetEnvironmentStringsW();
         if ch as usize == 0 {
             panic!("failure getting env string from OS: {}",
-                   IoError::last_error());
+                   io::Error::last_os_error());
         }
         Env { base: ch, cur: ch }
     }
@@ -197,13 +196,13 @@ impl<'a> Iterator for SplitPaths<'a> {
 pub struct JoinPathsError;
 
 pub fn join_paths<I, T>(paths: I) -> Result<OsString, JoinPathsError>
-    where I: Iterator<Item=T>, T: AsOsStr
+    where I: Iterator<Item=T>, T: AsRef<OsStr>
 {
     let mut joined = Vec::new();
     let sep = b';' as u16;
 
     for (i, path) in paths.enumerate() {
-        let path = path.as_os_str();
+        let path = path.as_ref();
         if i > 0 { joined.push(sep) }
         let v = path.encode_wide().collect::<Vec<u16>>();
         if v.contains(&(b'"' as u16)) {
@@ -231,19 +230,20 @@ impl StdError for JoinPathsError {
 }
 
 pub fn current_exe() -> io::Result<PathBuf> {
-    super::fill_utf16_buf_new(|buf, sz| unsafe {
+    super::fill_utf16_buf(|buf, sz| unsafe {
         libc::GetModuleFileNameW(ptr::null_mut(), buf, sz)
     }, super::os2path)
 }
 
 pub fn getcwd() -> io::Result<PathBuf> {
-    super::fill_utf16_buf_new(|buf, sz| unsafe {
+    super::fill_utf16_buf(|buf, sz| unsafe {
         libc::GetCurrentDirectoryW(sz, buf)
     }, super::os2path)
 }
 
 pub fn chdir(p: &path::Path) -> io::Result<()> {
-    let mut p = p.as_os_str().encode_wide().collect::<Vec<_>>();
+    let p: &OsStr = p.as_ref();
+    let mut p = p.encode_wide().collect::<Vec<_>>();
     p.push(0);
 
     unsafe {
@@ -256,7 +256,7 @@ pub fn chdir(p: &path::Path) -> io::Result<()> {
 
 pub fn getenv(k: &OsStr) -> Option<OsString> {
     let k = super::to_utf16_os(k);
-    super::fill_utf16_buf_new(|buf, sz| unsafe {
+    super::fill_utf16_buf(|buf, sz| unsafe {
         libc::GetEnvironmentVariableW(k.as_ptr(), buf, sz)
     }, |buf| {
         OsStringExt::from_wide(buf)
@@ -269,7 +269,7 @@ pub fn setenv(k: &OsStr, v: &OsStr) {
 
     unsafe {
         if libc::SetEnvironmentVariableW(k.as_ptr(), v.as_ptr()) == 0 {
-            panic!("failed to set env: {}", IoError::last_error());
+            panic!("failed to set env: {}", io::Error::last_os_error());
         }
     }
 }
@@ -278,7 +278,7 @@ pub fn unsetenv(n: &OsStr) {
     let v = super::to_utf16_os(n);
     unsafe {
         if libc::SetEnvironmentVariableW(v.as_ptr(), ptr::null()) == 0 {
-            panic!("failed to unset env: {}", IoError::last_error());
+            panic!("failed to unset env: {}", io::Error::last_os_error());
         }
     }
 }
@@ -333,44 +333,23 @@ pub fn page_size() -> usize {
     }
 }
 
-pub unsafe fn pipe() -> IoResult<(FileDesc, FileDesc)> {
-    // Windows pipes work subtly differently than unix pipes, and their
-    // inheritance has to be handled in a different way that I do not
-    // fully understand. Here we explicitly make the pipe non-inheritable,
-    // which means to pass it to a subprocess they need to be duplicated
-    // first, as in std::run.
-    let mut fds = [0; 2];
-    match libc::pipe(fds.as_mut_ptr(), 1024 as ::libc::c_uint,
-    (libc::O_BINARY | libc::O_NOINHERIT) as c_int) {
-        0 => {
-            assert!(fds[0] != -1 && fds[0] != 0);
-            assert!(fds[1] != -1 && fds[1] != 0);
-            Ok((FileDesc::new(fds[0], true), FileDesc::new(fds[1], true)))
-        }
-        _ => Err(IoError::last_error()),
-    }
-}
-
 pub fn temp_dir() -> PathBuf {
-    super::fill_utf16_buf_new(|buf, sz| unsafe {
+    super::fill_utf16_buf(|buf, sz| unsafe {
         c::GetTempPathW(sz, buf)
     }, super::os2path).unwrap()
 }
 
 pub fn home_dir() -> Option<PathBuf> {
-    getenv("HOME".as_os_str()).or_else(|| {
-        getenv("USERPROFILE".as_os_str())
-    }).map(|os| {
-        // FIXME(#22751) should consume `os`
-        PathBuf::new(&os)
-    }).or_else(|| unsafe {
+    getenv("HOME".as_ref()).or_else(|| {
+        getenv("USERPROFILE".as_ref())
+    }).map(PathBuf::from).or_else(|| unsafe {
         let me = c::GetCurrentProcess();
         let mut token = ptr::null_mut();
         if c::OpenProcessToken(me, c::TOKEN_READ, &mut token) == 0 {
             return None
         }
-        let _handle = RawHandle::new(token);
-        super::fill_utf16_buf_new(|buf, mut sz| {
+        let _handle = Handle::new(token);
+        super::fill_utf16_buf(|buf, mut sz| {
             match c::GetUserProfileDirectoryW(token, buf, &mut sz) {
                 0 if libc::GetLastError() != 0 => 0,
                 0 => sz,
@@ -378,4 +357,8 @@ pub fn home_dir() -> Option<PathBuf> {
             }
         }, super::os2path).ok()
     })
+}
+
+pub fn exit(code: i32) -> ! {
+    unsafe { c::ExitProcess(code as libc::c_uint) }
 }

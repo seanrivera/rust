@@ -9,7 +9,8 @@
 // except according to those terms.
 
 
-fn test<F>(f: F) -> uint where F: FnOnce(uint) -> uint {
+
+fn test<F>(f: F) -> usize where F: FnOnce(usize) -> usize {
     return f(22);
 }
 

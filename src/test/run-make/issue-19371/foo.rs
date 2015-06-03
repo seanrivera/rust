@@ -8,6 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![feature(rustc_private, path, convert)]
+
 extern crate rustc;
 extern crate rustc_driver;
 extern crate rustc_lint;
@@ -31,9 +33,9 @@ fn main() {
         panic!("expected rustc path");
     }
 
-    let tmpdir = PathBuf::new(&args[1]);
+    let tmpdir = PathBuf::from(&args[1]);
 
-    let mut sysroot = PathBuf::new(&args[3]);
+    let mut sysroot = PathBuf::from(&args[3]);
     sysroot.pop();
     sysroot.pop();
 
@@ -47,7 +49,7 @@ fn basic_sess(sysroot: PathBuf) -> Session {
     opts.output_types = vec![OutputTypeExe];
     opts.maybe_sysroot = Some(sysroot);
 
-    let descriptions = Registry::new(&rustc::diagnostics::DIAGNOSTICS);
+    let descriptions = Registry::new(&rustc::DIAGNOSTICS);
     let sess = build_session(opts, None, descriptions);
     rustc_lint::register_builtins(&mut sess.lint_store.borrow_mut(), Some(&sess));
     sess

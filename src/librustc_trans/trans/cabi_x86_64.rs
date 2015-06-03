@@ -16,7 +16,6 @@ use self::RegClass::*;
 
 use llvm::{Integer, Pointer, Float, Double};
 use llvm::{Struct, Array, Attribute, Vector};
-use llvm::{StructRetAttribute, ByValAttribute, ZExtAttribute};
 use trans::cabi::{ArgType, FnType};
 use trans::context::CrateContext;
 use trans::type_::Type;
@@ -70,7 +69,7 @@ trait ClassList {
 
 impl ClassList for [RegClass] {
     fn is_pass_byval(&self) -> bool {
-        if self.len() == 0 { return false; }
+        if self.is_empty() { return false; }
 
         let class = self[0];
            class == Memory
@@ -79,21 +78,21 @@ impl ClassList for [RegClass] {
     }
 
     fn is_ret_bysret(&self) -> bool {
-        if self.len() == 0 { return false; }
+        if self.is_empty() { return false; }
 
         self[0] == Memory
     }
 }
 
 fn classify_ty(ty: Type) -> Vec<RegClass> {
-    fn align(off: uint, ty: Type) -> uint {
+    fn align(off: usize, ty: Type) -> usize {
         let a = ty_align(ty);
         return (off + a - 1) / a * a;
     }
 
-    fn ty_align(ty: Type) -> uint {
+    fn ty_align(ty: Type) -> usize {
         match ty.kind() {
-            Integer => ((ty.int_width() as uint) + 7) / 8,
+            Integer => ((ty.int_width() as usize) + 7) / 8,
             Pointer => 8,
             Float => 4,
             Double => 8,
@@ -118,9 +117,9 @@ fn classify_ty(ty: Type) -> Vec<RegClass> {
         }
     }
 
-    fn ty_size(ty: Type) -> uint {
+    fn ty_size(ty: Type) -> usize {
         match ty.kind() {
-            Integer => (ty.int_width() as uint + 7) / 8,
+            Integer => (ty.int_width() as usize + 7) / 8,
             Pointer => 8,
             Float => 4,
             Double => 8,
@@ -157,7 +156,7 @@ fn classify_ty(ty: Type) -> Vec<RegClass> {
     }
 
     fn unify(cls: &mut [RegClass],
-             i: uint,
+             i: usize,
              newv: RegClass) {
         if cls[i] == newv { return }
 
@@ -191,8 +190,8 @@ fn classify_ty(ty: Type) -> Vec<RegClass> {
 
     fn classify_struct(tys: &[Type],
                        cls: &mut [RegClass],
-                       i: uint,
-                       off: uint,
+                       i: usize,
+                       off: usize,
                        packed: bool) {
         let mut field_off = off;
         for ty in tys {
@@ -205,8 +204,8 @@ fn classify_ty(ty: Type) -> Vec<RegClass> {
     }
 
     fn classify(ty: Type,
-                cls: &mut [RegClass], ix: uint,
-                off: uint) {
+                cls: &mut [RegClass], ix: usize,
+                off: usize) {
         let t_align = ty_align(ty);
         let t_size = ty_size(ty);
 
@@ -331,7 +330,7 @@ fn classify_ty(ty: Type) -> Vec<RegClass> {
 }
 
 fn llreg_ty(ccx: &CrateContext, cls: &[RegClass]) -> Type {
-    fn llvec_len(cls: &[RegClass]) -> uint {
+    fn llvec_len(cls: &[RegClass]) -> usize {
         let mut len = 1;
         for c in cls {
             if *c != SSEUp {
@@ -407,19 +406,19 @@ pub fn compute_abi_info(ccx: &CrateContext,
                                 None)
             }
         } else {
-            let attr = if ty == Type::i1(ccx) { Some(ZExtAttribute) } else { None };
+            let attr = if ty == Type::i1(ccx) { Some(Attribute::ZExt) } else { None };
             ArgType::direct(ty, None, None, attr)
         }
     }
 
     let mut arg_tys = Vec::new();
     for t in atys {
-        let ty = x86_64_ty(ccx, *t, |cls| cls.is_pass_byval(), ByValAttribute);
+        let ty = x86_64_ty(ccx, *t, |cls| cls.is_pass_byval(), Attribute::ByVal);
         arg_tys.push(ty);
     }
 
     let ret_ty = if ret_def {
-        x86_64_ty(ccx, rty, |cls| cls.is_ret_bysret(), StructRetAttribute)
+        x86_64_ty(ccx, rty, |cls| cls.is_ret_bysret(), Attribute::StructRet)
     } else {
         ArgType::direct(Type::void(ccx), None, None, None)
     };

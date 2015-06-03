@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 const X: &'static str = "12345";
 
 fn test(s: String) -> bool {

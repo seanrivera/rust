@@ -8,8 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
 enum Foo {
-    B { b1: int, bb1: int},
+    B { b1: isize, bb1: isize},
 }
 
 macro_rules! match_inside_expansion {

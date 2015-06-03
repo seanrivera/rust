@@ -25,7 +25,7 @@
 // gdb-command:continue
 
 // gdb-command:print self
-// gdb-check:$3 = {4444.5, 5555, 6666, 7777.5}
+// gdb-check:$3 = {__0 = 4444.5, __1 = 5555, __2 = 6666, __3 = 7777.5}
 // gdb-command:continue
 
 
@@ -51,16 +51,16 @@ trait Trait {
     fn method(self) -> Self;
 }
 
-impl Trait for int {
-    fn method(self) -> int {
+impl Trait for isize {
+    fn method(self) -> isize {
         zzz(); // #break
         self
     }
 }
 
 struct Struct {
-    x: uint,
-    y: uint,
+    x: usize,
+    y: usize,
 }
 
 impl Trait for Struct {
@@ -70,15 +70,15 @@ impl Trait for Struct {
     }
 }
 
-impl Trait for (f64, int, int, f64) {
-    fn method(self) -> (f64, int, int, f64) {
+impl Trait for (f64, isize, isize, f64) {
+    fn method(self) -> (f64, isize, isize, f64) {
         zzz(); // #break
         self
     }
 }
 
 fn main() {
-    let _ = (1111 as int).method();
+    let _ = (1111 as isize).method();
     let _ = Struct { x: 2222, y: 3333 }.method();
     let _ = (4444.5, 5555, 6666, 7777.5).method();
 }

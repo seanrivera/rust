@@ -8,11 +8,14 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::old_io;
+// pretty-expanded FIXME #23616
 
-fn foo(a: &mut old_io::Writer) {
+pub trait Writer {
+    fn write(&mut self, b: &[u8]) -> Result<(), ()>;
+}
+
+fn foo(a: &mut Writer) {
     a.write(&[]).unwrap();
 }
 
 pub fn main(){}
-

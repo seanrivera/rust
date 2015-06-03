@@ -12,7 +12,8 @@
 // Acts as a regression test for #16790, #18378 and #18543
 
 // aux-build:unboxed-closures-cross-crate.rs
-extern crate "unboxed-closures-cross-crate" as ubcc;
+
+extern crate unboxed_closures_cross_crate as ubcc;
 
 fn main() {
     assert_eq!(ubcc::has_closures(), 2_usize);

@@ -8,7 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! The first version of the prelude of the standard library.
+//! The first version of the prelude of The Rust Standard Library.
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
@@ -26,37 +26,26 @@
 #[stable(feature = "rust1", since = "1.0.0")]
 #[doc(no_inline)] pub use boxed::Box;
 #[stable(feature = "rust1", since = "1.0.0")]
-#[doc(no_inline)] pub use char::CharExt;
+#[doc(no_inline)] pub use borrow::ToOwned;
 #[stable(feature = "rust1", since = "1.0.0")]
 #[doc(no_inline)] pub use clone::Clone;
 #[stable(feature = "rust1", since = "1.0.0")]
 #[doc(no_inline)] pub use cmp::{PartialEq, PartialOrd, Eq, Ord};
 #[stable(feature = "rust1", since = "1.0.0")]
-#[doc(no_inline)] pub use iter::DoubleEndedIterator;
+#[doc(no_inline)] pub use convert::{AsRef, AsMut, Into, From};
 #[stable(feature = "rust1", since = "1.0.0")]
-#[doc(no_inline)] pub use iter::ExactSizeIterator;
+#[doc(no_inline)] pub use default::Default;
 #[stable(feature = "rust1", since = "1.0.0")]
-#[doc(no_inline)] pub use iter::{Iterator, IteratorExt, Extend};
+#[doc(no_inline)] pub use iter::{Iterator, Extend, IntoIterator};
+#[stable(feature = "rust1", since = "1.0.0")]
+#[doc(no_inline)] pub use iter::{DoubleEndedIterator, ExactSizeIterator};
 #[stable(feature = "rust1", since = "1.0.0")]
 #[doc(no_inline)] pub use option::Option::{self, Some, None};
 #[stable(feature = "rust1", since = "1.0.0")]
-#[doc(no_inline)] pub use ptr::{PtrExt, MutPtrExt};
-#[stable(feature = "rust1", since = "1.0.0")]
 #[doc(no_inline)] pub use result::Result::{self, Ok, Err};
 #[stable(feature = "rust1", since = "1.0.0")]
-#[doc(no_inline)] pub use slice::{SliceExt, SliceConcatExt, AsSlice};
-#[stable(feature = "rust1", since = "1.0.0")]
-#[doc(no_inline)] pub use str::{Str, StrExt};
+#[doc(no_inline)] pub use slice::SliceConcatExt;
 #[stable(feature = "rust1", since = "1.0.0")]
 #[doc(no_inline)] pub use string::{String, ToString};
 #[stable(feature = "rust1", since = "1.0.0")]
 #[doc(no_inline)] pub use vec::Vec;
-
-// NB: remove when path reform lands
-#[doc(no_inline)] pub use old_path::{Path, GenericPath};
-// NB: remove when I/O reform lands
-#[doc(no_inline)] pub use old_io::{Buffer, Writer, Reader, Seek, BufferPrelude};
-// NB: remove when range syntax lands
-#[doc(no_inline)] pub use iter::range;
-
-#[doc(no_inline)] pub use num::wrapping::{Wrapping, WrappingOps};

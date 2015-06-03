@@ -21,6 +21,7 @@
 // Last 7 bytes of Request struct are not occupied by any fields.
 
 
+
 enum TestOption<T> {
     TestNone,
     TestSome(T),

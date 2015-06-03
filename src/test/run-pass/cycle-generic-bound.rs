@@ -10,9 +10,9 @@
 
 // Regression test for #15477. This test just needs to compile.
 
-use std::marker::PhantomFn;
+// pretty-expanded FIXME #23616
 
-trait Chromosome<X: Chromosome<i32>> : PhantomFn<(Self,X)> {
+trait Chromosome<X: Chromosome<i32>> {
 }
 
 fn main() { }

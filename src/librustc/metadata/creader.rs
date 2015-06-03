@@ -21,8 +21,11 @@ use metadata::decoder;
 use metadata::loader;
 use metadata::loader::CratePaths;
 
-use std::path::{Path, PathBuf};
+use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::fs;
+
 use syntax::ast;
 use syntax::abi;
 use syntax::attr;
@@ -32,7 +35,6 @@ use syntax::parse;
 use syntax::parse::token::InternedString;
 use syntax::parse::token;
 use syntax::visit;
-use util::fs;
 use log;
 
 pub struct CrateReader<'a> {
@@ -73,22 +75,20 @@ struct CrateInfo {
 }
 
 pub fn validate_crate_name(sess: Option<&Session>, s: &str, sp: Option<Span>) {
-    let err = |s: &str| {
+    let say = |s: &str| {
         match (sp, sess) {
             (_, None) => panic!("{}", s),
             (Some(sp), Some(sess)) => sess.span_err(sp, s),
             (None, Some(sess)) => sess.err(s),
         }
     };
-    if s.len() == 0 {
-        err("crate name must not be empty");
-    } else if s.char_at(0) == '-' {
-        err(&format!("crate name cannot start with a hyphen: {}", s));
+    if s.is_empty() {
+        say("crate name must not be empty");
     }
     for c in s.chars() {
         if c.is_alphanumeric() { continue }
-        if c == '_' || c == '-' { continue }
-        err(&format!("invalid character `{}` in crate name: `{}`", c, s));
+        if c == '_'  { continue }
+        say(&format!("invalid character `{}` in crate name: `{}`", c, s));
     }
     match sess {
         Some(sess) => sess.abort_if_errors(),
@@ -153,8 +153,9 @@ impl<'a> CrateReader<'a> {
         }
     }
 
-    // Traverses an AST, reading all the information about use'd crates and extern
-    // libraries necessary for later resolving, typechecking, linking, etc.
+    // Traverses an AST, reading all the information about use'd crates and
+    // extern libraries necessary for later resolving, typechecking, linking,
+    // etc.
     pub fn read_crates(&mut self, krate: &ast::Crate) {
         self.process_crate(krate);
         visit::walk_crate(self, krate);
@@ -184,11 +185,10 @@ impl<'a> CrateReader<'a> {
                 debug!("resolving extern crate stmt. ident: {} path_opt: {:?}",
                        ident, path_opt);
                 let name = match *path_opt {
-                    Some((ref path_str, _)) => {
-                        let name = path_str.to_string();
-                        validate_crate_name(Some(self.sess), &name[..],
+                    Some(name) => {
+                        validate_crate_name(Some(self.sess), name.as_str(),
                                             Some(i.span));
-                        name
+                        name.as_str().to_string()
                     }
                     None => ident.to_string(),
                 };
@@ -324,7 +324,7 @@ impl<'a> CrateReader<'a> {
             let source = self.sess.cstore.get_used_crate_source(cnum).unwrap();
             if let Some(locs) = self.sess.opts.externs.get(name) {
                 let found = locs.iter().any(|l| {
-                    let l = fs::realpath(&Path::new(&l[..])).ok();
+                    let l = fs::canonicalize(l).ok();
                     source.dylib.as_ref().map(|p| &p.0) == l.as_ref() ||
                     source.rlib.as_ref().map(|p| &p.0) == l.as_ref()
                 });
@@ -377,14 +377,13 @@ impl<'a> CrateReader<'a> {
         let loader::Library { dylib, rlib, metadata } = lib;
 
         let cnum_map = self.resolve_crate_deps(root, metadata.as_slice(), span);
-        let codemap_import_info = import_codemap(self.sess.codemap(), &metadata);
 
         let cmeta = Rc::new( cstore::crate_metadata {
             name: name.to_string(),
             data: metadata,
             cnum_map: cnum_map,
             cnum: cnum,
-            codemap_import_info: codemap_import_info,
+            codemap_import_info: RefCell::new(vec![]),
             span: span,
         });
 
@@ -493,7 +492,7 @@ impl<'a> CrateReader<'a> {
         };
 
         let dylib = library.dylib.clone();
-        let register = should_link && self.existing_match(info.name.as_slice(),
+        let register = should_link && self.existing_match(&info.name,
                                                           None,
                                                           PathKind::Crate).is_none();
         let metadata = if register {
@@ -530,7 +529,10 @@ impl<'a> CrateReader<'a> {
                                                               source_name.clone(),
                                                               body);
                 let lo = p.span.lo;
-                let body = p.parse_all_token_trees();
+                let body = match p.parse_all_token_trees() {
+                    Ok(body) => body,
+                    Err(err) => panic!(err),
+                };
                 let span = mk_sp(lo, p.last_span.hi);
                 p.abort_if_errors();
                 macros.push(ast::MacroDef {
@@ -614,9 +616,9 @@ impl<'a> CrateReader<'a> {
 /// file they represent, just information about length, line breaks, and
 /// multibyte characters. This information is enough to generate valid debuginfo
 /// for items inlined from other crates.
-fn import_codemap(local_codemap: &codemap::CodeMap,
-                  metadata: &MetadataBlob)
-                  -> Vec<cstore::ImportedFileMap> {
+pub fn import_codemap(local_codemap: &codemap::CodeMap,
+                      metadata: &MetadataBlob)
+                      -> Vec<cstore::ImportedFileMap> {
     let external_codemap = decoder::get_imported_filemaps(metadata.as_slice());
 
     let imported_filemaps = external_codemap.into_iter().map(|filemap_to_import| {
@@ -663,7 +665,7 @@ fn import_codemap(local_codemap: &codemap::CodeMap,
                     .into_inner()
                     .map_in_place(|mbc|
                         codemap::MultiByteChar {
-                            pos: mbc.pos + start_pos,
+                            pos: mbc.pos - start_pos,
                             bytes: mbc.bytes
                         });
 

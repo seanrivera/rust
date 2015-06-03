@@ -14,12 +14,16 @@ use io;
 use libc::consts::os::extra::INVALID_SOCKET;
 use libc::{self, c_int, c_void};
 use mem;
-use net::{SocketAddr, IpAddr};
-use num::{SignedInt, Int};
+use net::SocketAddr;
+use num::One;
+use ops::Neg;
 use rt;
-use sync::{Once, ONCE_INIT};
+use sync::Once;
+use sys;
 use sys::c;
-use sys_common::AsInner;
+use sys_common::{AsInner, FromInner};
+use sys_common::net::{setsockopt, getsockopt};
+use time::Duration;
 
 pub type wrlen_t = i32;
 
@@ -28,7 +32,7 @@ pub struct Socket(libc::SOCKET);
 /// Checks whether the Windows socket interface has been started already, and
 /// if not, starts it.
 pub fn init() {
-    static START: Once = ONCE_INIT;
+    static START: Once = Once::new();
 
     START.call_once(|| unsafe {
         let mut data: c::WSADATA = mem::zeroed();
@@ -36,22 +40,20 @@ pub fn init() {
                                 &mut data);
         assert_eq!(ret, 0);
 
-        rt::at_exit(|| { c::WSACleanup(); })
+        let _ = rt::at_exit(|| { c::WSACleanup(); });
     });
 }
 
 /// Returns the last error from the Windows socket interface.
 fn last_error() -> io::Error {
-    io::Error::from_os_error(unsafe { c::WSAGetLastError() })
+    io::Error::from_raw_os_error(unsafe { c::WSAGetLastError() })
 }
 
 /// Checks if the signed integer is the Windows constant `SOCKET_ERROR` (-1)
 /// and if so, returns the last error from the Windows socket interface. . This
 /// function must be called before another call to the socket API is made.
-///
-/// FIXME: generics needed?
-pub fn cvt<T: SignedInt>(t: T) -> io::Result<T> {
-    let one: T = Int::one();
+pub fn cvt<T: One + Neg<Output=T> + PartialEq>(t: T) -> io::Result<T> {
+    let one: T = T::one();
     if t == -one {
         Err(last_error())
     } else {
@@ -67,17 +69,24 @@ pub fn cvt_gai(err: c_int) -> io::Result<()> {
 }
 
 /// Provides the functionality of `cvt` for a closure.
-pub fn cvt_r<T: SignedInt, F>(mut f: F) -> io::Result<T> where F: FnMut() -> T {
+#[allow(deprecated)]
+pub fn cvt_r<T, F>(mut f: F) -> io::Result<T>
+    where F: FnMut() -> T, T: One + Neg<Output=T> + PartialEq
+{
     cvt(f())
 }
 
 impl Socket {
     pub fn new(addr: &SocketAddr, ty: c_int) -> io::Result<Socket> {
-        let fam = match addr.ip() {
-            IpAddr::V4(..) => libc::AF_INET,
-            IpAddr::V6(..) => libc::AF_INET6,
+        let fam = match *addr {
+            SocketAddr::V4(..) => libc::AF_INET,
+            SocketAddr::V6(..) => libc::AF_INET6,
         };
-        match unsafe { libc::socket(fam, ty, 0) } {
+        let socket = unsafe {
+            c::WSASocketW(fam, ty, 0, 0 as *mut _, 0,
+                          c::WSA_FLAG_OVERLAPPED | c::WSA_FLAG_NO_HANDLE_INHERIT)
+        };
+        match socket {
             INVALID_SOCKET => Err(last_error()),
             n => Ok(Socket(n)),
         }
@@ -100,7 +109,9 @@ impl Socket {
             match c::WSASocketW(info.iAddressFamily,
                                 info.iSocketType,
                                 info.iProtocol,
-                                &mut info, 0, 0) {
+                                &mut info, 0,
+                                c::WSA_FLAG_OVERLAPPED |
+                                    c::WSA_FLAG_NO_HANDLE_INHERIT) {
                 INVALID_SOCKET => Err(last_error()),
                 n => Ok(Socket(n)),
             }
@@ -119,14 +130,44 @@ impl Socket {
             }
         }
     }
+
+    pub fn set_timeout(&self, dur: Option<Duration>, kind: libc::c_int) -> io::Result<()> {
+        let timeout = match dur {
+            Some(dur) => {
+                let timeout = sys::dur2timeout(dur);
+                if timeout == 0 {
+                    return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                                              "cannot set a 0 duration timeout"));
+                }
+                timeout
+            }
+            None => 0
+        };
+        setsockopt(self, libc::SOL_SOCKET, kind, timeout)
+    }
+
+    pub fn timeout(&self, kind: libc::c_int) -> io::Result<Option<Duration>> {
+        let raw: libc::DWORD = try!(getsockopt(self, libc::SOL_SOCKET, kind));
+        if raw == 0 {
+            Ok(None)
+        } else {
+            let secs = raw / 1000;
+            let nsec = (raw % 1000) * 1000000;
+            Ok(Some(Duration::new(secs as u64, nsec as u32)))
+        }
+    }
 }
 
 impl Drop for Socket {
     fn drop(&mut self) {
-        unsafe { cvt(libc::closesocket(self.0)).unwrap(); }
+        let _ = unsafe { libc::closesocket(self.0) };
     }
 }
 
 impl AsInner<libc::SOCKET> for Socket {
     fn as_inner(&self) -> &libc::SOCKET { &self.0 }
+}
+
+impl FromInner<libc::SOCKET> for Socket {
+    fn from_inner(sock: libc::SOCKET) -> Socket { Socket(sock) }
 }

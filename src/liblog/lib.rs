@@ -164,7 +164,7 @@
 #![crate_type = "rlib"]
 #![crate_type = "dylib"]
 #![doc(html_logo_url = "http://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-       html_favicon_url = "http://www.rust-lang.org/favicon.ico",
+       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
        html_root_url = "http://doc.rust-lang.org/nightly/",
        html_playground_url = "http://play.rust-lang.org/")]
 #![deny(missing_docs)]
@@ -172,22 +172,20 @@
 #![feature(alloc)]
 #![feature(staged_api)]
 #![feature(box_syntax)]
-#![feature(int_uint)]
 #![feature(core)]
-#![feature(old_io)]
+#![feature(const_fn)]
 #![feature(std_misc)]
 
 use std::boxed;
 use std::cell::RefCell;
 use std::fmt;
-use std::old_io::LineBufferedWriter;
-use std::old_io;
+use std::io::{self, Stderr};
+use std::io::prelude::*;
 use std::mem;
 use std::env;
-use std::ptr;
 use std::rt;
 use std::slice;
-use std::sync::{Once, ONCE_INIT};
+use std::sync::{Once, StaticMutex};
 
 use directive::LOG_LEVEL_NAMES;
 
@@ -202,6 +200,8 @@ pub const MAX_LOG_LEVEL: u32 = 255;
 
 /// The default logging level of a crate if no other is specified.
 const DEFAULT_LOG_LEVEL: u32 = 1;
+
+static LOCK: StaticMutex = StaticMutex::new();
 
 /// An unsafe constant that is the maximum logging level of any module
 /// specified. This is the first line of defense to determining whether a
@@ -229,7 +229,7 @@ thread_local! {
     }
 }
 
-/// A trait used to represent an interface to a task-local logger. Each task
+/// A trait used to represent an interface to a thread-local logger. Each thread
 /// can have its own custom logger which can respond to logging messages
 /// however it likes.
 pub trait Logger {
@@ -237,18 +237,16 @@ pub trait Logger {
     fn log(&mut self, record: &LogRecord);
 }
 
-struct DefaultLogger {
-    handle: LineBufferedWriter<old_io::stdio::StdWriter>,
-}
+struct DefaultLogger { handle: Stderr }
 
 /// Wraps the log level with fmt implementations.
-#[derive(Copy, PartialEq, PartialOrd, Debug)]
+#[derive(Copy, Clone, PartialEq, PartialOrd, Debug)]
 pub struct LogLevel(pub u32);
 
 impl fmt::Display for LogLevel {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         let LogLevel(level) = *self;
-        match LOG_LEVEL_NAMES.get(level as uint - 1) {
+        match LOG_LEVEL_NAMES.get(level as usize - 1) {
             Some(ref name) => fmt::Display::fmt(name, fmt),
             None => fmt::Display::fmt(&level, fmt)
         }
@@ -289,18 +287,27 @@ impl Drop for DefaultLogger {
 pub fn log(level: u32, loc: &'static LogLocation, args: fmt::Arguments) {
     // Test the literal string from args against the current filter, if there
     // is one.
-    match unsafe { FILTER.as_ref() } {
-        Some(filter) if !args.to_string().contains(&filter[..]) => return,
-        _ => {}
+    unsafe {
+        let _g = LOCK.lock();
+        match FILTER as usize {
+            0 => {}
+            1 => panic!("cannot log after main thread has exited"),
+            n => {
+                let filter = mem::transmute::<_, &String>(n);
+                if !args.to_string().contains(&filter[..]) {
+                    return
+                }
+            }
+        }
     }
 
     // Completely remove the local logger from TLS in case anyone attempts to
     // frob the slot while we're doing the logging. This will destroy any logger
     // set during logging.
-    let mut logger = LOCAL_LOGGER.with(|s| {
+    let mut logger: Box<Logger + Send> = LOCAL_LOGGER.with(|s| {
         s.borrow_mut().take()
     }).unwrap_or_else(|| {
-        box DefaultLogger { handle: old_io::stderr() } as Box<Logger + Send>
+        box DefaultLogger { handle: io::stderr() }
     });
     logger.log(&LogRecord {
         level: LogLevel(level),
@@ -318,7 +325,7 @@ pub fn log(level: u32, loc: &'static LogLocation, args: fmt::Arguments) {
 #[inline(always)]
 pub fn log_level() -> u32 { unsafe { LOG_LEVEL } }
 
-/// Replaces the task-local logger with the specified logger, returning the old
+/// Replaces the thread-local logger with the specified logger, returning the old
 /// logger.
 pub fn set_logger(logger: Box<Logger + Send>) -> Option<Box<Logger + Send>> {
     let mut l = Some(logger);
@@ -349,7 +356,7 @@ pub struct LogRecord<'a> {
 }
 
 #[doc(hidden)]
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub struct LogLocation {
     pub module_path: &'static str,
     pub file: &'static str,
@@ -361,7 +368,7 @@ pub struct LogLocation {
 /// module's log statement should be emitted or not.
 #[doc(hidden)]
 pub fn mod_enabled(level: u32, module: &str) -> bool {
-    static INIT: Once = ONCE_INIT;
+    static INIT: Once = Once::new();
     INIT.call_once(init);
 
     // It's possible for many threads are in this function, only one of them
@@ -373,9 +380,15 @@ pub fn mod_enabled(level: u32, module: &str) -> bool {
 
     // This assertion should never get tripped unless we're in an at_exit
     // handler after logging has been torn down and a logging attempt was made.
-    assert!(unsafe { !DIRECTIVES.is_null() });
 
-    enabled(level, module, unsafe { (*DIRECTIVES).iter() })
+    let _g = LOCK.lock();
+    unsafe {
+        assert!(DIRECTIVES as usize != 0);
+        assert!(DIRECTIVES as usize != 1,
+                "cannot log after the main thread has exited");
+
+        enabled(level, module, (*DIRECTIVES).iter())
+    }
 }
 
 fn enabled(level: u32,
@@ -430,15 +443,15 @@ fn init() {
         DIRECTIVES = boxed::into_raw(box directives);
 
         // Schedule the cleanup for the globals for when the runtime exits.
-        rt::at_exit(move || {
+        let _ = rt::at_exit(move || {
+            let _g = LOCK.lock();
             assert!(!DIRECTIVES.is_null());
-            let _directives: Box<Vec<directive::LogDirective>> =
-                Box::from_raw(DIRECTIVES);
-            DIRECTIVES = ptr::null_mut();
+            let _directives = Box::from_raw(DIRECTIVES);
+            DIRECTIVES = 1 as *mut _;
 
             if !FILTER.is_null() {
-                let _filter: Box<String> = Box::from_raw(FILTER);
-                FILTER = 0 as *mut _;
+                let _filter = Box::from_raw(FILTER);
+                FILTER = 1 as *mut _;
             }
         });
     }

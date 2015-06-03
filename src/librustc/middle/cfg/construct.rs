@@ -8,9 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use rustc_data_structures::graph;
 use middle::cfg::*;
 use middle::def;
-use middle::graph;
 use middle::pat_util;
 use middle::region::CodeExtent;
 use middle::ty;
@@ -25,7 +25,7 @@ struct CFGBuilder<'a, 'tcx: 'a> {
     loop_scopes: Vec<LoopScope>,
 }
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 struct LoopScope {
     loop_id: ast::NodeId,     // id of loop/while node
     continue_index: CFGIndex, // where to go on a `loop`
@@ -105,6 +105,7 @@ impl<'a, 'tcx> CFGBuilder<'a, 'tcx> {
         match pat.node {
             ast::PatIdent(_, _, None) |
             ast::PatEnum(_, None) |
+            ast::PatQPath(..) |
             ast::PatLit(..) |
             ast::PatRange(..) |
             ast::PatWild(_) => {

@@ -10,7 +10,9 @@
 
 // Make sure the destructor is run for unit-like structs.
 
-use std::boxed::BoxAny;
+
+#![feature(alloc)]
+
 use std::thread;
 
 struct Foo;
@@ -26,6 +28,6 @@ pub fn main() {
         let _b = Foo;
     }).join();
 
-    let s = x.err().unwrap().downcast::<&'static str>().ok().unwrap();
+    let s = x.err().unwrap().downcast::<&'static str>().unwrap();
     assert_eq!(&**s, "This panic should happen.");
 }

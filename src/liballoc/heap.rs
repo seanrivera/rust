@@ -8,8 +8,14 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[cfg(not(test))]
-use core::ptr::PtrExt;
+use core::{isize, usize};
+
+#[inline(always)]
+fn check_size_and_alignment(size: usize, align: usize) {
+    debug_assert!(size != 0);
+    debug_assert!(size <= isize::MAX as usize, "Tried to allocate too much: {} bytes", size);
+    debug_assert!(usize::is_power_of_two(align), "Invalid alignment of allocation: {}", align);
+}
 
 // FIXME: #13996: mark the `allocate` and `reallocate` return value as `noalias`
 
@@ -22,12 +28,16 @@ use core::ptr::PtrExt;
 /// size on the platform.
 #[inline]
 pub unsafe fn allocate(size: usize, align: usize) -> *mut u8 {
+    check_size_and_alignment(size, align);
     imp::allocate(size, align)
 }
 
 /// Resize the allocation referenced by `ptr` to `size` bytes.
 ///
 /// On failure, return a null pointer and leave the original allocation intact.
+///
+/// If the allocation was relocated, the memory at the passed-in pointer is
+/// undefined after the call.
 ///
 /// Behavior is undefined if the requested size is 0 or the alignment is not a
 /// power of 2. The alignment must be no larger than the largest supported page
@@ -38,6 +48,7 @@ pub unsafe fn allocate(size: usize, align: usize) -> *mut u8 {
 /// any value in range_inclusive(requested_size, usable_size).
 #[inline]
 pub unsafe fn reallocate(ptr: *mut u8, old_size: usize, size: usize, align: usize) -> *mut u8 {
+    check_size_and_alignment(size, align);
     imp::reallocate(ptr, old_size, size, align)
 }
 
@@ -56,6 +67,7 @@ pub unsafe fn reallocate(ptr: *mut u8, old_size: usize, size: usize, align: usiz
 #[inline]
 pub unsafe fn reallocate_inplace(ptr: *mut u8, old_size: usize, size: usize,
                                  align: usize) -> usize {
+    check_size_and_alignment(size, align);
     imp::reallocate_inplace(ptr, old_size, size, align)
 }
 
@@ -95,7 +107,7 @@ pub const EMPTY: *mut () = 0x1 as *mut ();
 
 /// The allocator for unique pointers.
 #[cfg(not(test))]
-#[lang="exchange_malloc"]
+#[lang = "exchange_malloc"]
 #[inline]
 unsafe fn exchange_malloc(size: usize, align: usize) -> *mut u8 {
     if size == 0 {
@@ -108,7 +120,7 @@ unsafe fn exchange_malloc(size: usize, align: usize) -> *mut u8 {
 }
 
 #[cfg(not(test))]
-#[lang="exchange_free"]
+#[lang = "exchange_free"]
 #[inline]
 unsafe fn exchange_free(ptr: *mut u8, old_size: usize, align: usize) {
     deallocate(ptr, old_size, align);
@@ -133,6 +145,7 @@ const MIN_ALIGN: usize = 16;
 
 #[cfg(feature = "external_funcs")]
 mod imp {
+    #[allow(improper_ctypes)]
     extern {
         fn rust_allocate(size: usize, align: usize) -> *mut u8;
         fn rust_deallocate(ptr: *mut u8, old_size: usize, align: usize);
@@ -189,7 +202,6 @@ mod imp {
     use core::option::Option;
     use core::option::Option::None;
     use core::ptr::{null_mut, null};
-    use core::num::Int;
     use libc::{c_char, c_int, c_void, size_t};
     use super::MIN_ALIGN;
 
@@ -198,6 +210,7 @@ mod imp {
     extern {}
 
     extern {
+        #[allocator]
         fn je_mallocx(size: size_t, flags: c_int) -> *mut c_void;
         fn je_rallocx(ptr: *mut c_void, size: size_t, flags: c_int) -> *mut c_void;
         fn je_xallocx(ptr: *mut c_void, size: size_t, extra: size_t, flags: c_int) -> size_t;
@@ -210,7 +223,9 @@ mod imp {
     }
 
     // -lpthread needs to occur after -ljemalloc, the earlier argument isn't enough
-    #[cfg(all(not(windows), not(target_os = "android")))]
+    #[cfg(all(not(windows),
+              not(target_os = "android"),
+              not(target_env = "musl")))]
     #[link(name = "pthread")]
     extern {}
 
@@ -300,7 +315,7 @@ mod imp {
             libc::realloc(ptr as *mut libc::c_void, size as libc::size_t) as *mut u8
         } else {
             let new_ptr = allocate(size, align);
-            ptr::copy(new_ptr, ptr, cmp::min(size, old_size));
+            ptr::copy(ptr, new_ptr, cmp::min(size, old_size));
             deallocate(ptr, old_size, align);
             new_ptr
         }
@@ -383,10 +398,9 @@ mod imp {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     extern crate test;
     use self::test::Bencher;
-    use core::ptr::PtrExt;
     use boxed::Box;
     use heap;
 

@@ -11,6 +11,7 @@
 // Testing guarantees provided by once functions.
 
 
+
 use std::sync::Arc;
 
 fn foo<F:FnOnce()>(blk: F) {

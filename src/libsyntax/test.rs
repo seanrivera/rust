@@ -37,7 +37,7 @@ use {ast, ast_util};
 use ptr::P;
 use util::small_vector::SmallVector;
 
-enum ShouldFail {
+enum ShouldPanic {
     No,
     Yes(Option<InternedString>),
 }
@@ -47,7 +47,7 @@ struct Test {
     path: Vec<ast::Ident> ,
     bench: bool,
     ignore: bool,
-    should_fail: ShouldFail
+    should_panic: ShouldPanic
 }
 
 struct TestCtxt<'a> {
@@ -121,13 +121,11 @@ impl<'a> fold::Folder for TestHarnessGenerator<'a> {
         debug!("current path: {}",
                ast_util::path_name_i(&self.cx.path));
 
-        if is_test_fn(&self.cx, &*i) || is_bench_fn(&self.cx, &*i) {
+        let i = if is_test_fn(&self.cx, &*i) || is_bench_fn(&self.cx, &*i) {
             match i.node {
-                ast::ItemFn(_, ast::Unsafety::Unsafe, _, _, _) => {
+                ast::ItemFn(_, ast::Unsafety::Unsafe, _, _, _, _) => {
                     let diag = self.cx.span_diagnostic;
-                    diag.span_fatal(i.span,
-                                    "unsafe functions cannot be used for \
-                                     tests");
+                    panic!(diag.span_fatal(i.span, "unsafe functions cannot be used for tests"));
                 }
                 _ => {
                     debug!("this is a test function");
@@ -136,15 +134,25 @@ impl<'a> fold::Folder for TestHarnessGenerator<'a> {
                         path: self.cx.path.clone(),
                         bench: is_bench_fn(&self.cx, &*i),
                         ignore: is_ignored(&*i),
-                        should_fail: should_fail(&*i)
+                        should_panic: should_panic(&*i)
                     };
                     self.cx.testfns.push(test);
                     self.tests.push(i.ident);
                     // debug!("have {} test/bench functions",
                     //        cx.testfns.len());
+
+                    // Make all tests public so we can call them from outside
+                    // the module (note that the tests are re-exported and must
+                    // be made public themselves to avoid privacy errors).
+                    i.map(|mut i| {
+                        i.vis = ast::Public;
+                        i
+                    })
                 }
             }
-        }
+        } else {
+            i
+        };
 
         // We don't want to recurse into anything other than mods, since
         // mods or tests inside of functions will break things
@@ -293,7 +301,7 @@ fn ignored_span(cx: &TestCtxt, sp: Span) -> Span {
             allow_internal_unstable: true,
         }
     };
-    let expn_id = cx.sess.span_diagnostic.cm.record_expansion(info);
+    let expn_id = cx.sess.codemap().record_expansion(info);
     let mut sp = sp;
     sp.expn_id = expn_id;
     return sp;
@@ -312,7 +320,7 @@ fn is_test_fn(cx: &TestCtxt, i: &ast::Item) -> bool {
 
     fn has_test_signature(i: &ast::Item) -> HasTestSignature {
         match &i.node {
-          &ast::ItemFn(ref decl, _, _, ref generics, _) => {
+          &ast::ItemFn(ref decl, _, _, _, ref generics, _) => {
             let no_output = match decl.output {
                 ast::DefaultReturn(..) => true,
                 ast::Return(ref t) if t.node == ast::TyTup(vec![]) => true,
@@ -348,7 +356,7 @@ fn is_bench_fn(cx: &TestCtxt, i: &ast::Item) -> bool {
 
     fn has_test_signature(i: &ast::Item) -> bool {
         match i.node {
-            ast::ItemFn(ref decl, _, _, ref generics, _) => {
+            ast::ItemFn(ref decl, _, _, _, ref generics, _) => {
                 let input_cnt = decl.inputs.len();
                 let no_output = match decl.output {
                     ast::DefaultReturn(..) => true,
@@ -378,15 +386,15 @@ fn is_ignored(i: &ast::Item) -> bool {
     i.attrs.iter().any(|attr| attr.check_name("ignore"))
 }
 
-fn should_fail(i: &ast::Item) -> ShouldFail {
-    match i.attrs.iter().find(|attr| attr.check_name("should_fail")) {
+fn should_panic(i: &ast::Item) -> ShouldPanic {
+    match i.attrs.iter().find(|attr| attr.check_name("should_panic")) {
         Some(attr) => {
             let msg = attr.meta_item_list()
                 .and_then(|list| list.iter().find(|mi| mi.check_name("expected")))
                 .and_then(|mi| mi.value_str());
-            ShouldFail::Yes(msg)
+            ShouldPanic::Yes(msg)
         }
-        None => ShouldFail::No,
+        None => ShouldPanic::No,
     }
 }
 
@@ -461,7 +469,9 @@ fn mk_main(cx: &mut TestCtxt) -> P<ast::Item> {
     let main_ret_ty = ecx.ty(sp, ast::TyTup(vec![]));
     let main_body = ecx.block_all(sp, vec![call_test_main], None);
     let main = ast::ItemFn(ecx.fn_decl(vec![], main_ret_ty),
-                           ast::Unsafety::Normal, ::abi::Rust, empty_generics(), main_body);
+                           ast::Unsafety::Normal,
+                           ast::Constness::NotConst,
+                           ::abi::Rust, empty_generics(), main_body);
     let main = P(ast::Item {
         ident: token::str_to_ident("main"),
         attrs: vec![main_attr],
@@ -617,13 +627,13 @@ fn mk_test_desc_and_fn_rec(cx: &TestCtxt, test: &Test) -> P<ast::Expr> {
                                   vec![name_expr]);
 
     let ignore_expr = ecx.expr_bool(span, test.ignore);
-    let should_fail_path = |name| {
-        ecx.path(span, vec![self_id, test_id, ecx.ident_of("ShouldFail"), ecx.ident_of(name)])
+    let should_panic_path = |name| {
+        ecx.path(span, vec![self_id, test_id, ecx.ident_of("ShouldPanic"), ecx.ident_of(name)])
     };
-    let fail_expr = match test.should_fail {
-        ShouldFail::No => ecx.expr_path(should_fail_path("No")),
-        ShouldFail::Yes(ref msg) => {
-            let path = should_fail_path("Yes");
+    let fail_expr = match test.should_panic {
+        ShouldPanic::No => ecx.expr_path(should_panic_path("No")),
+        ShouldPanic::Yes(ref msg) => {
+            let path = should_panic_path("Yes");
             let arg = match *msg {
                 Some(ref msg) => ecx.expr_some(span, ecx.expr_str(span, msg.clone())),
                 None => ecx.expr_none(span),
@@ -638,7 +648,7 @@ fn mk_test_desc_and_fn_rec(cx: &TestCtxt, test: &Test) -> P<ast::Expr> {
         test_path("TestDesc"),
         vec![field("name", name_expr),
              field("ignore", ignore_expr),
-             field("should_fail", fail_expr)]);
+             field("should_panic", fail_expr)]);
 
 
     let mut visible_path = match cx.toplevel_reexport {

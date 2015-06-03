@@ -28,7 +28,7 @@
 //! more useful in practice than this OS-based version which likely requires
 //! unsafe code to interoperate with.
 //!
-//! # Example
+//! # Examples
 //!
 //! Using a dynamically allocated TLS key. Note that this key can be shared
 //! among many threads via an `Arc`.
@@ -56,11 +56,11 @@
 
 #![allow(non_camel_case_types)]
 #![unstable(feature = "thread_local_internals")]
+#![allow(dead_code)] // sys isn't exported yet
 
 use prelude::v1::*;
 
 use sync::atomic::{self, AtomicUsize, Ordering};
-use sync::{Mutex, Once, ONCE_INIT};
 
 use sys::thread_local as imp;
 
@@ -73,7 +73,7 @@ use sys::thread_local as imp;
 /// time. The key is also deallocated when the Rust runtime exits or `destroy`
 /// is called, whichever comes first.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```ignore
 /// use tls::os::{StaticKey, INIT};
@@ -86,19 +86,13 @@ use sys::thread_local as imp;
 /// }
 /// ```
 pub struct StaticKey {
-    /// Inner static TLS key (internals), created with by `INIT_INNER` in this
-    /// module.
-    pub inner: StaticKeyInner,
+    /// Inner static TLS key (internals).
+    key: AtomicUsize,
     /// Destructor for the TLS value.
     ///
     /// See `Key::new` for information about when the destructor runs and how
     /// it runs.
-    pub dtor: Option<unsafe extern fn(*mut u8)>,
-}
-
-/// Inner contents of `StaticKey`, created by the `INIT_INNER` constant.
-pub struct StaticKeyInner {
-    key: AtomicUsize,
+    dtor: Option<unsafe extern fn(*mut u8)>,
 }
 
 /// A type for a safely managed OS-based TLS slot.
@@ -110,7 +104,7 @@ pub struct StaticKeyInner {
 /// Implementations will likely, however, contain unsafe code as this type only
 /// operates on `*mut u8`, an unsafe pointer.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```rust,ignore
 /// use tls::os::Key;
@@ -129,22 +123,16 @@ pub struct Key {
 /// Constant initialization value for static TLS keys.
 ///
 /// This value specifies no destructor by default.
-pub const INIT: StaticKey = StaticKey {
-    inner: INIT_INNER,
-    dtor: None,
-};
-
-/// Constant initialization value for the inner part of static TLS keys.
-///
-/// This value allows specific configuration of the destructor for a TLS key.
-pub const INIT_INNER: StaticKeyInner = StaticKeyInner {
-    key: atomic::ATOMIC_USIZE_INIT,
-};
-
-static INIT_KEYS: Once = ONCE_INIT;
-static mut KEYS: *mut Mutex<Vec<imp::Key>> = 0 as *mut _;
+pub const INIT: StaticKey = StaticKey::new(None);
 
 impl StaticKey {
+    pub const fn new(dtor: Option<unsafe extern fn(*mut u8)>) -> StaticKey {
+        StaticKey {
+            key: atomic::AtomicUsize::new(0),
+            dtor: dtor
+        }
+    }
+
     /// Gets the value associated with this TLS key
     ///
     /// This will lazily allocate a TLS key from the OS if one has not already
@@ -167,7 +155,7 @@ impl StaticKey {
     /// Note that this does *not* run the user-provided destructor if one was
     /// specified at definition time. Doing so must be done manually.
     pub unsafe fn destroy(&self) {
-        match self.inner.key.swap(0, Ordering::SeqCst) {
+        match self.key.swap(0, Ordering::SeqCst) {
             0 => {}
             n => { imp::destroy(n as imp::Key) }
         }
@@ -175,13 +163,13 @@ impl StaticKey {
 
     #[inline]
     unsafe fn key(&self) -> imp::Key {
-        match self.inner.key.load(Ordering::Relaxed) {
+        match self.key.load(Ordering::Relaxed) {
             0 => self.lazy_init() as imp::Key,
             n => n as imp::Key
         }
     }
 
-    unsafe fn lazy_init(&self) -> uint {
+    unsafe fn lazy_init(&self) -> usize {
         // POSIX allows the key created here to be 0, but the compare_and_swap
         // below relies on using 0 as a sentinel value to check who won the
         // race to set the shared TLS key. As far as I know, there is no
@@ -200,9 +188,9 @@ impl StaticKey {
             key2
         };
         assert!(key != 0);
-        match self.inner.key.compare_and_swap(0, key as uint, Ordering::SeqCst) {
+        match self.key.compare_and_swap(0, key as usize, Ordering::SeqCst) {
             // The CAS succeeded, so we've created the actual key
-            0 => key as uint,
+            0 => key as usize,
             // If someone beat us to the punch, use their key instead
             n => { imp::destroy(key); n }
         }
@@ -210,7 +198,7 @@ impl StaticKey {
 }
 
 impl Key {
-    /// Create a new managed OS TLS key.
+    /// Creates a new managed OS TLS key.
     ///
     /// This key will be deallocated when the key falls out of scope.
     ///
@@ -248,7 +236,7 @@ impl Drop for Key {
 #[cfg(test)]
 mod tests {
     use prelude::v1::*;
-    use super::{Key, StaticKey, INIT_INNER};
+    use super::{Key, StaticKey};
 
     fn assert_sync<T: Sync>() {}
     fn assert_send<T: Send>() {}
@@ -264,22 +252,22 @@ mod tests {
         assert!(k2.get().is_null());
         k1.set(1 as *mut _);
         k2.set(2 as *mut _);
-        assert_eq!(k1.get() as uint, 1);
-        assert_eq!(k2.get() as uint, 2);
+        assert_eq!(k1.get() as usize, 1);
+        assert_eq!(k2.get() as usize, 2);
     }
 
     #[test]
     fn statik() {
-        static K1: StaticKey = StaticKey { inner: INIT_INNER, dtor: None };
-        static K2: StaticKey = StaticKey { inner: INIT_INNER, dtor: None };
+        static K1: StaticKey = StaticKey::new(None);
+        static K2: StaticKey = StaticKey::new(None);
 
         unsafe {
             assert!(K1.get().is_null());
             assert!(K2.get().is_null());
             K1.set(1 as *mut _);
             K2.set(2 as *mut _);
-            assert_eq!(K1.get() as uint, 1);
-            assert_eq!(K2.get() as uint, 2);
+            assert_eq!(K1.get() as usize, 1);
+            assert_eq!(K2.get() as usize, 2);
         }
     }
 }

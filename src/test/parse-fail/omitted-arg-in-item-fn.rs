@@ -8,5 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-fn foo(x) { //~ ERROR expected one of `!`, `:`, or `@`, found `)`
+// compile-flags: -Z parse-only
+
+fn foo(x) { //~ ERROR expected one of `:` or `@`, found `)`
 }

@@ -11,6 +11,7 @@
 // Check that a trait is still object-safe (and usable) if it has
 // methods with by-value self so long as they require `Self : Sized`.
 
+
 trait Counter {
     fn tick(&mut self) -> u32;
     fn get(self) -> u32 where Self : Sized;

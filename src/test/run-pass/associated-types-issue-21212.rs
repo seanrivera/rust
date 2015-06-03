@@ -13,6 +13,7 @@
 // where clauses in the environment which in turn required normalizing
 // `Self::Input`.
 
+
 pub trait Parser {
     type Input;
 

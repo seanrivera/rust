@@ -8,7 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::old_io::println;
 use std::sync::mpsc::channel;
 use std::thread;
 
@@ -18,6 +17,6 @@ pub fn main() {
     tx.send("hello, world").unwrap();
 
     thread::spawn(move|| {
-        println(rx.recv().unwrap());
+        println!("{}", rx.recv().unwrap());
     }).join().ok().unwrap();
 }

@@ -11,12 +11,14 @@
 // ignore-android: FIXME(#10381)
 // min-lldb-version: 310
 
-// This test case checks if function arguments already have the correct value when breaking at the
-// beginning of a function. Functions with the #[no_stack_check] attribute have the same prologue as
-// regular C functions compiled with GCC or Clang and therefore are better handled by GDB. As a
-// consequence, and as opposed to regular Rust functions, we can set the breakpoints via the
-// function name (and don't have to fall back on using line numbers). For LLDB this shouldn't make
-// a difference because it can handle both cases.
+// This test case checks if function arguments already have the correct value
+// when breaking at the beginning of a function. Functions with the
+// #[no_stack_check] attribute have the same prologue as regular C functions
+// compiled with GCC or Clang and therefore are better handled by GDB. As a
+// consequence, and as opposed to regular Rust functions, we can set the
+// breakpoints via the function name (and don't have to fall back on using line
+// numbers). For LLDB this shouldn't make a difference because it can handle
+// both cases.
 
 // compile-flags:-g
 
@@ -244,12 +246,12 @@
 // lldb-check:[...]$31 = 45
 // lldb-command:continue
 
-#![allow(unused_variables)]
+#![allow(dead_code, unused_assignments, unused_variables)]
 #![omit_gdb_pretty_printer_section]
 
 #[no_stack_check]
-fn immediate_args(a: int, b: bool, c: f64) {
-    ::std::old_io::print("");
+fn immediate_args(a: isize, b: bool, c: f64) {
+    println!("");
 }
 
 struct BigStruct {
@@ -265,24 +267,24 @@ struct BigStruct {
 
 #[no_stack_check]
 fn non_immediate_args(a: BigStruct, b: BigStruct) {
-    ::std::old_io::print("");
+    println!("");
 }
 
 #[no_stack_check]
 fn binding(a: i64, b: u64, c: f64) {
     let x = 0;
-    ::std::old_io::print("");
+    println!("");
 }
 
 #[no_stack_check]
 fn assignment(mut a: u64, b: u64, c: f64) {
     a = b;
-    ::std::old_io::print("");
+    println!("");
 }
 
 #[no_stack_check]
 fn function_call(x: u64, y: u64, z: f64) {
-    std::old_io::stdio::print("Hi!")
+    println!("Hi!")
 }
 
 #[no_stack_check]
